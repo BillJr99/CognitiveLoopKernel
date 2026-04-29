@@ -22,5 +22,9 @@ else
   exit 127
 fi
 
-export PYTHONPATH="${PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+EXTRA_PATH="$PROJECT_ROOT"
+if [ -d "$PROJECT_ROOT/.clk/site-packages" ]; then
+  EXTRA_PATH="$PROJECT_ROOT/.clk/site-packages:$EXTRA_PATH"
+fi
+export PYTHONPATH="${EXTRA_PATH}${PYTHONPATH:+:${PYTHONPATH}}"
 exec "$PY" -m clk_harness.cli "$@"
