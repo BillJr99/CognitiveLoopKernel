@@ -36,3 +36,9 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Kickoff scratch directories (created by kickoff.sh)
+kickoff-*/
+
+# Local env overrides (kickoff.sh reads .env if present)
+.env

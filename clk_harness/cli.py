@@ -157,8 +157,10 @@ def _make_evaluator(paths: Paths) -> Evaluator:
     cfg = load_clk_config(paths)
     checks = cfg.get("validation_checks") or []
     if not checks:
-        # Sensible default: ensure the harness still imports.
-        checks = [f'{sys.executable} -c "import clk_harness; print(clk_harness.__version__)"']
+        # Default sanity check: the project is still initialized. Users should
+        # override `validation_checks` in clk.config.json with a project-specific
+        # gate (e.g. `pytest -q` or `npm test`) once the project has real code.
+        checks = ["test -f .clk/config/clk.config.json"]
     return Evaluator(root=paths.root, default_checks=checks)
 
 
