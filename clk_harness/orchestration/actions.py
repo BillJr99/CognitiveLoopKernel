@@ -67,6 +67,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import Paths
+from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
 
 
@@ -210,6 +211,36 @@ class ActionResult:
         return " ".join(bits) or "(no actions)"
 
 
+def _normalize_rel(root: Path, rel: str) -> str:
+    """Strip redundant prefixes that agents commonly add by mistake.
+
+    Agents are told ``$workspace_root`` is their filesystem root, but
+    they sometimes still emit ``PATH: workspace/foo.py`` because they
+    can see the directory's name in their context. Without this
+    normalization the harness would create
+    ``workspace/workspace/foo.py`` and a re-run would create
+    ``workspace/workspace/workspace/foo.py``, etc. The fix: if the
+    leading path segment matches the workspace's basename, drop it.
+
+    Also strips a leading ``./`` for the same ergonomics.
+    """
+    rel = (rel or "").strip()
+    if not rel:
+        return rel
+    # Trim ./ prefix.
+    while rel.startswith("./"):
+        rel = rel[2:]
+    # Drop leading basename of workspace if it appears as the first
+    # path segment. Repeat once in case the agent doubled it.
+    base = root.name
+    for _ in range(2):
+        if rel == base or rel.startswith(base + "/") or rel.startswith(base + "\\"):
+            rel = rel[len(base) + 1:] if len(rel) > len(base) else ""
+        else:
+            break
+    return rel
+
+
 def _resolve_safe(root: Path, rel: str) -> Optional[Path]:
     """Resolve ``rel`` relative to ``root``, refusing escapes.
 
@@ -217,8 +248,12 @@ def _resolve_safe(root: Path, rel: str) -> Optional[Path]:
     the project root. This keeps agents from accidentally writing into
     the harness state directory ``.clk/`` or overwriting the harness
     sources copied into the kickoff dir.
+
+    Common agent mistakes are normalized (see ``_normalize_rel``)
+    rather than rejected outright; only paths that genuinely escape
+    the workspace come back as ``None``.
     """
-    rel = (rel or "").strip()
+    rel = _normalize_rel(root, rel)
     if not rel:
         return None
     if rel.startswith("/"):
@@ -292,15 +327,24 @@ def apply_actions(
         try:
             if action.kind == "done":
                 _do_done(paths, action, result)
+                log_event(paths, "action_applied", agent=agent_name, kind="done",
+                          reason=action.reason, ok=True)
                 continue
             if action.kind == "run":
+                pre_cmds = len(result.commands_run)
                 _do_run(paths, action, result, timeout_s=timeout_s)
+                ok = len(result.commands_run) > pre_cmds and not result.errors[-1:0:-1]
+                log_event(paths, "action_applied", agent=agent_name, kind="run",
+                          cmd=action.cmd, ok=bool(result.commands_run and not result.errors))
                 continue
             # File-mutating actions
             if applied_files >= cap:
                 result.skipped.append(f"{action.kind} {action.path}: cap_reached")
+                log_event(paths, "action_skipped", agent=agent_name, kind=action.kind,
+                          path=action.path, reason="cap_reached")
                 continue
             applied_files += 1
+            normalized_path = _normalize_rel(paths.workspace, action.path) if action.path else action.path
             if action.kind == "write":
                 _do_write(paths, action, result, backup_root)
             elif action.kind == "edit":
@@ -311,9 +355,32 @@ def apply_actions(
                 _do_delete(paths, action, result, backup_root)
             else:
                 result.skipped.append(f"unknown action: {action.kind}")
+                log_event(paths, "action_skipped", agent=agent_name,
+                          kind=action.kind, reason="unknown_kind")
+                continue
+            # Detect outcome from the result lists' tails
+            if normalized_path != action.path:
+                log_event(paths, "action_path_normalized", agent=agent_name,
+                          kind=action.kind, original=action.path, used=normalized_path)
+            written = result.files_written[-1:] if result.files_written else []
+            deleted = result.files_deleted[-1:] if result.files_deleted else []
+            skipped = result.skipped[-1:] if result.skipped else []
+            log_event(
+                paths,
+                "action_applied",
+                agent=agent_name,
+                kind=action.kind,
+                path=normalized_path,
+                ok=bool(written or deleted) and not (skipped and skipped[0].startswith(action.kind)),
+                file_written=(written[0] if written else None),
+                file_deleted=(deleted[0] if deleted else None),
+                content_chars=len(action.content) if action.content else 0,
+            )
         except Exception as exc:
             log_exception(f"orchestration.actions.apply[{action.kind}]", exc)
             result.errors.append(f"{action.kind} {action.path or action.cmd}: {exc}")
+            log_event(paths, "action_error", agent=agent_name,
+                      kind=action.kind, path=action.path, error=str(exc))
     return result
 
 

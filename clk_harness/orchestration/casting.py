@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..config import Paths, load_agents_config, save_json
+from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
 
 
@@ -236,12 +237,12 @@ def _persist(paths: Paths, agents_cfg: Dict[str, Any]) -> None:
 
 
 def _log_casting_event(paths: Paths, event: Dict[str, Any]) -> None:
-    """Append a JSONL entry to ``.clk/state/casting.log`` for analysis.
+    """Append a JSONL entry to ``.clk/state/casting.log`` AND mirror it
+    into the consolidated activity log.
 
-    Captures every casting decision (role added/updated/removed, workflow
-    written) so we can mine the project's history later: which projects
-    needed which specialists, how often the chief reshuffled the team,
-    which roles never earned their commits, etc.
+    casting.log stays focused on roster history (easier to analyze in
+    isolation: which specialists each project needs); activity.jsonl
+    is the chronological super-log of everything.
     """
     try:
         paths.state.mkdir(parents=True, exist_ok=True)
@@ -249,6 +250,7 @@ def _log_casting_event(paths: Paths, event: Dict[str, Any]) -> None:
         payload = {"timestamp": datetime.now().isoformat(timespec="seconds"), **event}
         with target.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload) + "\n")
+        log_event(paths, event.get("event") or "casting", **{k: v for k, v in event.items() if k != "event"})
     except Exception as exc:
         log_exception("orchestration.casting._log_casting_event", exc)
 

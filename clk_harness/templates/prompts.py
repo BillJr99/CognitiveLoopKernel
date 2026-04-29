@@ -18,13 +18,22 @@ from typing import Dict
 
 
 _BASE_FOOTER = """
-Filesystem: $workspace_root is your filesystem root for ACTION blocks.
-All file paths in ACTION:write / edit / append / delete / run resolve there.
-Don't try to write under $project_root/.clk or above; the harness rejects
-those for safety. The harness writes its own state to .clk/.
+Filesystem
+- Your filesystem root is $workspace_root. Every PATH in an ACTION
+  block is resolved relative to that root.
+- Do NOT prefix paths with `workspace/`. The directory is already
+  the root - writing `workspace/src/foo.py` would create a recursive
+  `workspace/workspace/src/foo.py`. (The harness strips this for
+  you as a safety net but you should not emit it in the first place.)
+  Examples: PATH: src/foo.py    GOOD
+            PATH: README.md     GOOD
+            PATH: workspace/x   WRONG (the harness will normalize it)
+            PATH: ../escape     WRONG (rejected; outside root)
+- Don't try to write under .clk/ or above the root; the harness rejects
+  those.
 
 Constraints: no sudo; prefer edits over overwrites; log decisions to
-.clk/state/decisions.md.
+.clk/state/decisions.md (the harness handles that path).
 Emit ACTION blocks to actually change files / run commands - descriptions
 alone do nothing. Use PROPOSE_ROLE to mint specialists when needed.
 """

@@ -17,8 +17,9 @@ from string import Template
 from typing import Any, Dict, List, Optional
 
 from ..config import Paths
-from ..git_ops import add_all, commit as git_commit, has_changes, is_repo
+from ..git_ops import add_all, commit as git_commit, has_changes, head_sha, is_repo
 from ..providers import AgentProvider, AgentRequest, AgentResponse, load_provider
+from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
 from . import casting as _casting
 from . import actions as _actions
@@ -153,8 +154,18 @@ class AgentRunner:
         is_dry = self.clk_cfg.get("dry_run", False) if dry_run is None else dry_run
 
         observer = self.observer
+        paths = self.paths
 
         def _on_progress(kind: str, message: str) -> None:
+            # Log subprocess lifecycle to the consolidated activity log
+            # too. We don't log every stdout_line at INFO level (those
+            # can be very chatty for large model responses) but we do
+            # capture stderr and the start/end markers verbatim.
+            try:
+                if kind in ("start", "end", "timeout", "stderr_line"):
+                    log_event(paths, "subprocess_" + kind, agent=agent.name, message=message[:500])
+            except Exception:
+                pass
             if observer is None:
                 return
             try:
@@ -172,6 +183,24 @@ class AgentRunner:
             on_progress=_on_progress,
         )
         started = datetime.now().isoformat(timespec="seconds")
+        log_event(
+            self.paths,
+            "agent_dispatch",
+            agent=agent.name,
+            objective=objective[:500],
+            workflow=(extra or {}).get("workflow"),
+            stage_id=(extra or {}).get("stage_id"),
+            iteration=(extra or {}).get("iteration"),
+            phase=(extra or {}).get("phase"),
+            provider=provider.describe(),
+        )
+        log_event(
+            self.paths,
+            "prompt_sent",
+            agent=agent.name,
+            prompt_chars=len(prompt),
+            prompt_path=f".clk/runs/{started.replace(':','-')}-{agent.name}/prompt.txt",
+        )
         if self.observer is not None:
             try:
                 self.observer.begin(agent.name, objective)
@@ -196,6 +225,20 @@ class AgentRunner:
             files_written=list(resp.files_written or []),
         )
         self._record(run, prompt, provider.describe())
+        log_event(
+            self.paths,
+            "agent_response",
+            agent=agent.name,
+            ok=run.response.ok,
+            error=run.response.error,
+            response_chars=len(run.response.text or ""),
+            response_path=f".clk/runs/{run.started_at.replace(':','-')}-{run.agent}/response.txt",
+            tokens_total=int((run.response.usage or {}).get("total_tokens") or 0),
+            tokens_in=int((run.response.usage or {}).get("input_tokens") or 0),
+            tokens_out=int((run.response.usage or {}).get("output_tokens") or 0),
+            usage_source=(run.response.usage or {}).get("source"),
+            files_reported=list(run.files_written or []),
+        )
         # Apply any PROPOSE_ROLE / PROPOSE_WORKFLOW blocks the agent
         # emitted. Mutates ``self.agents_cfg`` in place so the very next
         # stage that names a freshly-proposed role can dispatch to it.
@@ -323,6 +366,17 @@ class AgentRunner:
                 log(
                     f"commit: [{run.agent}] {len(result.files_written)} files, "
                     f"{len(result.files_deleted)} deletes"
+                )
+                log_event(
+                    self.paths,
+                    "git_commit",
+                    agent=run.agent,
+                    objective=run.objective[:200],
+                    sha=head_sha(self.paths.root),
+                    files_written=list(result.files_written),
+                    files_deleted=list(result.files_deleted),
+                    commands_run=list(result.commands_run),
+                    tokens_total=tok_total,
                 )
         except Exception as exc:
             log_exception("orchestration.agent._commit_action_batch", exc)
