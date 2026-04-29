@@ -62,8 +62,15 @@ from .orchestration import (
     AutoresearchLoop,
     Evaluator,
     RalphLoop,
+    RoleProposal,
     WorkflowRunner,
+    casting_objective,
+    is_baseline,
+    list_roles,
     load_workflow,
+    register_role,
+    remove_role,
+    render_roster_summary,
 )
 from .utils.logging_utils import log_exception
 
@@ -139,6 +146,34 @@ class _StreamToLog:
 # ---------------------------------------------------------------------------
 
 
+def _extract_thought(text: str) -> str:
+    """Pull a single 'thinking' line out of an agent's response.
+
+    Scans for common markers (Q:, Hypothesis:, Decision:, PROPOSE_ROLE:,
+    PROPOSE_WORKFLOW:, Risk:, Next:) and returns the first match. Used
+    as the rotating ``thought`` view in the agent cards.
+    """
+    if not text:
+        return ""
+    markers = (
+        "Q:",
+        "Question:",
+        "Hypothesis:",
+        "Decision:",
+        "Risk:",
+        "Risks:",
+        "Next:",
+        "PROPOSE_ROLE:",
+        "PROPOSE_WORKFLOW:",
+    )
+    for line in text.splitlines():
+        s = line.strip()
+        for m in markers:
+            if s.startswith(m):
+                return s[:240]
+    return ""
+
+
 class AgentStatus:
     IDLE = "idle"
     WORKING = "working"
@@ -156,6 +191,81 @@ class AgentCard:
     runs: int = 0
     last_started_mono: float = 0.0
     last_duration_s: float = 0.0
+    # Telemetry surfaced by the rotating in-card panes.
+    prompt_preview: str = ""
+    response_preview: str = ""
+    files_written: List[str] = field(default_factory=list)
+    last_thought: str = ""
+    provider: str = ""
+    role: str = ""
+    is_baseline: bool = False
+    roster_status: str = ""  # latest roster_changed status, e.g. "added"
+    # Token accounting (cumulative across all runs of this agent).
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    last_run_tokens: int = 0   # tokens in the most recent run only
+    last_usage_source: str = ""
+    total_files: int = 0  # cumulative file write count
+    # Live subprocess telemetry (set by streaming providers via the
+    # ``progress`` observer hook). ``live_pid`` is non-zero while the
+    # underlying CLI subprocess is alive; ``live_last_line`` is the
+    # most recent stderr/stdout line so the user can see real activity
+    # in the card and the log pane rather than a stalled spinner.
+    live_pid: int = 0
+    live_last_line: str = ""
+    live_stdout_chars: int = 0
+    live_stderr_chars: int = 0
+    live_last_update_mono: float = 0.0
+
+
+def _format_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.2f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.1f}k"
+    return str(n)
+
+
+def _word_wrap(text: str, width: int) -> List[str]:
+    """Wrap ``text`` to ``width`` columns, breaking on word boundaries.
+
+    Falls back to mid-word splits when a single token exceeds width
+    (e.g. a long URL). Empty input returns ``[""]`` so callers can rely
+    on at least one row.
+    """
+    if width <= 1:
+        return [text]
+    if not text:
+        return [""]
+    out: List[str] = []
+    for paragraph in text.splitlines() or [text]:
+        if not paragraph:
+            out.append("")
+            continue
+        words = paragraph.split(" ")
+        current = ""
+        for word in words:
+            if len(word) > width:
+                # Hard-break the giant token. Flush whatever we have first.
+                if current:
+                    out.append(current)
+                    current = ""
+                while len(word) > width:
+                    out.append(word[:width])
+                    word = word[width:]
+                current = word
+                continue
+            if not current:
+                current = word
+            elif len(current) + 1 + len(word) <= width:
+                current = f"{current} {word}"
+            else:
+                out.append(current)
+                current = word
+        if current:
+            out.append(current)
+    return out or [""]
 
 
 @dataclass
@@ -168,9 +278,19 @@ class LogLine:
 class DashboardState:
     """Thread-safe state shared between the UI thread and the worker."""
 
-    def __init__(self, agent_names: List[str]) -> None:
+    def __init__(self, agent_names: List[str], *, paths: Optional[Paths] = None,
+                 agents_cfg: Optional[Dict[str, Any]] = None) -> None:
         self.lock = threading.Lock()
-        self.agents: Dict[str, AgentCard] = {n: AgentCard(name=n) for n in agent_names}
+        self.paths = paths
+        self.agents: Dict[str, AgentCard] = {}
+        for n in agent_names:
+            cfg = ((agents_cfg or {}).get("agents") or {}).get(n) or {}
+            self.agents[n] = AgentCard(
+                name=n,
+                role=cfg.get("role", ""),
+                provider=cfg.get("provider") or "",
+                is_baseline=is_baseline(n),
+            )
         self.log: Deque[LogLine] = deque(maxlen=400)
         self.idea: str = ""
         self.project_name: str = ""
@@ -181,13 +301,77 @@ class DashboardState:
         self.conversation: List[Tuple[str, str]] = []
         self.stop_requested: bool = False
         self.iteration_count: int = 0
+        # Project-wide token + file totals (sum across all agents).
+        self.total_input_tokens: int = 0
+        self.total_output_tokens: int = 0
+        self.total_tokens: int = 0
+        self.total_files: int = 0
+        # Largest single-run token total observed across any agent.
+        # The activity meter normalizes against this so a heavy agent
+        # (engineer with 5k token responses) shows a long bar while a
+        # light one (chief with 200 tokens) shows a short one.
+        self.peak_run_tokens: int = 0
+        # Session log file (mirror of the in-pane status log so we
+        # have a persistent trace for later analysis).
+        self.session_log_fh = None
 
     # ----- mutators (locked) --------------------------------------------
 
     def add_log(self, text: str, level: str = "INFO") -> None:
+        # Multi-line writes (e.g. tracebacks routed through _StreamToLog
+        # if buffering races) become one entry per line so the log pane
+        # wraps each piece independently. Tabs and stray \r chars are
+        # also normalized so the word-wrapper sees clean spaces.
+        text = (text or "").replace("\r", "").replace("\t", "    ")
+        if "\n" in text:
+            for piece in text.split("\n"):
+                if piece.strip():
+                    self.add_log(piece, level=level)
+            return
         line = LogLine(ts=datetime.now().strftime("%H:%M:%S"), level=level, text=text)
         with self.lock:
             self.log.append(line)
+            fh = self.session_log_fh
+        if fh is not None:
+            try:
+                fh.write(f"{datetime.now().isoformat(timespec='seconds')} [{level}] {text}\n")
+                fh.flush()
+            except Exception:
+                # Never let a log write blow up the TUI.
+                pass
+
+    def attach_session_log(self, path: Path) -> None:
+        """Open ``path`` in append mode and mirror every log line to it.
+
+        Called once during TUI startup. The file persists across the
+        run so a `.clk/logs/session.log` accumulates the project's full
+        history of TUI events for later analysis (alongside
+        casting.log, agent_memory.jsonl, and the git log).
+        """
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fh = path.open("a", encoding="utf-8")
+            with self.lock:
+                self.session_log_fh = fh
+            fh.write(
+                f"\n=== session start {datetime.now().isoformat(timespec='seconds')} ===\n"
+            )
+            fh.flush()
+        except Exception:
+            pass
+
+    def close_session_log(self) -> None:
+        with self.lock:
+            fh = self.session_log_fh
+            self.session_log_fh = None
+        if fh is not None:
+            try:
+                fh.write(
+                    f"=== session end {datetime.now().isoformat(timespec='seconds')} ===\n"
+                )
+                fh.close()
+            except Exception:
+                pass
 
     def begin_agent(self, name: str, objective: str) -> None:
         with self.lock:
@@ -195,22 +379,148 @@ class DashboardState:
             card.status = AgentStatus.WORKING
             card.current_task = objective
             card.last_started_mono = time.monotonic()
+            # Reset transient telemetry from the previous run.
+            card.prompt_preview = ""
+            card.response_preview = ""
+            card.files_written = []
+            card.last_thought = ""
+            card.live_pid = 0
+            card.live_last_line = ""
+            card.live_stdout_chars = 0
+            card.live_stderr_chars = 0
+            card.live_last_update_mono = time.monotonic()
         self.add_log(f"{name} :: start :: {objective[:80]}", level="INFO")
 
-    def end_agent(self, name: str, ok: bool, preview: str = "", error: str = "") -> None:
+    def report_progress(self, name: str, kind: str, message: str) -> None:
+        """Capture streaming progress from a provider's subprocess.
+
+        Updates the card's live_* fields and (selectively) emits log
+        entries so the user can see what the underlying CLI is doing
+        in real time. We log every stderr line (these are usually
+        status / auth / error messages from claude/codex/gemini), the
+        first 5 stdout lines (so very long responses don't flood the
+        pane), and the start / end / timeout events.
+        """
+        message = (message or "").rstrip()
+        with self.lock:
+            card = self.agents.setdefault(name, AgentCard(name=name))
+            now = time.monotonic()
+            card.live_last_update_mono = now
+            if kind == "start":
+                # parse "pid=NNNN cmd=..." into the live fields
+                pid = 0
+                for tok in message.split():
+                    if tok.startswith("pid="):
+                        try:
+                            pid = int(tok.split("=", 1)[1])
+                        except Exception:
+                            pid = 0
+                        break
+                card.live_pid = pid
+                card.live_last_line = "starting..."
+            elif kind in ("stdout_line", "stderr_line"):
+                card.live_last_line = message[:200]
+                if kind == "stdout_line":
+                    card.live_stdout_chars += len(message) + 1
+                else:
+                    card.live_stderr_chars += len(message) + 1
+            elif kind in ("end", "timeout"):
+                card.live_pid = 0
+                card.live_last_line = f"{kind}: {message}"[:200]
+        # Emit log entries for the high-signal events so the user sees
+        # what's happening even when not looking at a card.
+        if kind == "start":
+            self.add_log(f"{name} :: subprocess {message}", level="SYSTEM")
+        elif kind == "stderr_line" and message:
+            self.add_log(f"{name} stderr: {message[:200]}", level="INFO")
+        elif kind == "stdout_line":
+            with self.lock:
+                cnt = self.agents[name].live_stdout_chars
+            # Only log the first few stdout lines per run so very long
+            # model responses don't flood the pane.
+            if cnt < 1024:
+                self.add_log(f"{name} stdout: {message[:200]}", level="INFO")
+        elif kind == "timeout":
+            self.add_log(f"{name} :: TIMEOUT :: {message}", level="ERROR")
+        elif kind == "end":
+            self.add_log(f"{name} :: subprocess {message}", level="SYSTEM")
+
+    def set_agent_prompt(self, name: str, prompt: str) -> None:
+        # Keep a short head-of-prompt; the full prompt is on disk under
+        # .clk/runs/. We only need a glanceable preview here.
+        snippet = (prompt or "").strip()
+        if not snippet:
+            return
+        # Strip the boilerplate header lines so the preview shows the
+        # role-specific objective, not the same operating constraints
+        # for every card.
+        candidates = [l for l in snippet.splitlines() if l.strip()]
+        head = " ".join(candidates[:6])
+        with self.lock:
+            card = self.agents.setdefault(name, AgentCard(name=name))
+            card.prompt_preview = head[:240]
+
+    def end_agent(
+        self,
+        name: str,
+        ok: bool,
+        preview: str = "",
+        error: str = "",
+        files_written: Optional[List[str]] = None,
+        usage: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        files_written = list(files_written or [])
+        usage = dict(usage or {})
         with self.lock:
             card = self.agents.setdefault(name, AgentCard(name=name))
             card.status = AgentStatus.DONE if ok else AgentStatus.FAILED
             card.current_task = ""
-            card.last_result = (preview or "").strip().replace("\n", " ")[:120]
-            card.last_error = error[:120]
+            card.last_result = (preview or "").strip().replace("\n", " ")[:240]
+            card.last_error = error[:240]
+            card.response_preview = (preview or "").strip()[:400]
+            card.files_written = files_written
+            card.last_thought = _extract_thought(preview)
             card.runs += 1
+            card.total_files += len(files_written)
             if card.last_started_mono:
                 card.last_duration_s = time.monotonic() - card.last_started_mono
+            in_tok = int(usage.get("input_tokens") or 0)
+            out_tok = int(usage.get("output_tokens") or 0)
+            tot_tok = int(usage.get("total_tokens") or (in_tok + out_tok))
+            card.input_tokens += in_tok
+            card.output_tokens += out_tok
+            card.total_tokens += tot_tok
+            card.last_run_tokens = tot_tok
+            card.last_usage_source = str(usage.get("source") or card.last_usage_source)
+            self.total_input_tokens += in_tok
+            self.total_output_tokens += out_tok
+            self.total_tokens += tot_tok
+            self.total_files += len(files_written)
+            if tot_tok > self.peak_run_tokens:
+                self.peak_run_tokens = tot_tok
         self.add_log(
-            f"{name} :: {'ok' if ok else 'fail'} :: {(preview or '').strip().splitlines()[0][:80] if preview else ''}",
+            f"{name} :: {'ok' if ok else 'fail'} :: "
+            f"tok={_format_tokens(int(usage.get('total_tokens') or 0))} "
+            f"files={len(files_written)} :: "
+            f"{(preview or '').strip().splitlines()[0][:60] if preview else ''}",
             level="INFO" if ok else "WARN",
         )
+        # File-action log lines: one INFO entry per file so the user
+        # sees creation activity as it happens.
+        for fpath in files_written:
+            self.add_log(f"{name} :: wrote {fpath}", level="SYSTEM")
+
+    def upsert_agent(self, name: str, *, role: str = "", baseline: bool = False, status: str = "added") -> None:
+        with self.lock:
+            card = self.agents.setdefault(name, AgentCard(name=name))
+            if role:
+                card.role = role
+            card.is_baseline = baseline
+            card.roster_status = status
+
+    def drop_agent(self, name: str) -> None:
+        with self.lock:
+            self.agents.pop(name, None)
 
     def set_phase(self, phase: str, busy: Optional[bool] = None) -> None:
         with self.lock:
@@ -266,20 +576,52 @@ class DashboardState:
 
 
 class DashboardObserver(AgentObserver):
-    def __init__(self, state: DashboardState) -> None:
+    def __init__(self, state: "DashboardState") -> None:
         self.state = state
 
     def begin(self, agent: str, objective: str) -> None:
         self.state.begin_agent(agent, objective)
 
+    def prompt_sent(self, agent: str, prompt: str) -> None:
+        self.state.set_agent_prompt(agent, prompt)
+
     def end(self, agent: str, run) -> None:  # type: ignore[override]
         ok = bool(run.response.ok)
         preview = run.response.text or ""
         err = run.response.error or ""
-        self.state.end_agent(agent, ok=ok, preview=preview, error=err)
+        self.state.end_agent(
+            agent,
+            ok=ok,
+            preview=preview,
+            error=err,
+            files_written=list(run.files_written or []),
+            usage=dict(run.response.usage or {}),
+        )
+
+    def progress(self, agent: str, kind: str, message: str) -> None:
+        self.state.report_progress(agent, kind, message)
 
     def log(self, line: str) -> None:
         self.state.add_log(line)
+
+    def roster_changed(self, name: str, status: str) -> None:
+        # Refresh the card from the (just-mutated) agents config so the
+        # role / baseline / provider fields stay accurate.
+        try:
+            agents = (load_agents_config(self.state.paths).get("agents") or {}) if hasattr(self.state, "paths") else {}
+            cfg = agents.get(name) or {}
+        except Exception:
+            cfg = {}
+        if status == "removed":
+            self.state.drop_agent(name)
+        else:
+            self.state.upsert_agent(
+                name,
+                role=cfg.get("role", ""),
+                baseline=is_baseline(name),
+                status=status,
+            )
+        self.state.add_log(f"roster :: {name} :: {status}", level="SYSTEM")
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +685,8 @@ class Worker(threading.Thread):
             return
         if job.kind == "idea":
             self._do_idea(job.payload or "")
+        elif job.kind == "cast":
+            self._do_cast()
         elif job.kind == "run":
             self._do_workflow(job.payload or "engineering")
         elif job.kind == "loop":
@@ -357,6 +701,13 @@ class Worker(threading.Thread):
             self._do_set_provider(job.payload or "shell")
         elif job.kind == "status":
             self._emit_status()
+        elif job.kind == "roles":
+            self._do_roles(job.payload or {})
+        elif job.kind == "abort":
+            # /abort runs in the curses thread (not the worker) because
+            # the worker is blocked on the very subprocess we're killing.
+            # No-op here; see TuiApp._do_abort.
+            pass
 
     # --- handlers --------------------------------------------------------
 
@@ -388,6 +739,62 @@ class Worker(threading.Thread):
             self.state.add_log(f"idea save failed: {exc}", level="ERROR")
         finally:
             self.state.set_phase("idle", busy=False)
+
+    def _do_cast(self) -> None:
+        idea_path = self.paths.state / "idea.json"
+        if not idea_path.exists():
+            self.state.add_log("cast skipped: no idea captured yet", level="WARN")
+            return
+        try:
+            payload = json.loads(idea_path.read_text(encoding="utf-8"))
+            title = payload.get("title") or "Untitled idea"
+            statement = payload.get("statement") or ""
+        except Exception as exc:
+            log_exception("tui.Worker._do_cast.read_idea", exc)
+            return
+        self.state.set_phase("casting", busy=True)
+        try:
+            objective = casting_objective(title, statement)
+            self.runner.run("chief", objective, extra={"phase": "casting"})
+            self.state.add_system_message(
+                "casting :: " + render_roster_summary(self.paths).replace("\n", " | ")[:240]
+            )
+        except Exception as exc:
+            log_exception("tui.Worker._do_cast", exc)
+            self.state.add_log(f"casting failed: {exc}", level="ERROR")
+        finally:
+            self.state.set_phase("idle", busy=False)
+
+    def _do_roles(self, payload: Dict[str, Any]) -> None:
+        action = payload.get("action") or "list"
+        if action == "list":
+            summary = render_roster_summary(self.paths)
+            for line in summary.splitlines():
+                self.state.add_log(line, level="SYSTEM")
+            return
+        name = payload.get("name") or ""
+        if action == "add":
+            prop = RoleProposal(name=name, role=payload.get("role", ""), provider=payload.get("provider"))
+            ok, status = register_role(
+                self.paths,
+                prop,
+                agents_cfg=self.runner.agents_cfg,
+                on_change=lambda n, s: self.state.upsert_agent(
+                    n, role=prop.role, baseline=is_baseline(n), status=s
+                ),
+            )
+            self.state.add_log(f"roles add {name}: {status}", level="SYSTEM" if ok else "WARN")
+            return
+        if action == "remove":
+            ok, status = remove_role(
+                self.paths,
+                name,
+                agents_cfg=self.runner.agents_cfg,
+                on_change=lambda n, s: self.state.drop_agent(n) if s == "removed" else None,
+            )
+            self.state.add_log(f"roles remove {name}: {status}", level="SYSTEM" if ok else "WARN")
+            return
+        self.state.add_log(f"unknown roles action: {action}", level="WARN")
 
     def _do_workflow(self, name: str) -> None:
         wf_path = self.paths.workflows / f"{name}.yaml"
@@ -506,6 +913,15 @@ class TuiApp:
         self._spinner = "|/-\\"
         self._spinner_idx = 0
         self._last_render = 0.0
+        # Heartbeat: when an agent has been WORKING for a while we emit
+        # "still working: Ns" log lines so the user knows the process
+        # is alive (vs. genuinely stuck). Per-agent so one slow chief
+        # doesn't flood the pane.
+        self._heartbeat_last: Dict[str, float] = {}
+        # Heartbeat cadence. Longer than the original 8s/8s so a normal
+        # 30-60s model call doesn't drown the log in "still working" lines.
+        self.HEARTBEAT_FIRST_S = 15.0   # first heartbeat after this much silence
+        self.HEARTBEAT_REPEAT_S = 15.0  # then every N seconds while still working
 
     # --- entrypoint ------------------------------------------------------
 
@@ -523,7 +939,10 @@ class TuiApp:
         stdscr.timeout(80)
         self._init_colors()
         self.state.add_system_message(
-            "TUI ready. Type your idea or follow-up; /quit to exit, /run, /loop ralph 5, /stop, /provider claude."
+            "TUI ready. Type your idea (engineering auto-runs with chief casting "
+            "as stage 1). Commands: /cast, /roles list|add|drop, /run, /loop ralph 5, "
+            "/stop, /abort (kill stuck subprocess), /provider claude|codex|gemini|"
+            "ollama|openwebui|shell|pi, /status, /quit."
         )
         while True:
             try:
@@ -531,6 +950,7 @@ class TuiApp:
                 ch = stdscr.getch()
                 if ch == -1:
                     self._spinner_idx = (self._spinner_idx + 1) % len(self._spinner)
+                    self._tick_heartbeat()
                     continue
                 if not self._handle_key(ch):
                     break
@@ -564,20 +984,123 @@ class TuiApp:
 
     # --- rendering -------------------------------------------------------
 
+    INPUT_MAX_ROWS = 5  # cap on how tall the input area can grow
+
     def _render(self, stdscr: "curses._CursesWindow") -> None:
         h, w = stdscr.getmaxyx()
-        if h < 12 or w < 60:
+        if h < 13 or w < 60:
             stdscr.erase()
-            self._safe_addstr(stdscr, 0, 0, "Terminal too small. Resize to at least 60x12.", w)
+            self._safe_addstr(stdscr, 0, 0, "Terminal too small. Resize to at least 60x13.", w)
             stdscr.refresh()
             return
         stdscr.erase()
         self._draw_title(stdscr, w)
         grid_bottom = self._draw_agent_grid(stdscr, top=1, height=h, width=w)
         idea_bottom = self._draw_idea(stdscr, top=grid_bottom + 1, width=w)
-        log_bottom = self._draw_log(stdscr, top=idea_bottom + 1, height=h - idea_bottom - 4, width=w)
-        self._draw_input(stdscr, top=h - 2, width=w)
+        # Compute how many rows the input field needs right now.
+        with self.state.lock:
+            buf = self.state.input_buffer
+        input_rows = self._input_row_count(buf, w)
+        # Layout from the bottom up:
+        #   y=h-input_rows..h-1                 input field rows (1..N)
+        #   y=h-input_rows-1                    input frame ("---")
+        #   y=h-input_rows-2                    global token totals
+        #   y=idea_bottom+1..h-input_rows-3     log pane
+        log_height = max(3, h - idea_bottom - input_rows - 3)
+        self._draw_log(stdscr, top=idea_bottom + 1, height=log_height, width=w)
+        self._draw_totals(stdscr, top=h - input_rows - 2, width=w)
+        self._draw_input(stdscr, top=h - input_rows - 1, width=w, rows=input_rows)
         stdscr.refresh()
+
+    def _tick_heartbeat(self) -> None:
+        """Emit a 'still working' note for any agent that's been WORKING
+        long enough that the user might think the harness is stuck.
+
+        The heartbeat now reports whether the underlying subprocess is
+        making progress: if stdout/stderr have been streaming (the
+        ``live_*`` fields are advancing), we say "active"; if they've
+        been silent for a long time we say "silent" and include the
+        last line we did see, so the user can tell "this is just slow"
+        vs "this is genuinely stuck".
+        """
+        now = time.monotonic()
+        with self.state.lock:
+            working = [
+                (
+                    name,
+                    card.last_started_mono,
+                    card.live_pid,
+                    card.live_stdout_chars + card.live_stderr_chars,
+                    card.live_last_update_mono,
+                    card.live_last_line,
+                )
+                for name, card in self.state.agents.items()
+                if card.status == AgentStatus.WORKING
+            ]
+        for name, started, pid, total_bytes, last_io, last_line in working:
+            elapsed = max(0.0, now - started)
+            last = self._heartbeat_last.get(name, started)
+            interval = self.HEARTBEAT_FIRST_S if last == started else self.HEARTBEAT_REPEAT_S
+            if elapsed >= self.HEARTBEAT_FIRST_S and (now - last) >= interval:
+                self._heartbeat_last[name] = now
+                silence_s = max(0.0, now - last_io)
+                if pid:
+                    if total_bytes == 0:
+                        # Subprocess alive but hasn't produced any output
+                        # yet. Most CLIs (claude, codex, gemini) buffer
+                        # stdout when piped and emit it all at once after
+                        # the model responds, so this is the EXPECTED
+                        # state for a slow model call. Word it that way
+                        # so the user doesn't think it's broken.
+                        if elapsed < 60:
+                            flavor = f"awaiting model response (no output yet, {elapsed:.0f}s)"
+                        elif elapsed < 120:
+                            flavor = (
+                                f"still no output after {elapsed:.0f}s "
+                                f"(slow model call or stuck; type /abort to cancel)"
+                            )
+                        else:
+                            flavor = (
+                                f"NO OUTPUT FOR {elapsed:.0f}s -- likely stuck; "
+                                "type /abort to kill it and try again"
+                            )
+                    elif silence_s > 5.0:
+                        flavor = (
+                            f"streaming idle {silence_s:.0f}s "
+                            f"(received {total_bytes}b so far, last='{(last_line or '-')[:60]}')"
+                        )
+                    else:
+                        flavor = f"streaming ({total_bytes}b received)"
+                    note = f"pid={pid} :: {flavor}"
+                else:
+                    # No PID == no subprocess (in-process providers like
+                    # ollama/openwebui) or the subprocess hasn't started
+                    # yet. Either way, be explicit.
+                    note = "no subprocess yet (provider initializing)"
+                self.state.add_log(
+                    f"{name} :: working {elapsed:.0f}s :: {note}",
+                    level="INFO" if total_bytes > 0 or elapsed < 120 else "WARN",
+                )
+        # Forget heartbeats for agents that have finished, so the next
+        # WORKING period starts fresh.
+        with self.state.lock:
+            still_working = {n for n, c in self.state.agents.items() if c.status == AgentStatus.WORKING}
+        for name in list(self._heartbeat_last.keys()):
+            if name not in still_working:
+                self._heartbeat_last.pop(name, None)
+
+    def _input_row_count(self, buf: str, width: int) -> int:
+        """Number of rows the input field needs to show ``buf`` in full.
+
+        Uses character wrap (not word wrap) at ``width - 1`` so cursor
+        positioning is straightforward. Capped at INPUT_MAX_ROWS; past
+        that the buffer scrolls (last N rows visible).
+        """
+        prompt_len = 2  # "> "
+        total = prompt_len + len(buf)
+        eff = max(1, width - 1)
+        rows = max(1, (total + eff - 1) // eff)
+        return min(self.INPUT_MAX_ROWS, rows)
 
     def _draw_title(self, stdscr, width: int) -> None:
         s = self.state
@@ -587,8 +1110,17 @@ class TuiApp:
             phase = s.phase
             busy = s.busy
             iteration = s.iteration_count
+            tot = s.total_tokens
+            tot_in = s.total_input_tokens
+            tot_out = s.total_output_tokens
+            files = s.total_files
         spin = self._spinner[self._spinner_idx] if busy else " "
-        title = f" CLK :: {project} :: provider={provider} :: phase={phase} {spin} iter={iteration} "
+        title = (
+            f" CLK :: {project} :: provider={provider} :: phase={phase} {spin} "
+            f"iter={iteration} :: tok={_format_tokens(tot)} "
+            f"(in={_format_tokens(tot_in)}/out={_format_tokens(tot_out)}) :: "
+            f"files={files} "
+        )
         self._fill(stdscr, 0, 0, width, " ", curses.color_pair(self.COLOR_TITLE) | curses.A_BOLD)
         self._safe_addstr(
             stdscr, 0, 0, title.ljust(width - 1)[: width - 1], width,
@@ -597,14 +1129,26 @@ class TuiApp:
 
     def _draw_agent_grid(self, stdscr, *, top: int, height: int, width: int) -> int:
         with self.state.lock:
-            names = sorted(self.state.agents.keys())
+            # Sort: baseline first (chief leading), then alphabetical
+            # dynamics. Keeps the visual anchor stable as roles come and go.
+            def _sort_key(name: str) -> tuple:
+                card = self.state.agents[name]
+                base = 0 if card.is_baseline else 1
+                # chief always first among baseline
+                pri = 0 if name == "chief" else 1
+                return (base, pri, name)
+
+            names = sorted(self.state.agents.keys(), key=_sort_key)
             cards = [self.state.agents[n] for n in names]
         if not cards:
             return top
         cols = 4 if width >= 84 else (3 if width >= 64 else 2)
         rows = (len(cards) + cols - 1) // cols
         max_grid_height = max(1, height - 12)
-        card_h = 4
+        # Prefer 6 (room for two rotating telemetry rows), shrink as
+        # vertical real estate runs out.
+        preferred = 6
+        card_h = preferred
         if rows * card_h > max_grid_height:
             card_h = max(3, max_grid_height // rows)
         card_w = (width - 1) // cols
@@ -615,6 +1159,64 @@ class TuiApp:
             x = c * card_w
             self._draw_card(stdscr, y, x, card_h, card_w, card)
         return top + rows * card_h
+
+    # Rotating telemetry views. Each view returns up to two
+    # ``(label, value)`` pairs which fill the available rows below the
+    # bar. Cycle period is 2.5s.
+    _TELEMETRY_PERIOD_S = 2.5
+
+    def _telemetry_views(self, card: AgentCard) -> List[List[Tuple[str, str]]]:
+        prov = card.provider or "(default)"
+        baseline = "baseline" if card.is_baseline else "dynamic"
+        files_line = ", ".join(card.files_written[:4]) or "-"
+        if len(card.files_written) > 4:
+            files_line += f" (+{len(card.files_written)-4})"
+        # View 1: live work
+        live = [
+            ("task", card.current_task or "-"),
+            ("rsp", card.last_result or card.last_error or "-"),
+        ]
+        # View 2: I/O
+        io = [
+            ("prompt", card.prompt_preview or "-"),
+            ("files", f"{files_line} (total {card.total_files})"),
+        ]
+        # View 3: thinking + meta (incl. tokens)
+        tok_str = (
+            f"tok={_format_tokens(card.total_tokens)}"
+            f" (in={_format_tokens(card.input_tokens)}"
+            f"/out={_format_tokens(card.output_tokens)})"
+        )
+        if card.last_usage_source:
+            tok_str += f"[{card.last_usage_source}]"
+        meta_line = f"{baseline} | runs={card.runs} | dur={card.last_duration_s:.1f}s | prov={prov}"
+        thinking = [
+            ("think", card.last_thought or card.role or "-"),
+            ("meta", meta_line),
+        ]
+        # View 4: token usage details
+        tokens = [
+            ("tokens", tok_str),
+            ("source", f"last={card.last_usage_source or '-'}"),
+        ]
+        # View 5: live subprocess telemetry. Useful when WORKING - the
+        # user can see PID + bytes flowing + the most recent stderr/
+        # stdout line, so they know the underlying CLI is alive vs.
+        # genuinely stuck.
+        live_label = (
+            f"pid={card.live_pid}" if card.live_pid
+            else ("idle" if card.status != AgentStatus.WORKING else "no_pid")
+        )
+        live_meta = (
+            f"out={card.live_stdout_chars}b "
+            f"err={card.live_stderr_chars}b "
+            f"{live_label}"
+        )
+        subprocess_view = [
+            ("live", card.live_last_line or "-"),
+            ("io", live_meta),
+        ]
+        return [live, io, thinking, tokens, subprocess_view]
 
     def _draw_card(self, stdscr, y: int, x: int, h: int, w: int, card: AgentCard) -> None:
         col = {
@@ -635,37 +1237,118 @@ class TuiApp:
         except Exception:
             pass
         inner_w = max(1, w - 4)
-        # Header line: name + status badge
-        name_str = card.name[:inner_w]
+        # Header line: name (with baseline marker) + status badge
+        name_label = ("*" if card.is_baseline else " ") + card.name
+        name_str = name_label[:inner_w]
         self._safe_addstr(stdscr, y + 1, x + 2, name_str, inner_w, attr | curses.A_BOLD)
         badge = f"[{card.status:<7}] r={card.runs:<3}"
         if len(name_str) + 1 + len(badge) <= inner_w:
             self._safe_addstr(stdscr, y + 1, x + w - 2 - len(badge), badge, inner_w, attr)
-        # Bar (simple utilization meter from runs % 8)
+        # Activity meter.
+        # WORKING: a 3-cell ping-pong cursor sweeping the bar; speed
+        #          accelerates as the run goes long, so a stuck call
+        #          looks visibly more frantic than a fresh one.
+        # IDLE/DONE/FAILED: bar is filled proportional to this agent's
+        #          most recent run's token count divided by the global
+        #          peak run, so visual bar length = relative work.
         bar_len = max(0, inner_w - 2)
         if bar_len > 0:
-            filled = (card.runs % bar_len) if card.status != AgentStatus.WORKING else (
-                int((time.monotonic() * 4) % bar_len)
-            )
-            bar = "#" * filled + "." * (bar_len - filled)
+            with self.state.lock:
+                peak = self.state.peak_run_tokens
+            if card.status == AgentStatus.WORKING:
+                elapsed = max(0.0, time.monotonic() - card.last_started_mono)
+                # 4 cells/sec baseline; +1/sec for each 5s elapsed so
+                # the eye knows when something is taking unusually long.
+                speed = 4.0 + (elapsed / 5.0)
+                cursor_w = 3
+                travel = max(1, bar_len - cursor_w)
+                step = int(elapsed * speed) % (travel * 2)
+                pos = step if step < travel else (travel * 2 - step)
+                bar_chars = ["."] * bar_len
+                for k in range(cursor_w):
+                    if 0 <= pos + k < bar_len:
+                        bar_chars[pos + k] = "="
+                bar = "".join(bar_chars)
+            else:
+                if peak > 0 and card.last_run_tokens > 0:
+                    ratio = min(1.0, card.last_run_tokens / float(peak))
+                else:
+                    ratio = 0.0
+                filled = int(round(bar_len * ratio))
+                bar = "#" * filled + "." * (bar_len - filled)
             self._safe_addstr(stdscr, y + 2, x + 2, bar, inner_w, attr)
-        # Task / last result
-        if h >= 4:
-            line = card.current_task or card.last_result or card.last_error or "-"
-            self._safe_addstr(stdscr, y + 3, x + 2, line[:inner_w], inner_w, attr)
+
+        # Card body rows below the bar:
+        #   h=4 -> 1 row (overlaps bottom border, kept for tiny terms)
+        #   h=5 -> 1 row of telemetry
+        #   h>=6 -> 1 always-on "live" row + 1 rotating row
+        # The always-on live row is critical when the user is staring at
+        # a long agent call: it keeps the elapsed-time + last subprocess
+        # line on screen continuously, instead of cycling away every
+        # 2.5s with the rest of the rotating views.
+        if h <= 4:
+            avail_rows = 1
+            row_origin = y + 3
+        elif h == 5:
+            avail_rows = 1
+            row_origin = y + 3
+        else:
+            avail_rows = 2
+            row_origin = y + 3
+
+        dim = curses.A_DIM | curses.color_pair(self.COLOR_LOG_INFO)
+
+        if card.status == AgentStatus.WORKING and avail_rows >= 2:
+            # Top row: live elapsed + last subprocess line, always shown
+            # while WORKING so the user can see motion at a glance.
+            elapsed = max(0.0, time.monotonic() - card.last_started_mono)
+            live_head = (
+                f"{elapsed:5.1f}s "
+                + (f"pid={card.live_pid} " if card.live_pid else "        ")
+                + (card.live_last_line or "awaiting...").strip()
+            )
+            self._safe_addstr(stdscr, row_origin, x + 2, live_head[:inner_w], inner_w, attr)
+            # Bottom row: rotating telemetry as before.
+            views = self._telemetry_views(card)
+            tick = int(time.monotonic() / self._TELEMETRY_PERIOD_S) % len(views)
+            view = views[tick]
+            if view:
+                label, value = view[0]
+                text = f"{label}: {value}"
+                self._safe_addstr(stdscr, row_origin + 1, x + 2, text[:inner_w], inner_w, dim)
+            return
+
+        views = self._telemetry_views(card)
+        tick = int(time.monotonic() / self._TELEMETRY_PERIOD_S) % len(views)
+        view = views[tick]
+        view = view[:avail_rows]
+        for i, (label, value) in enumerate(view):
+            if i == 0 and avail_rows == 1:
+                line = (card.current_task or card.last_result or card.last_error or "-")
+                self._safe_addstr(stdscr, row_origin + i, x + 2, line[:inner_w], inner_w, attr)
+                continue
+            text = f"{label}: {value}"
+            self._safe_addstr(stdscr, row_origin + i, x + 2, text[:inner_w], inner_w, dim)
 
     def _draw_idea(self, stdscr, *, top: int, width: int) -> int:
         with self.state.lock:
             idea = self.state.idea
             convo_tail = self.state.conversation[-1:] if self.state.conversation else []
+        # Wrap both lines so the user sees the full content rather than
+        # a truncated head. Cap each block at 3 visual rows so the agent
+        # grid below has room to breathe.
         line = "idea: " + (idea or "(no idea yet - type one below)")
-        self._safe_addstr(stdscr, top, 0, line[: width - 1], width, curses.A_BOLD)
+        idea_rows = _word_wrap(line, max(20, width - 1))[:3]
+        for i, row in enumerate(idea_rows):
+            self._safe_addstr(stdscr, top + i, 0, row, width, curses.A_BOLD)
+        cursor = top + len(idea_rows) - 1
         if convo_tail:
             role, text = convo_tail[-1]
-            tail = f"last [{role}]: {text}"[: width - 1]
-            self._safe_addstr(stdscr, top + 1, 0, tail, width)
-            return top + 1
-        return top
+            tail_rows = _word_wrap(f"last [{role}]: {text}", max(20, width - 1))[:3]
+            for i, row in enumerate(tail_rows):
+                self._safe_addstr(stdscr, cursor + 1 + i, 0, row, width)
+            cursor += len(tail_rows)
+        return cursor
 
     def _draw_log(self, stdscr, *, top: int, height: int, width: int) -> int:
         height = max(3, height)
@@ -685,31 +1368,71 @@ class TuiApp:
         if not lines:
             self._safe_addstr(stdscr, body_top, 1, "(no events yet)", width)
             return body_top + body_height - 1
-        # Apply scroll offset
-        offset = max(0, min(self.scroll_offset, max(0, len(lines) - body_height)))
-        end = len(lines) - offset
-        start = max(0, end - body_height)
-        slice_ = lines[start:end]
-        for i, line in enumerate(slice_):
+        # Word-wrap each log entry. The first wrapped row carries the
+        # full ``HH:MM:SS [LEVEL] ...`` prefix; continuation rows are
+        # indented so the eye can group them with their parent entry.
+        inner_w = max(10, width - 2)
+        cont_indent = "           " + " " * 7  # ts(8) + space + [LEVEL ](7) area
+        flat: List[Tuple[int, str]] = []  # (level_attr, text)
+        for line in lines:
             attr = self._log_attr(line.level)
-            text = f"{line.ts} [{line.level:<5}] {line.text}"
-            self._safe_addstr(stdscr, body_top + i, 1, text[: width - 2], width, attr)
+            head = f"{line.ts} [{line.level:<5}] {line.text}"
+            wrapped = _word_wrap(head, inner_w)
+            for k, row in enumerate(wrapped):
+                flat.append((attr, row if k == 0 else cont_indent + row.lstrip()))
+        # Scroll offset is in *visual* rows now, not log entries.
+        total = len(flat)
+        offset = max(0, min(self.scroll_offset, max(0, total - body_height)))
+        end = total - offset
+        start = max(0, end - body_height)
+        slice_ = flat[start:end]
+        for i, (attr, text) in enumerate(slice_):
+            self._safe_addstr(stdscr, body_top + i, 1, text[:inner_w], width, attr)
         return body_top + body_height - 1
 
-    def _draw_input(self, stdscr, *, top: int, width: int) -> None:
+    def _draw_totals(self, stdscr, *, top: int, width: int) -> None:
+        with self.state.lock:
+            tot = self.state.total_tokens
+            tin = self.state.total_input_tokens
+            tout = self.state.total_output_tokens
+            files = self.state.total_files
+            agents = len(self.state.agents)
+        peak = self.state.peak_run_tokens
+        line = (
+            f" totals :: agents={agents} :: tokens={_format_tokens(tot)} "
+            f"(in={_format_tokens(tin)} / out={_format_tokens(tout)}) "
+            f":: peak_run={_format_tokens(peak)} :: files={files} "
+        )
+        attr = curses.color_pair(self.COLOR_LOG_SYS) | curses.A_BOLD
+        # Pad to width so the line reads as a band rather than a phrase.
+        self._safe_addstr(stdscr, top, 0, line.ljust(width - 1)[: width - 1], width, attr)
+
+    def _draw_input(self, stdscr, *, top: int, width: int, rows: int = 1) -> None:
+        # Frame line above the input rows.
         self._safe_addstr(
             stdscr, top, 0, "-" * (width - 1), width, curses.color_pair(self.COLOR_FRAME)
         )
         with self.state.lock:
             buf = self.state.input_buffer
         prompt = "> "
-        text = (prompt + buf)[: width - 1]
-        self._safe_addstr(
-            stdscr, top + 1, 0, text, width, curses.color_pair(self.COLOR_PROMPT) | curses.A_BOLD
-        )
+        full = prompt + buf
+        eff = max(1, width - 1)
+        # Character-wrap so cursor math is exact even when the user
+        # types continuous strings (URLs, paste).
+        chunks = [full[i:i + eff] for i in range(0, max(eff, len(full)), eff)] or [""]
+        # If the buffer needs more rows than we have, show the LAST
+        # ``rows`` chunks so the cursor stays visible.
+        if len(chunks) > rows:
+            chunks = chunks[-rows:]
+        attr = curses.color_pair(self.COLOR_PROMPT) | curses.A_BOLD
+        base_y = top + 1
+        for i, line in enumerate(chunks):
+            self._safe_addstr(stdscr, base_y + i, 0, line, width, attr)
+        # Cursor goes after the last visible character.
         try:
-            cursor_x = min(len(prompt) + len(buf), width - 2)
-            stdscr.move(top + 1, cursor_x)
+            cursor_x = min(len(chunks[-1]), width - 2)
+            cursor_y = base_y + len(chunks) - 1
+            stdscr.move(cursor_y, cursor_x)
         except Exception:
             pass
 
@@ -786,10 +1509,38 @@ class TuiApp:
             if cmd == "status":
                 self.worker.submit(Job("status"))
                 return True
+            if cmd == "cast":
+                self.worker.submit(Job("cast"))
+                return True
+            if cmd == "abort":
+                self._do_abort()
+                return True
+            if cmd == "roles":
+                if not args:
+                    self.worker.submit(Job("roles", {"action": "list"}))
+                    return True
+                sub = args[0].lower()
+                if sub == "list":
+                    self.worker.submit(Job("roles", {"action": "list"}))
+                elif sub in ("add", "drop", "remove"):
+                    name = args[1] if len(args) > 1 else ""
+                    role_text = " ".join(args[2:]).strip().strip('"') if len(args) > 2 else ""
+                    op = "add" if sub == "add" else "remove"
+                    self.worker.submit(Job("roles", {"action": op, "name": name, "role": role_text}))
+                else:
+                    self.state.add_log(f"unknown roles op: {sub}", level="WARN")
+                return True
             self.state.add_log(f"unknown command: /{cmd}", level="WARN")
             return True
         # Free-text: first message becomes the idea; subsequent ones are
         # appended to the conversation file and trigger another run.
+        # The engineering workflow's first stage IS chief casting (the
+        # chief decomposes + casts the team + authors the workflow YAML
+        # all in one call), so we deliberately do NOT submit a separate
+        # Job("cast") here. Doing so would invoke chief twice back-to-
+        # back per user message and was the cause of the "chief stuck
+        # at 90+ seconds" symptom. /cast remains as an explicit manual
+        # trigger when you want a re-cast without running engineering.
         if not self.state.idea:
             self.worker.submit(Job("idea", msg))
             self.worker.submit(Job("run", "engineering"))
@@ -797,6 +1548,35 @@ class TuiApp:
             self._append_conversation(msg)
             self.worker.submit(Job("run", "engineering"))
         return True
+
+    def _do_abort(self) -> None:
+        """Send SIGTERM (then SIGKILL) to every WORKING agent's subprocess.
+
+        Runs on the curses thread, NOT the worker thread, because the
+        worker is the one blocked inside ``provider.invoke()``. Killing
+        the subprocess unblocks ``proc.wait()`` in run_streaming, which
+        causes the provider to return an error response, which the
+        worker treats as a normal failed run.
+        """
+        import os
+        import signal
+        with self.state.lock:
+            targets = [
+                (name, card.live_pid)
+                for name, card in self.state.agents.items()
+                if card.status == AgentStatus.WORKING and card.live_pid
+            ]
+        if not targets:
+            self.state.add_log("abort: no agents currently running", level="WARN")
+            return
+        for name, pid in targets:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                self.state.add_log(f"abort: SIGTERM sent to {name} pid={pid}", level="WARN")
+            except ProcessLookupError:
+                self.state.add_log(f"abort: {name} pid={pid} already gone", level="INFO")
+            except Exception as exc:
+                self.state.add_log(f"abort: {name} pid={pid} failed: {exc}", level="ERROR")
 
     def _append_conversation(self, msg: str) -> None:
         try:
@@ -858,9 +1638,12 @@ def run(initial_prompt: Optional[str] = None) -> int:
     agents_cfg = load_agents_config(paths)
     agent_names = list((agents_cfg.get("agents") or {}).keys())
 
-    state = DashboardState(agent_names)
+    state = DashboardState(agent_names, paths=paths, agents_cfg=agents_cfg)
     state.project_name = clk_cfg.get("project_name") or paths.root.name
     state.provider = providers_cfg.get("active") or clk_cfg.get("default_provider") or "shell"
+    # Mirror every status-pane line to a persistent file so we have a
+    # full session trace inside the kickoff dir for later analysis.
+    state.attach_session_log(paths.logs / "session.log")
 
     observer = DashboardObserver(state)
     runner = AgentRunner(
@@ -906,4 +1689,5 @@ def run(initial_prompt: Optional[str] = None) -> int:
         worker.join(timeout=2.0)
         sys.stderr = old_stderr
         sys.stdout = old_stdout
+        state.close_session_log()
     return 0

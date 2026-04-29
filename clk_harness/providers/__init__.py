@@ -9,8 +9,10 @@ from .base import AgentProvider, AgentRequest, AgentResponse, ProviderUnavailabl
 from .shell import ShellProvider
 from .claude import ClaudeProvider
 from .codex import CodexProvider
+from .gemini import GeminiProvider
 from .pi import PiProvider
 from .ollama import OllamaProvider
+from .openwebui import OpenWebUIProvider
 
 __all__ = [
     "AgentProvider",
@@ -20,8 +22,10 @@ __all__ = [
     "ShellProvider",
     "ClaudeProvider",
     "CodexProvider",
+    "GeminiProvider",
     "PiProvider",
     "OllamaProvider",
+    "OpenWebUIProvider",
     "load_provider",
     "available_providers",
 ]
@@ -39,10 +43,14 @@ def load_provider(name: str, config: dict) -> AgentProvider:
         return ClaudeProvider(name=name, config=config)
     if p_type == "codex":
         return CodexProvider(name=name, config=config)
+    if p_type == "gemini":
+        return GeminiProvider(name=name, config=config)
     if p_type == "pi":
         return PiProvider(name=name, config=config)
     if p_type == "ollama":
         return OllamaProvider(name=name, config=config)
+    if p_type == "openwebui":
+        return OpenWebUIProvider(name=name, config=config)
     # Unknown - degrade to shell so the harness keeps running.
     return ShellProvider(name=name, config=config)
 

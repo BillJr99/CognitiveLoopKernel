@@ -24,7 +24,7 @@ import sys
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import Paths
 from ..git_ops import add_all, commit as git_commit, has_changes
@@ -231,6 +231,7 @@ class StageResult:
     validated: bool
     validation_output: str = ""
     committed: bool = False
+    failure_reason: str = ""  # filled when ok=False or validated=False
 
 
 class WorkflowRunner:
@@ -238,14 +239,103 @@ class WorkflowRunner:
         self.paths = paths
         self.runner = runner
 
+    # Default cap on chief recovery dispatches per stage. A stage that
+    # still has unmet deps after this many recovery passes gets a final
+    # WARN and is skipped, so we never loop forever on a stuck workflow.
+    # Overridable via clk.config.json::recovery::max_per_stage.
+    DEFAULT_MAX_RECOVERY_PER_STAGE = 3
+
+    @property
+    def max_recovery_per_stage(self) -> int:
+        cfg = (self.runner.clk_cfg.get("recovery") or {})
+        return int(cfg.get("max_per_stage") or self.DEFAULT_MAX_RECOVERY_PER_STAGE)
+
+    DEFAULT_MAX_SUPERVISE_CYCLES = 5
+
+    @property
+    def max_supervise_cycles(self) -> int:
+        cfg = (self.runner.clk_cfg.get("supervise") or {})
+        return int(cfg.get("max_cycles") or self.DEFAULT_MAX_SUPERVISE_CYCLES)
+
     def run(self, workflow: Workflow, *, dry_run: Optional[bool] = None) -> List[StageResult]:
+        """Execute the workflow, looping it under chief supervision.
+
+        Three dynamic behaviors:
+
+        1. After each stage we re-check the workflow file's mtime: if a
+           PROPOSE_WORKFLOW block rewrote it, new stages are spliced in
+           for the remainder of this cycle.
+
+        2. If a stage's deps are unmet (because an earlier stage failed
+           or was skipped), we dispatch the chief in *recovery mode* to
+           either re-cast the workflow, run a remediation stage, or
+           explicitly accept the gap. After recovery we re-check deps
+           and retry the stage. Capped at ``MAX_RECOVERY_PER_STAGE``.
+
+        3. When the workflow finishes without ``.clk/state/done.md``
+           existing, we loop and run the workflow again (the chief's
+           supervise stage may have rewritten it via PROPOSE_WORKFLOW).
+           This way no agent is ever truly "done" until the chief signals
+           ACTION:done. Capped at ``DEFAULT_MAX_SUPERVISE_CYCLES``.
+        """
+        all_results: List[StageResult] = []
+        for cycle in range(1, self.max_supervise_cycles + 1):
+            if (self.paths.state / "done.md").exists():
+                log(f"workflow {workflow.name}: done.md present, stopping supervise loop")
+                break
+            if cycle > 1:
+                log(f"workflow {workflow.name}: supervise cycle {cycle}/{self.max_supervise_cycles}")
+            try:
+                refreshed = load_workflow(self.paths.workflows / f"{workflow.name}.yaml")
+            except Exception:
+                refreshed = workflow
+            cycle_results = self._run_once(refreshed, dry_run=dry_run, cycle=cycle)
+            all_results.extend(cycle_results)
+            if dry_run:
+                break
+        if not (self.paths.state / "done.md").exists() and self.max_supervise_cycles > 1:
+            log(
+                f"workflow {workflow.name}: supervise cycle limit reached "
+                f"({self.max_supervise_cycles}); type /run to continue or set "
+                "supervise.max_cycles in clk.config.json",
+                level="WARN",
+            )
+        return all_results
+
+    def _run_once(self, workflow: Workflow, *, dry_run: Optional[bool] = None, cycle: int = 1) -> List[StageResult]:
+        """Single pass through the workflow; called once per supervise cycle."""
         log(f"workflow start: {workflow.name} ({len(workflow.stages)} stages)")
         results: List[StageResult] = []
         completed: Dict[str, bool] = {}
-        for stage in workflow.stages:
-            if any(dep not in completed or not completed[dep] for dep in stage.depends_on):
-                log(f"stage {stage.id} skipped: unmet deps {stage.depends_on}", level="WARN")
-                completed[stage.id] = False
+        # stage_id -> StageResult for richer "why did dep fail" context
+        result_by_id: Dict[str, StageResult] = {}
+        wf_path = self.paths.workflows / f"{workflow.name}.yaml"
+        wf_mtime = wf_path.stat().st_mtime if wf_path.exists() else 0.0
+
+        stages = list(workflow.stages)
+        recovery_count: Dict[str, int] = {}
+        i = 0
+        while i < len(stages):
+            stage = stages[i]
+            unmet = self._unmet_deps(stage, completed)
+            if unmet:
+                tries = recovery_count.get(stage.id, 0)
+                if tries >= self.max_recovery_per_stage or dry_run:
+                    self._log_skip(stage, unmet, result_by_id)
+                    completed[stage.id] = False
+                    i += 1
+                    continue
+                recovery_count[stage.id] = tries + 1
+                self._dispatch_recovery(workflow, stage, unmet, result_by_id, dry_run=dry_run)
+                # Recovery may have rewritten the workflow with new
+                # stages and/or relaxed dependencies. Re-read from disk
+                # and replace the un-processed tail of the queue.
+                stages, wf_mtime = self._maybe_refresh_workflow(
+                    workflow.name, wf_path, wf_mtime, stages, i
+                )
+                # Don't advance i - whatever stage now sits at i is the
+                # next thing to attempt (chief's new stage, or the same
+                # stage with its deps now relaxed).
                 continue
             log(f"stage {stage.id} -> agent {stage.agent}")
             run = self.runner.run(
@@ -260,20 +350,139 @@ class WorkflowRunner:
             else:
                 v_ok, v_out = self._validate(stage)
             committed = False
-            if ok and v_ok and stage.commit and not dry_run:
+            if run.committed:
+                # AgentRunner already created a per-action-batch commit;
+                # don't double-commit the same diff.
+                committed = True
+            elif ok and v_ok and stage.commit and not dry_run:
                 committed = self._commit(workflow, stage, run, v_out)
-            results.append(
-                StageResult(
-                    stage=stage,
-                    run=run,
-                    validated=v_ok,
-                    validation_output=v_out,
-                    committed=committed,
-                )
+            failure_reason = ""
+            if not ok:
+                failure_reason = (run.response.error or "agent_failed")[:200]
+            elif not v_ok:
+                failure_reason = f"validation_failed: {v_out[:200]}" if v_out else "validation_failed"
+            sr = StageResult(
+                stage=stage,
+                run=run,
+                validated=v_ok,
+                validation_output=v_out,
+                committed=committed,
+                failure_reason=failure_reason,
             )
+            results.append(sr)
+            result_by_id[stage.id] = sr
             completed[stage.id] = ok and v_ok
+            i += 1
+            stages, wf_mtime = self._maybe_refresh_workflow(
+                workflow.name, wf_path, wf_mtime, stages, i
+            )
         log(f"workflow done: {workflow.name}")
         return results
+
+    # -- helpers ---------------------------------------------------------
+
+    def _unmet_deps(self, stage: WorkflowStage, completed: Dict[str, bool]) -> List[str]:
+        return [d for d in stage.depends_on if not completed.get(d)]
+
+    def _log_skip(
+        self,
+        stage: WorkflowStage,
+        unmet: List[str],
+        result_by_id: Dict[str, StageResult],
+    ) -> None:
+        details: List[str] = []
+        for d in unmet:
+            sr = result_by_id.get(d)
+            if sr is None:
+                details.append(f"{d}=never_ran")
+            elif sr.failure_reason:
+                details.append(f"{d}={sr.failure_reason}")
+            else:
+                details.append(f"{d}=incomplete")
+        log(
+            f"stage {stage.id} skipped after recovery limit: " + "; ".join(details),
+            level="WARN",
+        )
+
+    def _dispatch_recovery(
+        self,
+        workflow: Workflow,
+        stage: WorkflowStage,
+        unmet: List[str],
+        result_by_id: Dict[str, StageResult],
+        *,
+        dry_run: Optional[bool],
+    ) -> None:
+        details: List[str] = []
+        for d in unmet:
+            sr = result_by_id.get(d)
+            if sr is None:
+                details.append(f"- `{d}`: never ran (probably never reached or removed from workflow)")
+            elif sr.failure_reason:
+                details.append(f"- `{d}`: {sr.failure_reason}")
+            else:
+                details.append(f"- `{d}`: incomplete (no failure recorded)")
+        objective = (
+            f"Recovery dispatch for workflow `{workflow.name}` stage `{stage.id}`.\n\n"
+            f"This stage depends on: {stage.depends_on}.\n"
+            f"Unmet dependencies (with reasons):\n" + "\n".join(details) + "\n\n"
+            "Decide one of:\n"
+            "  (a) Re-cast the workflow with PROPOSE_WORKFLOW so the dependency is\n"
+            "      no longer required, OR\n"
+            "  (b) Emit ACTION blocks that fix the upstream failure (write/edit/run\n"
+            "      to satisfy the failed validation), OR\n"
+            "  (c) PROPOSE_ROLE for a specialist that can do (b), then dispatch them.\n"
+            "Do NOT skip silently. The harness will retry this stage after you respond."
+        )
+        log(f"workflow {workflow.name}: dispatching chief recovery for stage {stage.id}")
+        self.runner.run(
+            "chief",
+            objective,
+            extra={
+                "phase": "recovery",
+                "workflow": workflow.name,
+                "stage_id": stage.id,
+                "unmet_deps": ",".join(unmet),
+            },
+            dry_run=dry_run,
+        )
+
+    def _maybe_refresh_workflow(
+        self,
+        workflow_name: str,
+        wf_path: Path,
+        prev_mtime: float,
+        stages: List[WorkflowStage],
+        cursor: int,
+    ) -> Tuple[List[WorkflowStage], float]:
+        """If the workflow file was rewritten, replace the un-processed
+        tail of the queue with the refreshed stage list.
+
+        ``cursor`` is the index the runner is about to process next.
+        Stages already executed (``stages[:cursor]``) are preserved so
+        we never re-run them. Stages from the refreshed YAML whose ids
+        appear in the executed prefix are dropped (the agent should use
+        a new id like ``foo_retry`` if they want to re-attempt).
+        """
+        if not wf_path.exists():
+            return stages, prev_mtime
+        new_mtime = wf_path.stat().st_mtime
+        if new_mtime <= prev_mtime:
+            return stages, prev_mtime
+        try:
+            refreshed = load_workflow(wf_path)
+        except Exception as exc:
+            log_exception("orchestration.workflow._maybe_refresh_workflow", exc)
+            return stages, prev_mtime
+        processed = stages[:cursor]
+        processed_ids = {s.id for s in processed}
+        pending = [s for s in refreshed.stages if s.id not in processed_ids]
+        merged = processed + pending
+        log(
+            f"workflow {workflow_name}: refreshed; "
+            f"{len(processed)} processed, {len(pending)} pending"
+        )
+        return merged, new_mtime
 
     def _validate(self, stage: WorkflowStage) -> tuple[bool, str]:
         if not stage.validation:

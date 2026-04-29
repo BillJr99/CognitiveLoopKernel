@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict
 
-from .base import AgentProvider, AgentRequest, AgentResponse
+from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens
 
 
 class ShellProvider(AgentProvider):
@@ -35,7 +35,14 @@ class ShellProvider(AgentProvider):
             ]
 
             if req.dry_run:
-                return AgentResponse(ok=True, text="\n".join(text_lines), raw={"dry_run": True})
+                usage = estimate_tokens(req.prompt, "\n".join(text_lines))
+                usage["source"] = "shell-estimate"
+                return AgentResponse(
+                    ok=True,
+                    text="\n".join(text_lines),
+                    raw={"dry_run": True},
+                    usage=usage,
+                )
 
             workdir = Path(req.workdir) if req.workdir else Path.cwd()
             stub_dir = workdir / ".clk" / "runs" / "shell-stubs"
@@ -54,11 +61,15 @@ class ShellProvider(AgentProvider):
                 traceback.print_exc()
 
             text_lines.append(f"[shell-provider] wrote {len(files_written)} file(s)")
+            response_text = "\n".join(text_lines)
+            usage = estimate_tokens(req.prompt, response_text)
+            usage["source"] = "shell-estimate"
             return AgentResponse(
                 ok=True,
-                text="\n".join(text_lines),
+                text=response_text,
                 files_written=files_written,
                 raw={"agent": req.agent, "kind": "shell-stub"},
+                usage=usage,
             )
         except Exception as exc:
             print(f"[providers.shell.invoke] failed: {exc}", file=sys.stderr)

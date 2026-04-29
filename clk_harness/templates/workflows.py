@@ -57,47 +57,35 @@ stages:
 """,
 
     "engineering.yaml": """name: engineering
-description: One full development cycle.
+description: Baseline development cycle. The chief overwrites this file on
+  the first casting pass, replacing it with a workflow tailored to the
+  project's idea and roster. The supervise stage is always re-added by
+  the chief at the end so no agent is "done" until the user's full
+  prompt has been addressed.
 stages:
-  - id: decompose
+  - id: cast
     agent: chief
-    objective: Decompose the next slice and assign work.
-    commit: true
-  - id: research
-    agent: researcher
-    objective: Resolve any technical assumptions for the slice.
-    depends_on: [decompose]
-    commit: true
-  - id: prd_update
-    agent: product_manager
-    objective: Update the PRD if scope changed.
-    depends_on: [decompose]
-    commit: true
-  - id: architect
-    agent: architect
-    objective: Update architecture if the slice changes shape.
-    depends_on: [decompose]
+    objective: Decompose the next slice, cast or refresh the roster, and
+      author the project-specific engineering workflow.
     commit: true
   - id: implement
     agent: engineer
-    objective: Implement the smallest vertical slice.
-    depends_on: [architect, prd_update, research]
+    objective: Implement the smallest vertical slice that advances the slice
+      flagged by the chief.
+    depends_on: [cast]
     commit: true
   - id: qa
     agent: qa
     objective: Test and audit the implemented slice.
     depends_on: [implement]
     commit: true
-  - id: critique
-    agent: critic
-    objective: Identify the next gap to close.
+  - id: supervise
+    agent: chief
+    objective: Supervise. Has the user's prompt been fully addressed? If yes,
+      emit ACTION done with a one-line reason. If no, PROPOSE_WORKFLOW
+      with the next set of stages (which becomes the next iteration).
     depends_on: [qa]
-    commit: true
-  - id: operate
-    agent: operator
-    objective: Update deployment artifacts to reflect the slice.
-    depends_on: [qa]
-    commit: true
+    commit: false
 """,
 
     "validation.yaml": """name: validation

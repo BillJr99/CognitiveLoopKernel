@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
-from .base import AgentProvider, AgentRequest, AgentResponse
+from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens
 
 
 class OllamaProvider(AgentProvider):
@@ -39,7 +39,14 @@ class OllamaProvider(AgentProvider):
 
     def invoke(self, req: AgentRequest) -> AgentResponse:
         if req.dry_run:
-            return AgentResponse(ok=True, text=f"[ollama] dry-run agent={req.agent}", raw={"dry_run": True})
+            usage = estimate_tokens(req.prompt, "")
+            usage["source"] = "ollama-dry"
+            return AgentResponse(
+                ok=True,
+                text=f"[ollama] dry-run agent={req.agent}",
+                raw={"dry_run": True},
+                usage=usage,
+            )
         if not self.available():
             return AgentResponse(ok=False, error=f"ollama endpoint unreachable: {self._endpoint()}")
 
@@ -61,7 +68,19 @@ class OllamaProvider(AgentProvider):
             with urllib.request.urlopen(request, timeout=req.timeout_s) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
             text = payload.get("response", "")
-            return AgentResponse(ok=True, text=text, raw=payload)
+            in_tok = int(payload.get("prompt_eval_count") or 0)
+            out_tok = int(payload.get("eval_count") or 0)
+            if in_tok or out_tok:
+                usage = {
+                    "input_tokens": in_tok,
+                    "output_tokens": out_tok,
+                    "total_tokens": in_tok + out_tok,
+                    "source": "ollama-api",
+                }
+            else:
+                usage = estimate_tokens(req.prompt, text)
+                usage["source"] = "ollama-estimate"
+            return AgentResponse(ok=True, text=text, raw=payload, usage=usage)
         except urllib.error.HTTPError as exc:
             print(f"[providers.ollama.invoke] HTTP error: {exc}", file=sys.stderr)
             traceback.print_exc()

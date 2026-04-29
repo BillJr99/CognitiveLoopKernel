@@ -24,7 +24,20 @@ CLK_DIR_NAME = ".clk"
 
 @dataclass
 class Paths:
-    """Resolved filesystem layout for a CLK project."""
+    """Resolved filesystem layout for a CLK project.
+
+    The harness lives under ``.clk/`` (config, state, logs, runs).
+    The actual product the agents are building lives under
+    ``workspace/``. Keeping them separate means:
+
+      * git history in the kickoff dir tells the project's story
+        without harness chatter (we gitignore everything outside
+        workspace/ and a few state files).
+      * Action paths emitted by agents resolve under ``workspace/``,
+        so a confused agent can't write into the harness.
+      * The user can ``rm -rf workspace`` to reset the build without
+        losing memory in ``.clk/``.
+    """
 
     root: Path
     clk: Path = field(init=False)
@@ -38,6 +51,7 @@ class Paths:
     runs: Path = field(init=False)
     backups: Path = field(init=False)
     cache: Path = field(init=False)
+    workspace: Path = field(init=False)
 
     def __post_init__(self) -> None:
         self.clk = self.root / CLK_DIR_NAME
@@ -51,6 +65,7 @@ class Paths:
         self.runs = self.clk / "runs"
         self.backups = self.clk / "backups"
         self.cache = self.clk / "cache"
+        self.workspace = self.root / "workspace"
 
     def ensure(self) -> None:
         """Create all directories. Idempotent."""
@@ -65,6 +80,7 @@ class Paths:
             self.runs,
             self.backups,
             self.cache,
+            self.workspace,
         ]:
             try:
                 p.mkdir(parents=True, exist_ok=True)
@@ -122,6 +138,10 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         "max_files_per_batch": 25,
         "warn_files_per_batch": 5,
     },
+    "casting": {
+        "max_dynamic_roles": 12,
+        "auto_cast_on_idea": True,
+    },
 }
 
 DEFAULT_PROVIDERS: Dict[str, Any] = {
@@ -143,6 +163,12 @@ DEFAULT_PROVIDERS: Dict[str, Any] = {
             "command": "codex",
             "args": ["exec"],
         },
+        "gemini": {
+            "type": "gemini",
+            "description": "Google Gemini CLI. Detected via 'gemini' on PATH.",
+            "command": "gemini",
+            "args": [],
+        },
         "pi": {
             "type": "pi",
             "description": "Pi terminal harness. Cloned to .clk/tools/pi if needed.",
@@ -155,23 +181,29 @@ DEFAULT_PROVIDERS: Dict[str, Any] = {
             "endpoint": "http://localhost:11434",
             "model": "llama3.1",
         },
+        "openwebui": {
+            "type": "openwebui",
+            "description": "OpenWebUI server (OpenAI-compatible HTTP). Set host/key/model on kickoff.",
+            "endpoint": "http://localhost:8080",
+            "api_key": "",
+            "model": "",
+        },
     },
     "active": "shell",
 }
 
 DEFAULT_AGENTS: Dict[str, Any] = {
+    # Only the immutable baseline ships in agents.json. The chief authors
+    # the rest of the roster dynamically once an idea is captured. Other
+    # prompt templates (researcher.md, analyst.md, ...) still ship to disk
+    # as scaffolds so the chief can re-cast a seed role with an empty
+    # PROMPT body and the existing file will be picked up.
     "agents": {
-        "chief":           {"prompt": "chief.md",           "provider": None, "role": "decompose objectives and coordinate"},
-        "researcher":      {"prompt": "researcher.md",      "provider": None, "role": "investigate assumptions and prior art"},
-        "analyst":         {"prompt": "analyst.md",         "provider": None, "role": "synthesize findings into structured insight"},
-        "product_manager": {"prompt": "product_manager.md", "provider": None, "role": "maintain the PRD and prioritize"},
-        "architect":       {"prompt": "architect.md",       "provider": None, "role": "shape the technical architecture"},
-        "engineer":        {"prompt": "engineer.md",        "provider": None, "role": "implement vertical slices"},
-        "qa":              {"prompt": "qa.md",              "provider": None, "role": "test and audit changes"},
-        "operator":        {"prompt": "operator.md",        "provider": None, "role": "manage deployment and integration"},
-        "critic":          {"prompt": "critic.md",          "provider": None, "role": "identify gaps and risks"},
-        "ralph":           {"prompt": "ralph.md",           "provider": None, "role": "drive ralph-style iterative loops"},
-        "autoresearch":    {"prompt": "autoresearch.md",    "provider": None, "role": "drive autoresearch-style improvement"},
+        "chief":        {"prompt": "chief.md",        "provider": None, "role": "decompose objectives, cast the team, author workflows"},
+        "engineer":     {"prompt": "engineer.md",     "provider": None, "role": "implement vertical slices (baseline implementer)"},
+        "qa":           {"prompt": "qa.md",           "provider": None, "role": "test and audit changes (baseline validator)"},
+        "ralph":        {"prompt": "ralph.md",        "provider": None, "role": "drive ralph-style iterative loops"},
+        "autoresearch": {"prompt": "autoresearch.md", "provider": None, "role": "drive autoresearch-style improvement"},
     }
 }
 
@@ -203,6 +235,14 @@ def load_providers_config(paths: Paths) -> Dict[str, Any]:
 
 def load_agents_config(paths: Paths) -> Dict[str, Any]:
     return load_json(paths.config / "agents.json", DEFAULT_AGENTS)
+
+
+def save_agents_config(paths: Paths, data: Dict[str, Any]) -> None:
+    save_json(paths.config / "agents.json", data)
+
+
+def save_providers_config(paths: Paths, data: Dict[str, Any]) -> None:
+    save_json(paths.config / "providers.json", data)
 
 
 def project_paths(start: Optional[Path] = None) -> Paths:

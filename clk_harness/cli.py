@@ -35,6 +35,7 @@ from .config import (
     load_clk_config,
     load_providers_config,
     project_paths,
+    save_agents_config,
     save_json,
     write_default_configs,
 )
@@ -50,8 +51,15 @@ from .orchestration import (
     AutoresearchLoop,
     Evaluator,
     RalphLoop,
+    RoleProposal,
     WorkflowRunner,
+    casting_objective,
+    is_baseline,
+    list_roles,
     load_workflow,
+    register_role,
+    remove_role,
+    render_roster_summary,
 )
 from .providers import available_providers, load_provider
 from .templates import PROMPTS, WORKFLOWS
@@ -268,14 +276,55 @@ def cmd_idea(args: argparse.Namespace) -> int:
                 objective=f"Capture idea: {title}",
                 files_changed=[".clk/state/idea.json", ".clk/state/system_brief.md"],
                 validation="idea captured",
-                next_step="run `clk plan`",
+                next_step="run `clk cast` then `clk run`",
             )
 
     print(f"Idea captured: {title}")
     print(f"  -> {paths.state / 'idea.json'}")
     print(f"  -> {brief_path}")
+
+    # Auto-cast: ask the chief to design the roster + workflow for this
+    # idea. Skipped if the user disabled it in config.
+    cfg = load_clk_config(paths)
+    auto = bool(((cfg.get("casting") or {}).get("auto_cast_on_idea", True)))
+    if auto and not getattr(args, "no_cast", False):
+        try:
+            print("\nRunning chief casting (auto)...")
+            _run_casting(paths, statement=args.statement, title=title, dry_run=False)
+        except Exception as exc:
+            log_exception("cli.cmd_idea.auto_cast", exc)
+            print(f"  casting failed: {exc}", file=sys.stderr)
+
     close_log()
     return 0
+
+
+def _run_casting(paths: Paths, *, statement: str, title: str, dry_run: bool) -> None:
+    """Invoke the chief in casting mode.
+
+    The chief reads the current idea + roster and emits PROPOSE_ROLE /
+    PROPOSE_WORKFLOW blocks; AgentRunner applies them automatically.
+    """
+    runner = _make_runner(paths)
+    objective = casting_objective(title, statement)
+    before_roster = list_roles(paths)
+    run = runner.run(
+        "chief",
+        objective,
+        extra={"phase": "casting"},
+        dry_run=dry_run,
+    )
+    after_roster = list_roles(paths)
+    added = sorted(set(after_roster) - set(before_roster))
+    removed = sorted(set(before_roster) - set(after_roster))
+    print(f"  chief casting ok={run.response.ok}")
+    if added:
+        print(f"  +roles: {', '.join(added)}")
+    if removed:
+        print(f"  -roles: {', '.join(removed)}")
+    if not added and not removed:
+        print("  (no roster changes - chief may have only updated existing roles or workflows)")
+    print(render_roster_summary(paths))
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -359,6 +408,55 @@ def cmd_loop(args: argparse.Namespace) -> int:
         print(f"autoresearch loop: {len(experiments)} experiments, {committed} committed")
     close_log()
     return 0
+
+
+def cmd_cast(args: argparse.Namespace) -> int:
+    paths = project_paths()
+    if not _ensure_initialized(paths):
+        return 2
+    init_log_file(paths.logs, "cast")
+    idea_path = paths.state / "idea.json"
+    title = "Untitled idea"
+    statement = ""
+    if idea_path.exists():
+        try:
+            payload = json.loads(idea_path.read_text(encoding="utf-8"))
+            title = payload.get("title") or title
+            statement = payload.get("statement") or ""
+        except Exception as exc:
+            log_exception("cli.cmd_cast.read_idea", exc)
+    if not statement:
+        print("No idea captured yet. Run `clk idea \"<your idea>\"` first.", file=sys.stderr)
+        return 2
+    _run_casting(paths, statement=statement, title=title, dry_run=args.dry_run)
+    close_log()
+    return 0
+
+
+def cmd_roles(args: argparse.Namespace) -> int:
+    paths = project_paths()
+    if not _ensure_initialized(paths):
+        return 2
+    if args.action == "list":
+        print(render_roster_summary(paths))
+        return 0
+    if args.action == "add":
+        if not args.name:
+            print("--name is required for `roles add`", file=sys.stderr)
+            return 2
+        prop = RoleProposal(name=args.name, role=args.role or "", provider=args.provider)
+        ok, status = register_role(paths, prop)
+        print(f"add {args.name}: {status}")
+        return 0 if ok else 1
+    if args.action == "remove":
+        if not args.name:
+            print("--name is required for `roles remove`", file=sys.stderr)
+            return 2
+        ok, status = remove_role(paths, args.name)
+        print(f"remove {args.name}: {status}")
+        return 0 if ok else 1
+    print(f"unknown action: {args.action}", file=sys.stderr)
+    return 2
 
 
 def cmd_tui(args: argparse.Namespace) -> int:
@@ -469,7 +567,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_idea.add_argument("statement", help="The idea, problem statement, or vision.")
     p_idea.add_argument("--title", help="Short title for the idea.")
     p_idea.add_argument("--tag", action="append", help="Optional tag (repeatable).")
+    p_idea.add_argument("--no-cast", action="store_true", help="Skip the automatic chief casting pass.")
     p_idea.set_defaults(func=cmd_idea)
+
+    p_cast = sub.add_parser("cast", help="Run the chief in casting mode (re-design the roster + workflow).")
+    p_cast.add_argument("--dry-run", action="store_true")
+    p_cast.set_defaults(func=cmd_cast)
+
+    p_roles = sub.add_parser("roles", help="Inspect or edit the current roster.")
+    p_roles.add_argument("action", choices=["list", "add", "remove"])
+    p_roles.add_argument("--name", help="Role name (snake_case).")
+    p_roles.add_argument("--role", help="One-line role description (for add).")
+    p_roles.add_argument("--provider", help="Optional provider override.")
+    p_roles.set_defaults(func=cmd_roles)
 
     p_plan = sub.add_parser("plan", help="Run discovery + product workflows.")
     p_plan.add_argument("--dry-run", action="store_true")

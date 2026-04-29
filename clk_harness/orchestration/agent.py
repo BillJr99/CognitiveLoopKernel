@@ -17,8 +17,11 @@ from string import Template
 from typing import Any, Dict, List, Optional
 
 from ..config import Paths
+from ..git_ops import add_all, commit as git_commit, has_changes, is_repo
 from ..providers import AgentProvider, AgentRequest, AgentResponse, load_provider
 from ..utils.logging_utils import log, log_exception
+from . import casting as _casting
+from . import actions as _actions
 
 
 @dataclass
@@ -46,6 +49,10 @@ class AgentRun:
     started_at: str
     finished_at: str
     files_written: List[str] = field(default_factory=list)
+    # True when the runner already created a git commit for this run's
+    # actions; downstream consumers (WorkflowRunner._commit) skip in
+    # that case to avoid double-committing the same diff.
+    committed: bool = False
 
 
 class AgentObserver:
@@ -58,10 +65,34 @@ class AgentObserver:
     def begin(self, agent: str, objective: str) -> None:  # pragma: no cover
         pass
 
+    def prompt_sent(self, agent: str, prompt: str) -> None:  # pragma: no cover
+        """Called after the prompt has been rendered, before provider invocation."""
+        pass
+
     def end(self, agent: str, run: "AgentRun") -> None:  # pragma: no cover
         pass
 
+    def progress(self, agent: str, kind: str, message: str) -> None:  # pragma: no cover
+        """Streaming progress from a CLI provider's subprocess.
+
+        ``kind`` is one of: ``"start"`` (subprocess launched, message
+        carries pid + cmd), ``"stdout_line"`` / ``"stderr_line"`` (each
+        line emitted), ``"end"`` (subprocess exited, message carries
+        rc), ``"timeout"`` (killed). The TUI uses this to show the user
+        what the underlying CLI is actually doing rather than letting
+        them stare at a stalled spinner.
+        """
+        pass
+
     def log(self, line: str) -> None:  # pragma: no cover
+        pass
+
+    def roster_changed(self, name: str, status: str) -> None:  # pragma: no cover
+        """Called when a dynamic role is added / updated / removed.
+
+        ``status`` is one of ``"added"``, ``"updated"``, ``"removed"``,
+        ``"workflow_written"``, ``"prompt_updated"``.
+        """
         pass
 
 
@@ -120,11 +151,25 @@ class AgentRunner:
         provider = self.get_provider(agent.provider)
         prompt = self.render_prompt(agent, objective, extra)
         is_dry = self.clk_cfg.get("dry_run", False) if dry_run is None else dry_run
+
+        observer = self.observer
+
+        def _on_progress(kind: str, message: str) -> None:
+            if observer is None:
+                return
+            try:
+                observer.progress(agent.name, kind, message)
+            except Exception as exc:
+                log_exception("orchestration.agent.observer.progress", exc)
+
+        timeout_s = int((self.clk_cfg.get("provider_timeout_s") or 300))
         req = AgentRequest(
             agent=agent.name,
             prompt=prompt,
             workdir=self.paths.root,
             dry_run=bool(is_dry),
+            timeout_s=timeout_s,
+            on_progress=_on_progress,
         )
         started = datetime.now().isoformat(timespec="seconds")
         if self.observer is not None:
@@ -132,6 +177,10 @@ class AgentRunner:
                 self.observer.begin(agent.name, objective)
             except Exception as exc:
                 log_exception("orchestration.agent.observer.begin", exc)
+            try:
+                self.observer.prompt_sent(agent.name, prompt)
+            except Exception as exc:
+                log_exception("orchestration.agent.observer.prompt_sent", exc)
         try:
             resp = provider.invoke(req)
         except Exception as exc:
@@ -147,12 +196,136 @@ class AgentRunner:
             files_written=list(resp.files_written or []),
         )
         self._record(run, prompt, provider.describe())
+        # Apply any PROPOSE_ROLE / PROPOSE_WORKFLOW blocks the agent
+        # emitted. Mutates ``self.agents_cfg`` in place so the very next
+        # stage that names a freshly-proposed role can dispatch to it.
+        self._apply_proposals(run)
+        # Execute any ACTION blocks the agent emitted. Real file edits
+        # / shell runs land here regardless of which provider produced
+        # the response, so even non-tool-using providers can drive real
+        # changes. We merge the harness-applied files into the run's
+        # files_written list so the TUI / commit logic see them.
+        if not is_dry:
+            self._apply_actions(run)
         if self.observer is not None:
             try:
                 self.observer.end(agent.name, run)
             except Exception as exc:
                 log_exception("orchestration.agent.observer.end", exc)
         return run
+
+    # -- casting -----------------------------------------------------------
+
+    def _apply_proposals(self, run: AgentRun) -> None:
+        text = (run.response.text or "")
+        if not text or ("PROPOSE_ROLE" not in text and "PROPOSE_WORKFLOW" not in text):
+            return
+        cap = int(((self.clk_cfg.get("casting") or {}).get("max_dynamic_roles"))
+                  or _casting.DEFAULT_MAX_DYNAMIC_ROLES)
+        observer = self.observer
+
+        def _on_change(name: str, status: str) -> None:
+            log(f"casting :: {name} :: {status}")
+            if observer is not None:
+                try:
+                    observer.roster_changed(name, status)
+                except Exception as exc:
+                    log_exception("orchestration.agent.observer.roster_changed", exc)
+
+        result = _casting.apply_response_proposals(
+            self.paths,
+            text,
+            agents_cfg=self.agents_cfg,
+            max_dynamic=cap,
+            on_change=_on_change,
+        )
+        if not result.is_empty():
+            log(f"casting from {run.agent}: {result.summary()}")
+
+    def _apply_actions(self, run: AgentRun) -> None:
+        """Execute ACTION blocks; merge harness-written files back into the run."""
+        text = (run.response.text or "")
+        if not text or "ACTION:" not in text and "ACTION :" not in text:
+            return
+        result = _actions.apply_actions(
+            self.paths,
+            text,
+            agent_name=run.agent,
+            clk_cfg=self.clk_cfg,
+        )
+        if result.is_empty():
+            return
+        # Merge into run.files_written so downstream consumers (TUI,
+        # commit step) reflect what actually happened.
+        seen = set(run.files_written)
+        for f in result.files_written:
+            if f not in seen:
+                run.files_written.append(f)
+                seen.add(f)
+        # Also surface deletes so they get attributed to this run.
+        for f in result.files_deleted:
+            run.files_written.append(f"deleted:{f}")
+        log(f"actions from {run.agent}: {result.summary()}")
+        # Annotate the response so the TUI can show it in the log pane:
+        # we tack a short summary onto the text preview path.
+        if result.commands_run or result.errors:
+            for cmd, out in zip(result.commands_run, result.command_outputs):
+                log(f"actions[{run.agent}] $ {cmd}")
+                if out.strip():
+                    for line in out.strip().splitlines()[:6]:
+                        log(f"actions[{run.agent}]   {line[:200]}")
+            for err in result.errors:
+                log(f"actions[{run.agent}] !! {err}", level="WARN")
+        # Auto-commit any file changes from this batch so the git log
+        # has a per-agent-run granularity. Only fires when this run
+        # actually wrote (or deleted) files.
+        if (result.files_written or result.files_deleted) and self.clk_cfg.get("auto_commit", True):
+            self._commit_action_batch(run, result)
+
+    def _commit_action_batch(self, run: AgentRun, result: "_actions.ActionResult") -> None:
+        try:
+            if not is_repo(self.paths.root):
+                return
+            if not has_changes(self.paths.root):
+                return
+            if not add_all(self.paths.root):
+                return
+            usage = run.response.usage or {}
+            tok_total = int(usage.get("total_tokens") or 0)
+            tok_in = int(usage.get("input_tokens") or 0)
+            tok_out = int(usage.get("output_tokens") or 0)
+            extra_lines = []
+            if result.commands_run:
+                extra_lines.append("Commands run:")
+                for c in result.commands_run[:8]:
+                    extra_lines.append(f"  $ {c}")
+            if result.skipped:
+                extra_lines.append("")
+                extra_lines.append("Skipped actions:")
+                for s in result.skipped[:8]:
+                    extra_lines.append(f"  - {s}")
+            extra_lines.append("")
+            extra_lines.append(
+                f"Tokens: total={tok_total} in={tok_in} out={tok_out} "
+                f"src={usage.get('source','?')}"
+            )
+            committed = git_commit(
+                self.paths.root,
+                agent=run.agent,
+                objective=run.objective,
+                files_changed=run.files_written,
+                validation=result.summary(),
+                next_step="continue iteration",
+                body_extra="\n".join(extra_lines),
+            )
+            if committed:
+                run.committed = True
+                log(
+                    f"commit: [{run.agent}] {len(result.files_written)} files, "
+                    f"{len(result.files_deleted)} deletes"
+                )
+        except Exception as exc:
+            log_exception("orchestration.agent._commit_action_batch", exc)
 
     # -- internals ---------------------------------------------------------
 
@@ -205,15 +378,25 @@ class AgentRunner:
                 except Exception as exc:
                     log_exception(f"orchestration.agent._collect_context.{label}", exc)
 
+        roster_lines: List[str] = []
+        for n in sorted((self.agents_cfg.get("agents") or {}).keys()):
+            cfg = (self.agents_cfg.get("agents") or {}).get(n) or {}
+            marker = "[baseline]" if _casting.is_baseline(n) else "[dynamic]"
+            role = (cfg.get("role") or "").strip()
+            roster_lines.append(f"- {marker} {n} :: {role}")
+        roster_text = "\n".join(roster_lines) or "(no agents registered yet)"
+
         ctx = {
             "agent": extra.get("agent", ""),
             "objective": objective,
             "project_name": self.clk_cfg.get("project_name") or self.paths.root.name,
             "project_root": str(self.paths.root),
+            "workspace_root": str(self.paths.workspace),
             "state_summary": "\n".join(state_summary_lines) or "(no state yet)",
             "idea_title": (idea.get("title") if isinstance(idea, dict) else "") or "",
             "idea_statement": (idea.get("statement") if isinstance(idea, dict) else "") or "",
             "iteration": str(extra.get("iteration", "")),
+            "current_roster": roster_text,
         }
         ctx.update({k: v for k, v in extra.items() if k not in ctx})
         return ctx
@@ -238,6 +421,7 @@ class AgentRunner:
                 "started_at": run.started_at,
                 "finished_at": run.finished_at,
                 "provider": provider_desc,
+                "usage": dict(run.response.usage or {}),
                 "text_preview": (run.response.text or "")[:500],
             }
             with mem.open("a", encoding="utf-8") as fh:
