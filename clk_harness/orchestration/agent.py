@@ -48,6 +48,23 @@ class AgentRun:
     files_written: List[str] = field(default_factory=list)
 
 
+class AgentObserver:
+    """Optional hook invoked by :class:`AgentRunner` around every agent call.
+
+    Subclasses override the methods they care about. All methods are wrapped
+    in try/except inside the runner so an observer bug never breaks a run.
+    """
+
+    def begin(self, agent: str, objective: str) -> None:  # pragma: no cover
+        pass
+
+    def end(self, agent: str, run: "AgentRun") -> None:  # pragma: no cover
+        pass
+
+    def log(self, line: str) -> None:  # pragma: no cover
+        pass
+
+
 class AgentRunner:
     """Render prompts, invoke providers, persist outputs."""
 
@@ -57,11 +74,13 @@ class AgentRunner:
         agents_cfg: Dict[str, Any],
         providers_cfg: Dict[str, Any],
         clk_cfg: Dict[str, Any],
+        observer: Optional[AgentObserver] = None,
     ) -> None:
         self.paths = paths
         self.agents_cfg = agents_cfg
         self.providers_cfg = providers_cfg
         self.clk_cfg = clk_cfg
+        self.observer = observer
 
     # -- public ------------------------------------------------------------
 
@@ -108,6 +127,11 @@ class AgentRunner:
             dry_run=bool(is_dry),
         )
         started = datetime.now().isoformat(timespec="seconds")
+        if self.observer is not None:
+            try:
+                self.observer.begin(agent.name, objective)
+            except Exception as exc:
+                log_exception("orchestration.agent.observer.begin", exc)
         try:
             resp = provider.invoke(req)
         except Exception as exc:
@@ -123,6 +147,11 @@ class AgentRunner:
             files_written=list(resp.files_written or []),
         )
         self._record(run, prompt, provider.describe())
+        if self.observer is not None:
+            try:
+                self.observer.end(agent.name, run)
+            except Exception as exc:
+                log_exception("orchestration.agent.observer.end", exc)
         return run
 
     # -- internals ---------------------------------------------------------

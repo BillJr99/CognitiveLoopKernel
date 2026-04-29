@@ -18,33 +18,59 @@ into a working system through repeated agentic development cycles.
 
 ## Quick start
 
+The fastest path is the kickoff script, which copies the harness into a
+fresh `kickoff-<timestamp>/` directory, gives it its own git repo, and
+launches the TUI dashboard. The source tree is never modified.
+
 ```bash
-# 1. install (creates .clk/venv locally; never touches the system python)
-./scripts/install_local.sh
+# Optional: copy .env.example to .env to set defaults non-interactively.
+./kickoff.sh "A local-first journaling app that summarizes my week"
 
-# 2. initialize the harness in the current directory
+# Or omit the prompt and type your idea into the TUI:
+./kickoff.sh
+```
+
+The TUI shows live agent cards (idle / working / done / failed), a
+status log that updates in place, and a Claude-Code-style ``>`` input
+field. Use it to type follow-ups; each message dispatches another
+engineering cycle so the agents react to the new context.
+
+| TUI command            | Effect |
+|------------------------|--------|
+| free text              | first message becomes the idea, then runs `engineering`; later messages append to the conversation and re-run |
+| `/idea <text>`         | replace the captured idea |
+| `/run [workflow]`      | run a single workflow cycle (default `engineering`) |
+| `/loop ralph 5`        | start a Ralph loop with 5 iterations |
+| `/loop autoresearch 3` | start an autoresearch loop |
+| `/stop`                | request the active loop to stop after the current iteration |
+| `/provider <name>`     | switch the active provider (shell, claude, codex, pi, ollama) |
+| `/status`              | log a status snapshot |
+| `/quit`                | exit the TUI |
+
+PgUp/PgDn scroll the log pane; Backspace edits the input; Enter sends.
+
+### Lower-level CLI
+
+If you'd rather drive the harness without the TUI:
+
+```bash
+./scripts/install_local.sh           # local pip install (optional)
 ./scripts/clk init
-
-# 3. capture your idea
 ./scripts/clk idea "A local-first journaling app that summarizes my week"
-
-# 4. plan
 ./scripts/clk plan
-
-# 5. one development cycle
 ./scripts/clk run
-
-# 6. iterative loop (Ralph by default)
 ./scripts/clk loop --max-iterations 10
-
-# Inspect what happened
 ./scripts/clk status
 ./scripts/clk providers
 ```
 
+Set `CLK_NO_TUI=true` in your environment (or `.env`) to make `kickoff.sh`
+fall back to this non-interactive pipeline.
+
 The shell/dummy provider is the default and always works, so you can
 exercise the entire harness with no API keys. Switch providers by
-editing `.clk/config/providers.json` or via:
+editing `.clk/config/providers.json`, via the TUI's `/provider` command,
+or:
 
 ```bash
 ./scripts/clk configure --set default_provider=claude

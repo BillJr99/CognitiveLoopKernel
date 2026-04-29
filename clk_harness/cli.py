@@ -361,6 +361,20 @@ def cmd_loop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tui(args: argparse.Namespace) -> int:
+    paths = project_paths()
+    if not _ensure_initialized(paths):
+        return 2
+    init_log_file(paths.logs, "tui")
+    try:
+        from . import tui as _tui
+    except Exception as exc:
+        log_exception("cli.cmd_tui.import", exc)
+        print(f"failed to import tui: {exc}", file=sys.stderr)
+        return 1
+    return _tui.run(initial_prompt=args.prompt)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     paths = project_paths()
     if not _ensure_initialized(paths):
@@ -471,6 +485,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_loop.add_argument("--max-iterations", type=int)
     p_loop.add_argument("--dry-run", action="store_true")
     p_loop.set_defaults(func=cmd_loop)
+
+    p_tui = sub.add_parser("tui", help="Launch the TUI dashboard.")
+    p_tui.add_argument("prompt", nargs="?", help="Optional initial idea / prompt.")
+    p_tui.set_defaults(func=cmd_tui)
 
     p_status = sub.add_parser("status", help="Show harness status.")
     p_status.set_defaults(func=cmd_status)

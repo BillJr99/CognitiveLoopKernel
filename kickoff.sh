@@ -22,9 +22,15 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 # ---------------------------------------------------------------------------
 # 1. Parse args
 # ---------------------------------------------------------------------------
-if [ $# -lt 1 ] || [ -z "${1:-}" ]; then
-  cat >&2 <<USAGE
-usage: $(basename "$0") "<idea or problem statement>"
+# The idea/prompt argument is optional. When omitted, the TUI opens with an
+# empty input field and the user types their idea directly into the
+# dashboard. When provided, the TUI displays it and dispatches the
+# engineering workflow before handing control to the user for follow-ups.
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  cat <<USAGE
+usage: $(basename "$0") ["<idea or problem statement>"]
+
+If no argument is given, the TUI opens with an empty input field.
 
 Optional environment overrides (also accepted via .env in the script directory):
   CLK_PROVIDER          shell | claude | codex | pi | ollama   (default: shell)
@@ -32,14 +38,16 @@ Optional environment overrides (also accepted via .env in the script directory):
   CLK_LOOP_MODE         ralph | autoresearch                   (default: ralph)
   CLK_PROJECT_NAME      project name shown in commits          (default: clk-app)
   CLK_RUN_INSTALL       true | false - run scripts/install_local.sh first (default: false)
+  CLK_NO_TUI            true | false - skip the TUI and run the legacy
+                        init/idea/plan/run/loop pipeline (default: false)
   ANTHROPIC_API_KEY     required if CLK_PROVIDER=claude
   OPENAI_API_KEY        required if CLK_PROVIDER=codex
   CLK_OLLAMA_ENDPOINT   used if CLK_PROVIDER=ollama            (default: http://localhost:11434)
   CLK_OLLAMA_MODEL      used if CLK_PROVIDER=ollama            (default: llama3.1)
 USAGE
-  exit 2
+  exit 0
 fi
-IDEA="$1"
+IDEA="${1:-}"
 
 # ---------------------------------------------------------------------------
 # 2. Load .env (export every assigned var so subprocesses inherit it)
@@ -214,21 +222,31 @@ p.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
 PY
 "$CLK" configure --set "default_provider=$CLK_PROVIDER" >/dev/null
 
-echo "[kickoff] clk idea"
-"$CLK" idea "$IDEA" --title "$CLK_PROJECT_NAME"
-
-echo "[kickoff] clk plan"
-if ! "$CLK" plan; then
-  echo "[kickoff] plan reported failures (continuing)"
+if [ "${CLK_NO_TUI:-false}" = "true" ]; then
+  # Legacy non-interactive pipeline. Useful for CI / smoke tests.
+  if [ -z "$IDEA" ]; then
+    echo "[kickoff] CLK_NO_TUI=true requires an idea argument" >&2
+    exit 2
+  fi
+  echo "[kickoff] clk idea"
+  "$CLK" idea "$IDEA" --title "$CLK_PROJECT_NAME"
+  echo "[kickoff] clk plan"
+  "$CLK" plan || echo "[kickoff] plan reported failures (continuing)"
+  echo "[kickoff] clk run"
+  "$CLK" run || echo "[kickoff] run reported failures (continuing)"
+  echo "[kickoff] clk loop --mode $CLK_LOOP_MODE --max-iterations $CLK_MAX_ITERATIONS"
+  "$CLK" loop --mode "$CLK_LOOP_MODE" --max-iterations "$CLK_MAX_ITERATIONS"
+else
+  # Default: hand control to the TUI dashboard. If $IDEA is set, it pre-seeds
+  # the idea and starts an engineering cycle; otherwise the dashboard waits
+  # for the user to type one into the input field.
+  echo "[kickoff] launching TUI (use /quit to exit, /help-style commands listed inside)"
+  if [ -n "$IDEA" ]; then
+    "$CLK" tui "$IDEA"
+  else
+    "$CLK" tui
+  fi
 fi
-
-echo "[kickoff] clk run"
-if ! "$CLK" run; then
-  echo "[kickoff] run reported failures (continuing)"
-fi
-
-echo "[kickoff] clk loop --mode $CLK_LOOP_MODE --max-iterations $CLK_MAX_ITERATIONS"
-"$CLK" loop --mode "$CLK_LOOP_MODE" --max-iterations "$CLK_MAX_ITERATIONS"
 
 echo
 echo "[kickoff] complete"
