@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# CLK launcher.
+#
+# Resolves the project root, prefers the local .clk/venv interpreter if present,
+# and falls back to the system python3. Always invokes clk_harness.cli as a
+# module so no global install is required.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+
+PY=""
+if [ -x "$PROJECT_ROOT/.clk/venv/bin/python" ]; then
+  PY="$PROJECT_ROOT/.clk/venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PY="$(command -v python3)"
+elif command -v python >/dev/null 2>&1; then
+  PY="$(command -v python)"
+else
+  echo "clk: no python interpreter found on PATH" >&2
+  exit 127
+fi
+
+export PYTHONPATH="${PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+exec "$PY" -m clk_harness.cli "$@"

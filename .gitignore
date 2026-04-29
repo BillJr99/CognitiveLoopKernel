@@ -1,0 +1,38 @@
+# CLK local-only artifacts
+.clk/venv/
+.clk/node/
+.clk/tools/
+.clk/logs/
+.clk/runs/
+.clk/state/agent_memory.jsonl
+.clk/state/experiments.jsonl
+.clk/backups/
+.clk/cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+
+# Env
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp

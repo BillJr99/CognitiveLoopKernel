@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clk-harness"
+version = "0.1.0"
+description = "Cognitive Loop Kernel (CLK): a local-only multi-agent development harness."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "CLK" }]
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+ollama = ["requests>=2.31"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+clk = "clk_harness.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["clk_harness*"]
