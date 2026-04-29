@@ -69,6 +69,72 @@ from .utils.logging_utils import log_exception
 
 
 # ---------------------------------------------------------------------------
+# stderr/stdout capture
+# ---------------------------------------------------------------------------
+
+
+class _StreamToLog:
+    """File-like object that routes writes into the dashboard log pane.
+
+    Replaces ``sys.stderr`` (and optionally ``sys.stdout``) while the TUI
+    is active so that ``log()`` calls, ``print()`` statements, and
+    ``traceback.print_exc()`` output never reach the terminal directly
+    and therefore never corrupt the curses screen.
+
+    Lines are buffered until a ``\\n`` is seen so partial writes from
+    ``print(..., end="")`` don't produce noisy fragments. Severity is
+    inferred from the ``[LEVEL]`` tag the harness's own logger emits;
+    everything else falls back to the default level.
+    """
+
+    LEVEL_TAGS = ("[ERROR]", "[WARN]", "[INFO]")
+
+    def __init__(self, state: "DashboardState", default_level: str = "INFO") -> None:
+        self.state = state
+        self.default_level = default_level
+        self._buf = ""
+
+    def write(self, s: str) -> int:
+        if not s:
+            return 0
+        self._buf += s
+        out_len = len(s)
+        while "\n" in self._buf:
+            line, _, self._buf = self._buf.partition("\n")
+            line = line.rstrip("\r")
+            if not line.strip():
+                continue
+            level = self.default_level
+            for tag in self.LEVEL_TAGS:
+                if tag in line:
+                    level = tag.strip("[]")
+                    break
+            try:
+                self.state.add_log(line[:300], level=level)
+            except Exception:
+                # Last resort: never raise from a stream.write.
+                pass
+        return out_len
+
+    def flush(self) -> None:
+        if self._buf.strip():
+            try:
+                self.state.add_log(self._buf[:300], level=self.default_level)
+            except Exception:
+                pass
+            self._buf = ""
+
+    def isatty(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return True
+
+    def fileno(self):  # raise so subprocess.* doesn't grab us
+        raise OSError("StreamToLog has no fileno")
+
+
+# ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
 
@@ -807,7 +873,6 @@ def run(initial_prompt: Optional[str] = None) -> int:
     checks = clk_cfg.get("validation_checks") or ["test -f .clk/config/clk.config.json"]
     evaluator = Evaluator(root=paths.root, default_checks=checks)
     worker = Worker(paths, runner, evaluator, state, clk_cfg, providers_cfg)
-    worker.start()
 
     # Pre-populate from existing idea if any.
     idea_path = paths.state / "idea.json"
@@ -817,6 +882,17 @@ def run(initial_prompt: Optional[str] = None) -> int:
             state.set_idea(payload.get("statement") or payload.get("title") or "")
         except Exception as exc:
             log_exception("tui.run.load_idea", exc)
+
+    # Route every stderr/stdout write into the dashboard log pane BEFORE
+    # the worker starts processing jobs, so even the very first job's
+    # output (subprocess, log(), traceback.print_exc()) cannot reach the
+    # real terminal and corrupt the curses display. The original streams
+    # are restored on exit so post-TUI shell output looks normal again.
+    old_stderr = sys.stderr
+    old_stdout = sys.stdout
+    sys.stderr = _StreamToLog(state, default_level="INFO")
+    sys.stdout = _StreamToLog(state, default_level="INFO")
+    worker.start()
 
     if initial_prompt:
         worker.submit(Job("idea", initial_prompt))
@@ -828,4 +904,6 @@ def run(initial_prompt: Optional[str] = None) -> int:
     finally:
         worker.stop()
         worker.join(timeout=2.0)
+        sys.stderr = old_stderr
+        sys.stdout = old_stdout
     return 0

@@ -45,7 +45,9 @@ def init_repo(root: Path) -> bool:
     if is_repo(root):
         return True
     try:
-        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(
+            ["git", "init", "-q"], cwd=root, check=True, capture_output=True, text=True
+        )
         # Set a safe default branch if needed.
         try:
             subprocess.run(
@@ -71,13 +73,17 @@ def _ensure_local_identity(root: Path) -> None:
             ["git", "config", "user.name"], cwd=root, capture_output=True, text=True
         )
         if not name.stdout.strip():
-            subprocess.run(["git", "config", "user.name", "CLK Harness"], cwd=root, check=False)
+            subprocess.run(
+                ["git", "config", "user.name", "CLK Harness"],
+                cwd=root, check=False, capture_output=True, text=True,
+            )
         email = subprocess.run(
             ["git", "config", "user.email"], cwd=root, capture_output=True, text=True
         )
         if not email.stdout.strip():
             subprocess.run(
-                ["git", "config", "user.email", "clk@local.invalid"], cwd=root, check=False
+                ["git", "config", "user.email", "clk@local.invalid"],
+                cwd=root, check=False, capture_output=True, text=True,
             )
     except Exception as exc:
         log_exception("git_ops._ensure_local_identity", exc)
@@ -100,7 +106,9 @@ def add(root: Path, paths: Iterable[str]) -> bool:
     if not paths:
         return True
     try:
-        subprocess.run(["git", "add", "--", *paths], cwd=root, check=True)
+        subprocess.run(
+            ["git", "add", "--", *paths], cwd=root, check=True, capture_output=True, text=True
+        )
         return True
     except Exception as exc:
         log_exception("git_ops.add", exc)
@@ -109,7 +117,9 @@ def add(root: Path, paths: Iterable[str]) -> bool:
 
 def add_all(root: Path) -> bool:
     try:
-        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run(
+            ["git", "add", "-A"], cwd=root, check=True, capture_output=True, text=True
+        )
         return True
     except Exception as exc:
         log_exception("git_ops.add_all", exc)
@@ -182,7 +192,10 @@ def head_sha(root: Path) -> Optional[str]:
 
 def revert_to(root: Path, sha: str) -> bool:
     try:
-        subprocess.run(["git", "reset", "--hard", sha], cwd=root, check=True)
+        subprocess.run(
+            ["git", "reset", "--hard", "--quiet", sha],
+            cwd=root, check=True, capture_output=True, text=True,
+        )
         return True
     except Exception as exc:
         log_exception("git_ops.revert_to", exc)

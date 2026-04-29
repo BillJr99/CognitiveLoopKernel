@@ -34,12 +34,11 @@ from .agent import AgentRunner, AgentRun
 
 try:
     import yaml  # type: ignore
-except Exception as _yaml_exc:
+except Exception:
+    # PyYAML is optional. The mini-YAML loader below covers the workflow
+    # subset CLK uses, so we silently fall back rather than spraying a
+    # warning across stderr (which would also corrupt the TUI).
     yaml = None
-    print(
-        f"[orchestration.workflow] PyYAML not available; using minimal YAML fallback ({_yaml_exc})",
-        file=sys.stderr,
-    )
 
 
 def _mini_yaml_loads(text: str) -> Dict[str, Any]:
