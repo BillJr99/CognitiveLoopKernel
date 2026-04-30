@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -33,6 +34,7 @@ class AgentSpec:
     prompt_file: str
     provider: Optional[str] = None
     role: str = ""
+    capabilities: List[str] = field(default_factory=list)
 
     @classmethod
     def from_config(cls, name: str, cfg: Dict[str, Any]) -> "AgentSpec":
@@ -41,6 +43,7 @@ class AgentSpec:
             prompt_file=cfg.get("prompt") or f"{name}.md",
             provider=cfg.get("provider"),
             role=cfg.get("role", ""),
+            capabilities=list(cfg.get("capabilities") or []),
         )
 
 
@@ -115,6 +118,10 @@ class AgentRunner:
         self.providers_cfg = providers_cfg
         self.clk_cfg = clk_cfg
         self.observer = observer
+        # Serialises agents_cfg mutations from _apply_proposals so parallel
+        # workflow stages don't race when both emit PROPOSE_ROLE blocks.
+        # RLock so consensus coalescing (which calls run() recursively) works.
+        self._proposals_lock = threading.RLock()
 
     # -- public ------------------------------------------------------------
 
@@ -201,6 +208,7 @@ class AgentRunner:
             timeout_s=timeout_s,
             no_output_timeout_s=no_output_timeout_s,
             on_progress=_on_progress,
+            capabilities=list(agent.capabilities or []),
         )
         started = datetime.now().isoformat(timespec="seconds")
         run_id = f"{started.replace(':','-')}-{agent.name}"
@@ -222,6 +230,7 @@ class AgentRunner:
             no_output_timeout_s=no_output_timeout_s,
             prompt_file=agent.prompt_file,
             role=agent.role,
+            capabilities=list(agent.capabilities or []),
             run_id=run_id,
             max_retries=max_retries,
             retry_backoff_s=backoff_s,
@@ -281,7 +290,7 @@ class AgentRunner:
                 f"backing off {backoff_s:.1f}s then reissuing attempt {attempt + 1}/{max_retries + 1}",
             )
             if backoff_s > 0:
-                time.sleep(backoff_s)
+                time.sleep(backoff_s * (2 ** (attempt - 1)))
         finished = datetime.now().isoformat(timespec="seconds")
         run = AgentRun(
             agent=agent.name,
@@ -543,14 +552,15 @@ class AgentRunner:
                 except Exception as exc:
                     log_exception("orchestration.agent.observer.roster_changed", exc)
 
-        result = _casting.apply_response_proposals(
-            self.paths,
-            text,
-            agents_cfg=self.agents_cfg,
-            max_dynamic=cap,
-            source_agent=run.agent,
-            on_change=_on_change,
-        )
+        with self._proposals_lock:
+            result = _casting.apply_response_proposals(
+                self.paths,
+                text,
+                agents_cfg=self.agents_cfg,
+                max_dynamic=cap,
+                source_agent=run.agent,
+                on_change=_on_change,
+            )
         if not result.is_empty():
             log(f"casting from {run.agent}: {result.summary()}")
 
@@ -730,6 +740,7 @@ class AgentRunner:
             "idea_title": (idea.get("title") if isinstance(idea, dict) else "") or "",
             "idea_statement": (idea.get("statement") if isinstance(idea, dict) else "") or "",
             "iteration": str(extra.get("iteration", "")),
+            "cycle_context": str(extra.get("cycle_context") or ""),
             "current_roster": roster_text,
         }
         ctx.update({k: v for k, v in extra.items() if k not in ctx})

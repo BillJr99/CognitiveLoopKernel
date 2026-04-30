@@ -134,11 +134,13 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
     "max_iterations": 20,
     "dry_run": False,
     "auto_commit": True,
-    "provider_timeout_s": 300,
-    "provider_no_output_timeout_s": 240,
+    "provider_timeout_s": 0,
+    "provider_no_output_timeout_s": 0,
     "provider_retry": {
         "max_retries": 2,
         "backoff_s": 5,
+        "stage_max_retries": 2,
+        "stage_backoff_s": 30,
     },
     "supervise": {
         "max_cycles": 20,

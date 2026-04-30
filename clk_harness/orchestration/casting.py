@@ -66,17 +66,16 @@ from ..utils.logging_utils import log, log_exception
 # ---------------------------------------------------------------------------
 
 # These names cannot be removed even if the chief asks. They are the
-# spine the harness assumes exists:
-#   * chief        - decomposition, casting, workflow authoring
-#   * ralph        - drives the ralph loop
-#   * autoresearch - drives the autoresearch loop
-#   * engineer     - default implementer (loop fallback)
-#   * qa           - default validator (loop fallback)
+# minimal spine the harness assumes always exists:
+#   * chief  - decomposition, casting, workflow authoring
+#   * ralph  - iterative refinement loop driver
+#   * qa     - output validation (must appear at least once in every workflow)
+# All other agents (engineer, analyst, researcher, etc.) are dynamic roles
+# that the chief creates per project. The chief prompt instructs the chief
+# to always include ralph and qa in every engineering workflow.
 BASELINE_AGENTS: Tuple[str, ...] = (
     "chief",
     "ralph",
-    "autoresearch",
-    "engineer",
     "qa",
 )
 
@@ -96,6 +95,7 @@ class RoleProposal:
     name: str
     role: str = ""
     provider: Optional[str] = None
+    capabilities: List[str] = field(default_factory=list)
     prompt: str = ""
 
 
@@ -115,7 +115,7 @@ class ConsensusProposal:
 
 
 _ROLE_HEAD_RE = re.compile(r"^\s*PROPOSE_ROLE\s*:\s*([A-Za-z][A-Za-z0-9_\-]*)\s*$", re.MULTILINE)
-_ROLE_FIELD_RE = re.compile(r"^(ROLE|PROVIDER)\s*:\s*(.*)$", re.IGNORECASE)
+_ROLE_FIELD_RE = re.compile(r"^(ROLE|PROVIDER|CAPABILITIES)\s*:\s*(.*)$", re.IGNORECASE)
 _ROLE_PROMPT_RE = re.compile(r"^\s*PROMPT\s*:\s*$", re.IGNORECASE)
 _ROLE_END_RE = re.compile(r"^\s*END_ROLE\s*$", re.IGNORECASE)
 
@@ -165,6 +165,10 @@ def parse_role_proposals(text: str) -> List[RoleProposal]:
                         prop.role = val
                     elif key == "PROVIDER":
                         prop.provider = val or None
+                    elif key == "CAPABILITIES":
+                        prop.capabilities = [
+                            c.strip() for c in re.split(r"[,\s]+", val) if c.strip()
+                        ]
                     i += 1
                     continue
                 if _ROLE_PROMPT_RE.match(line):
@@ -497,6 +501,7 @@ def register_role(
         "prompt": fname,
         "provider": proposal.provider or (existing or {}).get("provider"),
         "role": proposal.role or (existing or {}).get("role", ""),
+        "capabilities": proposal.capabilities or (existing or {}).get("capabilities") or [],
         "dynamic": True,
     }
     _persist(paths, cfg)
@@ -508,6 +513,7 @@ def register_role(
         "name": name,
         "role": proposal.role,
         "provider": proposal.provider,
+        "capabilities": list(proposal.capabilities or []),
         "prompt_length": len(proposal.prompt or ""),
         "prompt": proposal.prompt or "",
     })
@@ -677,10 +683,27 @@ Add or refresh a role:
   PROPOSE_ROLE: <snake_case_name>
   ROLE: <one-line description>
   PROVIDER: <optional provider name, omit to inherit default>
+  CAPABILITIES: <optional comma-separated list of capability hints>
   PROMPT:
   <full prompt body. Use $$idea_title, $$idea_statement, $$project_name,
    $$project_root, $$state_summary, $$objective, $$iteration as placeholders.>
   END_ROLE
+
+Capability hints (CAPABILITIES field)
+  Omit the field entirely to use provider defaults (tools on, standard thinking).
+  Combine as needed: "no-tools, thinking-off"
+
+  no-tools          Disable all tools. Best for research / doc-writing agents
+                    that only need to produce text — avoids extra model round
+                    trips and cuts latency significantly.
+  no-builtin-tools  Disable built-in tools but keep custom extensions.
+  thinking-off      Skip chain-of-thought. Best for formatting, summarising,
+                    or any task that does not require deep reasoning.
+  thinking-low      Minimal thinking — slightly faster than the default.
+  thinking-medium   Standard thinking level (provider default).
+  thinking-high     Deep reasoning — use for architecture, debugging, or tasks
+                    where correctness matters more than speed.
+  thinking-xhigh    Maximum thinking — slowest, most thorough.
 
 Author or replace a workflow (the harness will save it as
 `.clk/config/workflows/<name>.yaml`):
@@ -700,23 +723,39 @@ Author or replace a workflow (the harness will save it as
   END_WORKFLOW
 
 Rules
-- Roster cap is enforced (default 12 dynamic roles + the baseline).
+- Roster cap is enforced (default 12 dynamic roles + the 3 baseline roles).
   Drop or merge before adding past the cap.
-- Baseline roles (chief, ralph, autoresearch, engineer, qa) cannot be
-  removed but you may refresh their prompt bodies.
+- Baseline roles (chief, ralph, qa) cannot be removed but you may refresh
+  their prompt bodies.
+- ralph is the iterative refinement driver. Always include at least one
+  ralph stage in engineering workflows so the output gets iteratively
+  improved before delivery.
+- qa is the validation agent. Always include at least one qa stage in
+  every engineering workflow, typically as the final stage before done.
+- All other roles (engineer, analyst, researcher, architect, etc.) are
+  dynamic — create them per project as needed.
 - If a stage references an agent you have not defined yet, define it in
   the same response with a PROPOSE_ROLE block.
 - Workflows may use any combination of baseline and dynamic agents.
 - Prefer assigning work to an existing agent when its role already fits.
   Create or refresh a role when the need is distinct enough that an
   existing role would blur ownership or do materially worse work.
-- Check existing names, role lines, and prompt previews before creating
-  a role. Do not create a near-synonym, pluralization, gerund, or
-  department label for an existing role (for example, `engineering`
-  when `engineer` exists).
-- New role prompts and role lines should state the distinct responsibility
-  the role owns compared with the nearest existing agent, and new role
-  names should be distinctive from the current roster.
+- Before emitting ANY PROPOSE_ROLE block, run this mandatory pre-flight:
+    1. Read every agent's prompt_preview in the current roster.
+    2. Ask: "Does any existing agent's prompt already describe this work?"
+       If YES → use that agent. Do NOT emit PROPOSE_ROLE.
+    3. Ask: "Is this name a synonym, plural, gerund, or department label
+       of an existing name?" (e.g. `engineering` when `engineer` exists,
+       `researchers` when `researcher` exists.) If YES → use the existing
+       name. Do NOT emit PROPOSE_ROLE.
+    4. Only emit PROPOSE_ROLE when both checks pass: no functional overlap
+       AND a genuinely distinctive name.
+- Functional overlap is the primary test — name similarity is secondary.
+  An agent named differently is still a duplicate if its prompt describes
+  the same work as an existing agent's prompt. The new role's PROMPT must
+  state what it owns that no current agent's prompt already covers.
+- New role prompts and role lines must state the distinct responsibility
+  the role owns compared with the nearest existing agent.
 """
 
 
@@ -731,6 +770,8 @@ def render_roster_summary(paths: Paths) -> str:
         marker = "[baseline]" if is_baseline(name) else "[dynamic]"
         role = (cfg.get("role") or "").strip()
         prov = cfg.get("provider") or "(default)"
+        caps = cfg.get("capabilities") or []
+        caps_str = ",".join(caps) if caps else "default"
         prompt_file = cfg.get("prompt") or f"{name}.md"
         prompt_preview = ""
         try:
@@ -741,7 +782,7 @@ def render_roster_summary(paths: Paths) -> str:
             log_exception(f"orchestration.casting.render_roster_summary.{name}", exc)
         lines.append(
             f"- {marker} {name} :: {role} "
-            f"(provider={prov}; prompt={prompt_file}; prompt_preview={prompt_preview or '(missing)'})"
+            f"(provider={prov}; capabilities={caps_str}; prompt={prompt_file}; prompt_preview={prompt_preview or '(missing)'})"
         )
     return "\n".join(lines)
 

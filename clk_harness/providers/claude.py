@@ -56,8 +56,27 @@ def _extract_usage(envelope: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Maps abstract capability names to claude CLI flags.
+# claude CLI does not expose a --no-tools flag, so tool-related capabilities
+# are intentionally omitted here (they are pi-specific for now).
+_CAP_MAP: dict = {
+    "thinking-off":    ["--thinking", "off"],
+    "thinking-low":    ["--thinking", "low"],
+    "thinking-medium": ["--thinking", "medium"],
+    "thinking-high":   ["--thinking", "high"],
+}
+
+
 class ClaudeProvider(AgentProvider):
     type_name = "claude"
+
+    def capabilities_to_args(self, capabilities: list) -> list:
+        result: list = []
+        for cap in capabilities:
+            extra = _CAP_MAP.get((cap or "").lower().strip())
+            if extra:
+                result.extend(extra)
+        return result
 
     def _mode(self) -> str:
         # "cli" = spawn the local Claude CLI subprocess.
@@ -98,7 +117,8 @@ class ClaudeProvider(AgentProvider):
         # The parser below will try JSON first regardless of how args
         # were configured, so opt-in works automatically.
         default_args = ["--print"]
-        cmd = [self._cmd(), *(self.config.get("args") or default_args)]
+        cap_args = self.capabilities_to_args(req.capabilities or [])
+        cmd = [self._cmd(), *(self.config.get("args") or default_args), *cap_args]
         try:
             rc, stdout, stderr = run_streaming(
                 cmd,
@@ -188,7 +208,10 @@ class ClaudeProvider(AgentProvider):
         )
         progress("http_request", f"POST {endpoint} model={model} timeout_s={req.timeout_s}")
         try:
-            with urllib.request.urlopen(request, timeout=req.timeout_s) as resp:
+            # timeout=0 means non-blocking in Python socket semantics; use
+            # None (blocking, no limit) when the harness has no hard timeout set.
+            _timeout = req.timeout_s if req.timeout_s and req.timeout_s > 0 else None
+            with urllib.request.urlopen(request, timeout=_timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             try:

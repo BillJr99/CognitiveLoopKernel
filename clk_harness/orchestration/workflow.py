@@ -21,10 +21,12 @@ from __future__ import annotations
 import shlex
 import subprocess
 import sys
+import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config import Paths
 from ..git_ops import add_all, commit as git_commit, has_changes
@@ -308,6 +310,22 @@ class WorkflowRunner:
         cfg = (self.runner.clk_cfg.get("recovery") or {})
         return int(cfg.get("max_per_stage") or self.DEFAULT_MAX_RECOVERY_PER_STAGE)
 
+    # Per-stage retry cap for provider errors (separate from recovery_count
+    # which handles unmet deps). Uses exponential backoff starting at
+    # stage_backoff_s. Overridable via clk.config.json::provider_retry.
+    DEFAULT_MAX_STAGE_RETRIES = 2
+    DEFAULT_STAGE_BACKOFF_S = 30.0
+
+    @property
+    def max_stage_retries(self) -> int:
+        cfg = (self.runner.clk_cfg.get("provider_retry") or {})
+        return int(cfg.get("stage_max_retries", self.DEFAULT_MAX_STAGE_RETRIES) or self.DEFAULT_MAX_STAGE_RETRIES)
+
+    @property
+    def stage_backoff_s(self) -> float:
+        cfg = (self.runner.clk_cfg.get("provider_retry") or {})
+        return float(cfg.get("stage_backoff_s", self.DEFAULT_STAGE_BACKOFF_S) or self.DEFAULT_STAGE_BACKOFF_S)
+
     DEFAULT_MAX_SUPERVISE_CYCLES = 20
 
     @property
@@ -373,102 +391,177 @@ class WorkflowRunner:
         return all_results
 
     def _run_once(self, workflow: Workflow, *, dry_run: Optional[bool] = None, cycle: int = 1) -> List[StageResult]:
-        """Single pass through the workflow; called once per supervise cycle."""
+        """Single pass through the workflow; stages with no inter-dependencies run in parallel."""
         log(f"workflow start: {workflow.name} ({len(workflow.stages)} stages)")
         results: List[StageResult] = []
         completed: Dict[str, bool] = {}
-        # stage_id -> StageResult for richer "why did dep fail" context
         result_by_id: Dict[str, StageResult] = {}
         wf_path = self.paths.workflows / f"{workflow.name}.yaml"
         wf_mtime = wf_path.stat().st_mtime if wf_path.exists() else 0.0
 
         stages = list(workflow.stages)
         recovery_count: Dict[str, int] = {}
-        i = 0
-        while i < len(stages):
-            stage = stages[i]
-            unmet = self._unmet_deps(stage, completed)
-            if unmet:
+        stage_retry_count: Dict[str, int] = {}
+        dispatched: Set[str] = set()  # stage ids sent to runner this pass
+
+        max_cycles = self.max_supervise_cycles
+        cycle_context = f"Supervise cycle {cycle}/{max_cycles} — {max_cycles - cycle + 1} remaining."
+
+        while True:
+            # Stages not yet dispatched and not yet in completed
+            pending = [s for s in stages if s.id not in dispatched and s.id not in completed]
+            if not pending:
+                break
+
+            ready = [s for s in pending if not self._unmet_deps(s, completed)]
+            blocked = [s for s in pending if self._unmet_deps(s, completed)]
+
+            if not ready:
+                # Every remaining stage has unmet deps — recovery dispatch for the first one
+                stage = blocked[0]
+                unmet = self._unmet_deps(stage, completed)
                 tries = recovery_count.get(stage.id, 0)
                 if tries >= self.max_recovery_per_stage or dry_run:
                     self._log_skip(stage, unmet, result_by_id)
                     completed[stage.id] = False
-                    i += 1
+                    dispatched.add(stage.id)
                     continue
                 recovery_count[stage.id] = tries + 1
-                self._dispatch_recovery(workflow, stage, unmet, result_by_id, dry_run=dry_run)
-                # Recovery may have rewritten the workflow with new
-                # stages and/or relaxed dependencies. Re-read from disk
-                # and replace the un-processed tail of the queue.
-                stages, wf_mtime = self._maybe_refresh_workflow(
-                    workflow.name, wf_path, wf_mtime, stages, i
+                self._dispatch_recovery(
+                    workflow, stage, unmet, result_by_id,
+                    dry_run=dry_run, cycle_context=cycle_context,
                 )
-                # Don't advance i - whatever stage now sits at i is the
-                # next thing to attempt (chief's new stage, or the same
-                # stage with its deps now relaxed).
+                stages, wf_mtime = self._refresh_from_dispatched(
+                    workflow.name, wf_path, wf_mtime, stages,
+                    dispatched | set(completed),
+                )
                 continue
-            log(f"stage {stage.id} -> agent {stage.agent}")
-            run = self.runner.run(
-                stage.agent,
-                stage.objective,
-                extra={"stage_id": stage.id, "workflow": workflow.name},
-                dry_run=dry_run,
-            )
-            ok = run.response.ok
-            if dry_run:
-                v_ok, v_out = True, "(dry-run: validation skipped)"
+
+            # Mark ready stages as dispatched before running so re-entrant
+            # refreshes don't double-dispatch them.
+            for s in ready:
+                dispatched.add(s.id)
+
+            if len(ready) > 1:
+                log(
+                    f"workflow {workflow.name}: parallel batch "
+                    f"[{', '.join(s.id for s in ready)}]"
+                )
             else:
-                v_ok, v_out = self._validate(stage)
-            committed = False
-            if run.committed:
-                # AgentRunner already created a per-action-batch commit;
-                # don't double-commit the same diff.
-                committed = True
-            elif ok and v_ok and stage.commit and not dry_run:
-                committed = self._commit(workflow, stage, run, v_out)
-            failure_reason = ""
-            if not ok:
-                failure_reason = (run.response.error or "agent_failed")[:200]
-            elif not v_ok:
-                failure_reason = f"validation_failed: {v_out[:200]}" if v_out else "validation_failed"
-            sr = StageResult(
-                stage=stage,
-                run=run,
-                validated=v_ok,
-                validation_output=v_out,
-                committed=committed,
-                failure_reason=failure_reason,
-            )
-            results.append(sr)
-            result_by_id[stage.id] = sr
-            completed[stage.id] = ok and v_ok
-            if not ok and self._is_provider_failure(run.response.error or ""):
-                log(
-                    f"workflow {workflow.name}: aborting recovery loop after provider failure "
-                    f"in stage {stage.id}: {run.response.error}",
-                    level="ERROR",
-                )
-                log(
-                    f"workflow {workflow.name}: no recovery dispatch will be attempted; "
-                    "fix provider settings, wait/back off if rate-limited, or switch provider before retrying",
-                    level="WARN",
-                )
-                log_event(
-                    self.paths,
-                    "workflow_aborted",
-                    agent=stage.agent,
-                    workflow=workflow.name,
-                    stage_id=stage.id,
-                    reason="provider_failure",
-                    error=run.response.error,
-                )
+                log(f"stage {ready[0].id} -> agent {ready[0].agent}")
+
+            # Run: parallel when multiple independent stages are ready
+            if len(ready) == 1 or dry_run:
+                batch = [self._run_stage(ready[0], workflow, cycle_context, dry_run)]
+            else:
+                with ThreadPoolExecutor(max_workers=len(ready)) as pool:
+                    fmap = {
+                        pool.submit(self._run_stage, s, workflow, cycle_context, dry_run): s
+                        for s in ready
+                    }
+                    batch = [fut.result() for fut in as_completed(fmap)]
+
+            abort = False
+            for sr in batch:
+                ok = sr.run.response.ok
+                if not ok and self._is_provider_failure(sr.run.response.error or ""):
+                    error_msg = sr.run.response.error or ""
+                    st = stage_retry_count.get(sr.stage.id, 0) + 1
+                    stage_retry_count[sr.stage.id] = st
+                    if self._is_retryable_stage_error(error_msg) and st <= self.max_stage_retries:
+                        wait = self.stage_backoff_s * (2 ** (st - 1))
+                        log(
+                            f"workflow {workflow.name}: stage {sr.stage.id} retryable error "
+                            f"(attempt {st}/{self.max_stage_retries}): {error_msg!r}; "
+                            f"backing off {wait:.0f}s",
+                            level="WARN",
+                        )
+                        log_event(
+                            self.paths, "workflow_stage_retry",
+                            agent=sr.stage.agent, workflow=workflow.name,
+                            stage_id=sr.stage.id, attempt=st,
+                            max_retries=self.max_stage_retries,
+                            backoff_s=wait, error=error_msg,
+                        )
+                        if self.runner.observer is not None:
+                            try:
+                                self.runner.observer.progress(
+                                    sr.stage.agent, "retry",
+                                    f"stage {sr.stage.id} backing off {wait:.0f}s "
+                                    f"(attempt {st}/{self.max_stage_retries}): {error_msg}",
+                                )
+                            except Exception:
+                                pass
+                        dispatched.discard(sr.stage.id)
+                        time.sleep(wait)
+                        continue  # retry: don't add to results/completed
+                    log(
+                        f"workflow {workflow.name}: aborting after provider failure "
+                        f"in stage {sr.stage.id} (retries exhausted): {error_msg}",
+                        level="ERROR",
+                    )
+                    log_event(
+                        self.paths, "workflow_aborted",
+                        agent=sr.stage.agent, workflow=workflow.name,
+                        stage_id=sr.stage.id, reason="provider_failure", error=error_msg,
+                    )
+                    results.append(sr)
+                    result_by_id[sr.stage.id] = sr
+                    completed[sr.stage.id] = False
+                    abort = True
+                else:
+                    results.append(sr)
+                    result_by_id[sr.stage.id] = sr
+                    completed[sr.stage.id] = ok and sr.validated
+
+            if abort:
                 break
-            i += 1
-            stages, wf_mtime = self._maybe_refresh_workflow(
-                workflow.name, wf_path, wf_mtime, stages, i
+
+            stages, wf_mtime = self._refresh_from_dispatched(
+                workflow.name, wf_path, wf_mtime, stages,
+                dispatched | set(completed),
             )
+
         log(f"workflow done: {workflow.name}")
         return results
+
+    def _run_stage(
+        self,
+        stage: WorkflowStage,
+        workflow: Workflow,
+        cycle_context: str,
+        dry_run: Optional[bool],
+    ) -> StageResult:
+        """Run a single stage and return its result."""
+        run = self.runner.run(
+            stage.agent,
+            stage.objective,
+            extra={"stage_id": stage.id, "workflow": workflow.name, "cycle_context": cycle_context},
+            dry_run=dry_run,
+        )
+        ok = run.response.ok
+        if dry_run:
+            v_ok, v_out = True, "(dry-run: validation skipped)"
+        else:
+            v_ok, v_out = self._validate(stage)
+        committed = False
+        if run.committed:
+            committed = True
+        elif ok and v_ok and stage.commit and not dry_run:
+            committed = self._commit(workflow, stage, run, v_out)
+        failure_reason = ""
+        if not ok:
+            failure_reason = (run.response.error or "agent_failed")[:200]
+        elif not v_ok:
+            failure_reason = f"validation_failed: {v_out[:200]}" if v_out else "validation_failed"
+        return StageResult(
+            stage=stage,
+            run=run,
+            validated=v_ok,
+            validation_output=v_out,
+            committed=committed,
+            failure_reason=failure_reason,
+        )
 
     # -- helpers ---------------------------------------------------------
 
@@ -477,6 +570,31 @@ class WorkflowRunner:
 
     def _is_provider_failure(self, error: str) -> bool:
         return is_provider_failure(error)
+
+    def _is_retryable_stage_error(self, error: str) -> bool:
+        """Subset of provider failures worth retrying with backoff at stage level."""
+        msg = (error or "").lower()
+        retryable = [
+            "no output for",
+            "timeout after",
+            "operation was aborted",
+            "no endpoints available",
+            "guardrail restrictions",
+            "data policy",
+            "connection reset",
+            "temporarily unavailable",
+            "try again",
+            "rate limit",
+            "quota",
+        ]
+        non_retryable = [
+            "api key",
+            "authentication",
+            "unauthorized",
+            "forbidden",
+            "cli not found",
+        ]
+        return any(s in msg for s in retryable) and not any(s in msg for s in non_retryable)
 
     def _log_skip(
         self,
@@ -506,6 +624,7 @@ class WorkflowRunner:
         result_by_id: Dict[str, StageResult],
         *,
         dry_run: Optional[bool],
+        cycle_context: str = "",
     ) -> None:
         details: List[str] = []
         for d in unmet:
@@ -538,9 +657,41 @@ class WorkflowRunner:
                 "workflow": workflow.name,
                 "stage_id": stage.id,
                 "unmet_deps": ",".join(unmet),
+                "cycle_context": cycle_context,
             },
             dry_run=dry_run,
         )
+
+    def _refresh_from_dispatched(
+        self,
+        workflow_name: str,
+        wf_path: Path,
+        prev_mtime: float,
+        stages: List[WorkflowStage],
+        done_ids: Set[str],
+    ) -> Tuple[List[WorkflowStage], float]:
+        """Reload the workflow file if rewritten; splice in any new stages
+        whose ids haven't been dispatched yet so dynamically-added stages
+        are picked up without re-running already-dispatched ones.
+        """
+        if not wf_path.exists():
+            return stages, prev_mtime
+        new_mtime = wf_path.stat().st_mtime
+        if new_mtime <= prev_mtime:
+            return stages, prev_mtime
+        try:
+            refreshed = load_workflow(wf_path)
+        except Exception as exc:
+            log_exception("orchestration.workflow._refresh_from_dispatched", exc)
+            return stages, prev_mtime
+        kept = [s for s in stages if s.id in done_ids]
+        new_pending = [s for s in refreshed.stages if s.id not in done_ids]
+        merged = kept + new_pending
+        log(
+            f"workflow {workflow_name}: refreshed; "
+            f"{len(kept)} done, {len(new_pending)} pending"
+        )
+        return merged, new_mtime
 
     def _maybe_refresh_workflow(
         self,

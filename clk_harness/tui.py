@@ -187,6 +187,7 @@ def _extract_thought(text: str) -> str:
 class AgentStatus:
     IDLE = "idle"
     WORKING = "working"
+    RECOVERING = "recovering"   # red: retry backoff in progress after a provider error
     DONE = "done"
     FAILED = "failed"
     PROVIDER_ERROR = "provider"
@@ -358,6 +359,23 @@ class DashboardState:
                 # Never let a log write blow up the TUI.
                 pass
 
+    def add_file_log(self, text: str, level: str = "INFO") -> None:
+        """Write directly to the session log file without adding to the TUI pane.
+
+        Used for high-volume telemetry (tick, command) that is useful for
+        post-run analysis but would flood the visible status log.
+        """
+        with self.lock:
+            fh = self.session_log_fh
+        if fh is not None:
+            try:
+                fh.write(
+                    f"{datetime.now().isoformat(timespec='seconds')} [{level}] {text}\n"
+                )
+                fh.flush()
+            except Exception:
+                pass
+
     def attach_session_log(self, path: Path) -> None:
         """Open ``path`` in append mode and mirror every log line to it.
 
@@ -470,28 +488,43 @@ class DashboardState:
             elif kind in ("end", "timeout"):
                 card.live_pid = 0
                 card.live_last_line = f"{kind}: {message}"[:200]
-        # Emit log entries for the high-signal events so the user sees
-        # what's happening even when not looking at a card.
+        # Route events: high-volume telemetry goes to the session file only;
+        # actionable events go to both the TUI pane and the file.
         if kind == "start":
+            # A new subprocess started — if this agent was in RECOVERING
+            # (backoff after a provider error), it is now retrying; show yellow.
+            with self.lock:
+                card2 = self.agents.get(name)
+                if card2 and card2.status == AgentStatus.RECOVERING:
+                    card2.status = AgentStatus.WORKING
+                    card2.provider_issue = False
             self.add_log(f"{name} :: subprocess {message}", level="SYSTEM")
         elif kind == "command":
+            # Full command metadata is verbose; useful for forensics, not for
+            # the live status pane. Write to session log file only.
             try:
                 meta = json.loads(message)
-                argv = meta.get("argv") or []
                 args = meta.get("args") or []
                 arg_note = "no args" if not args else f"args={args}"
-                self.add_log(
+                line = (
                     f"{name} :: command :: {meta.get('cmd')} "
                     f"(argv_count={meta.get('argv_count')}; {arg_note}; "
                     f"stdin={meta.get('stdin')} {meta.get('stdin_chars')} chars; "
-                    f"cwd={meta.get('cwd')})",
-                    level="SYSTEM",
+                    f"cwd={meta.get('cwd')})"
                 )
             except Exception:
-                self.add_log(f"{name} :: command :: {message[:240]}", level="SYSTEM")
+                line = f"{name} :: command :: {message[:240]}"
+            self.add_file_log(line, level="SYSTEM")
         elif kind == "tick":
-            self.add_log(f"{name} :: telemetry :: {message[:240]}", level="INFO")
+            # Per-process telemetry ticks are high-frequency; file log only.
+            self.add_file_log(f"{name} :: telemetry :: {message[:240]}", level="INFO")
         elif kind == "retry":
+            # Provider error during a run — enter red RECOVERING state.
+            with self.lock:
+                card2 = self.agents.get(name)
+                if card2:
+                    card2.status = AgentStatus.RECOVERING
+                    card2.provider_issue = True
             self.add_log(f"{name} :: retry :: {message[:240]}", level="WARN")
         elif kind == "killed":
             self.add_log(f"{name} :: killed :: {message[:240]}", level="WARN")
@@ -502,8 +535,6 @@ class DashboardState:
         elif kind == "stdout_line":
             with self.lock:
                 cnt = self.agents[name].live_stdout_chars
-            # Only log the first few stdout lines per run so very long
-            # model responses don't flood the pane.
             if cnt < 1024:
                 self.add_log(f"{name} stdout: {message[:200]}", level="INFO")
         elif kind == "timeout":
@@ -1130,11 +1161,12 @@ class TuiApp:
                     card.live_stdout_chars + card.live_stderr_chars,
                     card.live_last_update_mono,
                     card.live_last_line,
+                    card.live_cpu_pct,
                 )
                 for name, card in self.state.agents.items()
                 if card.status == AgentStatus.WORKING
             ]
-        for name, started, pid, total_bytes, last_io, last_line in working:
+        for name, started, pid, total_bytes, last_io, last_line, cpu_str in working:
             elapsed = max(0.0, now - started)
             last = self._heartbeat_last.get(name, started)
             interval = self.HEARTBEAT_FIRST_S if last == started else self.HEARTBEAT_REPEAT_S
@@ -1142,41 +1174,49 @@ class TuiApp:
                 self._heartbeat_last[name] = now
                 silence_s = max(0.0, now - last_io)
                 if pid:
+                    # Determine whether the process looks alive.
+                    # A live model call typically shows near-zero CPU while
+                    # blocked on a network response but its pid still exists.
+                    # We trust the process is alive unless cpu has been
+                    # reported as exactly zero for a long time.
+                    try:
+                        cpu = float(cpu_str) if cpu_str and cpu_str not in ("", "?") else -1.0
+                    except Exception:
+                        cpu = -1.0
+                    # "looks dead" = cpu was reported as exactly 0.0 AND
+                    # we've been waiting a very long time. Near-zero (e.g.
+                    # 0.9%) is normal for a blocked network call.
+                    looks_dead = (cpu == 0.0 and elapsed > 300)
                     if total_bytes == 0:
-                        # Subprocess alive but hasn't produced any output
-                        # yet. Most CLIs (claude, codex, gemini) buffer
-                        # stdout when piped and emit it all at once after
-                        # the model responds, so this is the EXPECTED
-                        # state for a slow model call. Word it that way
-                        # so the user doesn't think it's broken.
-                        if elapsed < 60:
-                            flavor = f"awaiting model response (no output yet, {elapsed:.0f}s)"
-                        elif elapsed < 120:
+                        if not looks_dead:
+                            # Normal slow model call — no alarm.
                             flavor = (
-                                f"still no output after {elapsed:.0f}s "
-                                f"(slow model call or stuck; type /abort to cancel)"
+                                f"awaiting model response "
+                                f"({elapsed:.0f}s, cpu={cpu_str or '?'}%)"
                             )
+                            level = "INFO"
                         else:
                             flavor = (
-                                f"NO OUTPUT FOR {elapsed:.0f}s -- likely stuck; "
-                                "type /abort to kill it and try again"
+                                f"no output for {elapsed:.0f}s, cpu=0% "
+                                f"-- process may be dead; /abort to kill and retry"
                             )
+                            level = "WARN"
                     elif silence_s > 5.0:
                         flavor = (
                             f"streaming idle {silence_s:.0f}s "
-                            f"(received {total_bytes}b so far, last='{(last_line or '-')[:60]}')"
+                            f"({total_bytes}b received, last='{(last_line or '-')[:60]}')"
                         )
+                        level = "INFO"
                     else:
                         flavor = f"streaming ({total_bytes}b received)"
+                        level = "INFO"
                     note = f"pid={pid} :: {flavor}"
                 else:
-                    # No PID == no subprocess (in-process providers like
-                    # ollama/openwebui) or the subprocess hasn't started
-                    # yet. Either way, be explicit.
                     note = "no subprocess yet (provider initializing)"
+                    level = "INFO"
                 self.state.add_log(
                     f"{name} :: working {elapsed:.0f}s :: {note}",
-                    level="INFO" if total_bytes > 0 or elapsed < 120 else "WARN",
+                    level=level,
                 )
         # Forget heartbeats for agents that have finished, so the next
         # WORKING period starts fresh.
@@ -1319,7 +1359,8 @@ class TuiApp:
     def _draw_card(self, stdscr, y: int, x: int, h: int, w: int, card: AgentCard) -> None:
         col = {
             AgentStatus.IDLE: self.COLOR_IDLE,
-            AgentStatus.WORKING: self.COLOR_WORKING,
+            AgentStatus.WORKING: self.COLOR_WORKING,    # yellow: waiting for response
+            AgentStatus.RECOVERING: self.COLOR_FAILED,  # red: retry backoff in progress
             AgentStatus.DONE: self.COLOR_DONE,
             AgentStatus.FAILED: self.COLOR_FAILED,
             AgentStatus.PROVIDER_ERROR: self.COLOR_FAILED,
@@ -1355,10 +1396,16 @@ class TuiApp:
             with self.state.lock:
                 peak = self.state.peak_run_tokens
             if card.status == AgentStatus.WORKING:
-                elapsed = max(0.0, time.monotonic() - card.last_started_mono)
-                # 4 cells/sec baseline; +1/sec for each 5s elapsed so
-                # the eye knows when something is taking unusually long.
-                speed = 4.0 + (elapsed / 5.0)
+                now = time.monotonic()
+                elapsed = max(0.0, now - card.last_started_mono)
+                # Fast when tokens are arriving, slow when waiting for the
+                # model to reply. idle_since measures time since the last
+                # stdout/stderr line from the subprocess.
+                idle_since = (
+                    max(0.0, now - card.live_last_update_mono)
+                    if card.live_last_update_mono > 0 else elapsed
+                )
+                speed = 8.0 if idle_since < 2.0 else 0.8
                 cursor_w = 3
                 travel = max(1, bar_len - cursor_w)
                 step = int(elapsed * speed) % (travel * 2)

@@ -42,6 +42,12 @@ class AgentRequest:
     # rather than a stalled spinner. Observers in the orchestration
     # layer wire this to the TUI's status pane / agent cards.
     on_progress: Optional[ProgressFn] = None
+    # Abstract capability hints set by the chief via CAPABILITIES: in
+    # PROPOSE_ROLE blocks. Each provider translates these to its own
+    # CLI flags in _capabilities_to_args(). Known values:
+    #   no-tools, no-builtin-tools,
+    #   thinking-off, thinking-low, thinking-medium, thinking-high, thinking-xhigh
+    capabilities: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -74,6 +80,18 @@ def estimate_tokens(prompt: str, response_text: str) -> Dict[str, Any]:
         "total_tokens": in_tok + out_tok,
         "source": "estimate",
     }
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Return True if the given pid still exists in the process table."""
+    try:
+        r = subprocess.run(
+            ["ps", "-p", str(pid)],
+            capture_output=True, text=True, timeout=1,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
 
 
 def run_streaming(
@@ -239,8 +257,18 @@ def run_streaming(
             rc = _kill(f"after {timeout_s}s", -1)
             break
         if no_output_timeout_s > 0 and now - last_output[0] >= no_output_timeout_s:
-            rc = _kill(f"no output for {no_output_timeout_s}s", -3)
-            break
+            if _is_pid_alive(proc.pid):
+                # Process still alive — it's waiting for a model response, not dead.
+                # Reset the silence timer so we check again after another interval.
+                last_output[0] = now
+                progress(
+                    "tick",
+                    f"pid={proc.pid} no_output_extended elapsed_s={now - start_time:.1f} "
+                    f"process_alive=true {_sample_process()}",
+                )
+            else:
+                rc = _kill(f"no output for {no_output_timeout_s}s (process dead)", -3)
+                break
         time.sleep(0.25)
     for t in threads:
         t.join(timeout=2.0)
@@ -263,6 +291,14 @@ class AgentProvider:
 
     def describe(self) -> str:
         return f"{self.name} ({self.type_name})"
+
+    def capabilities_to_args(self, capabilities: List[str]) -> List[str]:
+        """Translate abstract capability names to provider-specific CLI args.
+
+        Subclasses override this for providers whose CLIs support the relevant
+        flags. The base implementation returns an empty list (no-op).
+        """
+        return []
 
     def invoke(self, req: AgentRequest) -> AgentResponse:
         raise NotImplementedError
