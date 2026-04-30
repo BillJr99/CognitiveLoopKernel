@@ -5,6 +5,10 @@ from __future__ import annotations
 import subprocess
 import threading
 import time
+import json
+import shlex
+import shutil
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -14,7 +18,7 @@ class ProviderUnavailable(RuntimeError):
     """Raised when a provider cannot service a request."""
 
 
-ProgressKind = str  # "start" | "stdout_line" | "stderr_line" | "end" | "timeout" | "tick"
+ProgressKind = str  # start | command | stdout_line | stderr_line | end | timeout | tick | killed
 ProgressFn = Callable[[ProgressKind, str], None]
 
 
@@ -31,6 +35,7 @@ class AgentRequest:
     metadata: Dict[str, Any] = field(default_factory=dict)
     dry_run: bool = False
     timeout_s: int = 300
+    no_output_timeout_s: int = 0
     # Streaming progress callback. Providers that drive a CLI subprocess
     # call this with kind in {"start", "stdout_line", "stderr_line",
     # "end", "timeout", "tick"} so the UI can show real-time activity
@@ -76,6 +81,7 @@ def run_streaming(
     *,
     stdin_text: Optional[str],
     timeout_s: int,
+    no_output_timeout_s: int = 0,
     cwd: Optional[Path] = None,
     on_progress: Optional[ProgressFn] = None,
 ) -> Tuple[int, str, str]:
@@ -90,9 +96,47 @@ def run_streaming(
     activity to drive a heartbeat.
 
     Returns ``(returncode, stdout, stderr)``. ``returncode`` is -1 on
-    timeout, -2 on launch failure.
+    total timeout, -2 on launch failure, -3 on no-output timeout.
     """
     progress = on_progress or (lambda kind, msg: None)
+    cmd_display = shlex.join(cmd)
+    executable = cmd[0] if cmd else ""
+    resolved_executable = shutil.which(executable) or executable
+    env_snapshot = {
+        k: os.environ.get(k, "")
+        for k in (
+            "PATH",
+            "HOME",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "CLK_PROVIDER",
+        )
+        if k in os.environ
+    }
+    for key in list(env_snapshot.keys()):
+        if key.endswith("_API_KEY") and env_snapshot[key]:
+            env_snapshot[key] = "<set>"
+    command_meta = {
+        "cmd": cmd_display,
+        "argv": list(cmd),
+        "argv_count": len(cmd),
+        "executable": executable,
+        "resolved_executable": resolved_executable,
+        "args": list(cmd[1:]),
+        "args_count": max(0, len(cmd) - 1),
+        "cwd": str(cwd) if cwd else "",
+        "stdin": "pipe" if stdin_text is not None else "none",
+        "stdin_chars": len(stdin_text or ""),
+        "timeout_s": timeout_s,
+        "no_output_timeout_s": no_output_timeout_s,
+        "env": env_snapshot,
+    }
+    progress(
+        "command",
+        json.dumps(command_meta, sort_keys=True),
+    )
     try:
         proc = subprocess.Popen(
             cmd,
@@ -106,10 +150,41 @@ def run_streaming(
     except FileNotFoundError as exc:
         progress("end", f"launch_failed: {exc}")
         return -2, "", str(exc)
-    progress("start", f"pid={proc.pid} cmd={' '.join(cmd[:4])}")
+    progress("start", f"pid={proc.pid} cmd={cmd_display}")
 
     out_buf: List[str] = []
     err_buf: List[str] = []
+    start_time = time.monotonic()
+    last_output = [start_time]
+    last_tick = start_time
+
+    def _sample_process() -> str:
+        try:
+            r = subprocess.run(
+                ["ps", "-p", str(proc.pid), "-o", "%cpu=", "-o", "rss="],
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            parts = (r.stdout or "").strip().split()
+            if len(parts) >= 2:
+                return f"cpu={parts[0]} rss_kb={parts[1]}"
+        except Exception:
+            pass
+        return "cpu=? rss_kb=?"
+
+    def _kill(reason: str, rc_value: int) -> int:
+        progress("timeout", f"{reason}; killing pid={proc.pid}")
+        try:
+            proc.kill()
+            progress("killed", f"pid={proc.pid} reason={reason}")
+        except Exception as exc:
+            progress("killed", f"pid={proc.pid} reason={reason} kill_error={exc}")
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        return rc_value
 
     def _feed_stdin() -> None:
         try:
@@ -129,6 +204,7 @@ def run_streaming(
         try:
             for line in stream:
                 buf.append(line)
+                last_output[0] = time.monotonic()
                 progress(kind, line.rstrip())
         except Exception:
             pass
@@ -144,19 +220,28 @@ def run_streaming(
         t.start()
 
     rc: int
-    try:
-        rc = proc.wait(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        progress("timeout", f"after {timeout_s}s; killing pid={proc.pid}")
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            pass
-        rc = -1  # canonicalize to -1 on timeout regardless of signal
+    rc = -1
+    while True:
+        polled = proc.poll()
+        if polled is not None:
+            rc = int(polled)
+            break
+        now = time.monotonic()
+        if now - last_tick >= 5.0:
+            idle = now - last_output[0]
+            elapsed = now - start_time
+            progress(
+                "tick",
+                f"pid={proc.pid} elapsed_s={elapsed:.1f} idle_s={idle:.1f} {_sample_process()}",
+            )
+            last_tick = now
+        if timeout_s > 0 and now - start_time >= timeout_s:
+            rc = _kill(f"after {timeout_s}s", -1)
+            break
+        if no_output_timeout_s > 0 and now - last_output[0] >= no_output_timeout_s:
+            rc = _kill(f"no output for {no_output_timeout_s}s", -3)
+            break
+        time.sleep(0.25)
     for t in threads:
         t.join(timeout=2.0)
     progress("end", f"rc={rc}")

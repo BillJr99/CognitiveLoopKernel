@@ -61,7 +61,9 @@ description: Baseline development cycle. The chief overwrites this file on
   the first casting pass, replacing it with a workflow tailored to the
   project's idea and roster. The supervise stage is always re-added by
   the chief at the end so no agent is "done" until the user's full
-  prompt has been addressed.
+  prompt has been addressed. Ralph/autoresearch refinement should come
+  after a runnable or inspectable candidate output exists and a rubric
+  has been defined.
 stages:
   - id: cast
     agent: chief

@@ -134,6 +134,19 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
     "max_iterations": 20,
     "dry_run": False,
     "auto_commit": True,
+    "provider_timeout_s": 300,
+    "provider_no_output_timeout_s": 240,
+    "provider_retry": {
+        "max_retries": 2,
+        "backoff_s": 5,
+    },
+    "supervise": {
+        "max_cycles": 20,
+    },
+    "consensus": {
+        "max_samples": 6,
+        "max_parallel": 4,
+    },
     "validation": {
         "max_files_per_batch": 25,
         "warn_files_per_batch": 5,
@@ -210,6 +223,9 @@ DEFAULT_AGENTS: Dict[str, Any] = {
 
 def write_default_configs(paths: Paths, project_name: Optional[str] = None) -> None:
     """Write default config files only if absent. Idempotent."""
+    from .templates.prompts import PROMPTS
+    from .utils.activity_log import log_event
+
     cfg_path = paths.config / "clk.config.json"
     if not cfg_path.exists():
         cfg = dict(DEFAULT_CLK_CONFIG)
@@ -223,10 +239,26 @@ def write_default_configs(paths: Paths, project_name: Optional[str] = None) -> N
     agents_path = paths.config / "agents.json"
     if not agents_path.exists():
         save_json(agents_path, DEFAULT_AGENTS)
+        for name, cfg in sorted((DEFAULT_AGENTS.get("agents") or {}).items()):
+            prompt_file = cfg.get("prompt") or f"{name}.md"
+            prompt = PROMPTS.get(prompt_file, "")
+            log_event(
+                paths,
+                "default_agent_created",
+                agent=name,
+                action="default_agent_created",
+                prompt_file=prompt_file,
+                role=cfg.get("role", ""),
+                provider=cfg.get("provider"),
+                system_prompt=prompt,
+                prompt_chars=len(prompt),
+            )
 
 
 def load_clk_config(paths: Paths) -> Dict[str, Any]:
-    return load_json(paths.config / "clk.config.json", DEFAULT_CLK_CONFIG)
+    cfg = dict(DEFAULT_CLK_CONFIG)
+    cfg.update(load_json(paths.config / "clk.config.json", DEFAULT_CLK_CONFIG))
+    return cfg
 
 
 def load_providers_config(paths: Paths) -> Dict[str, Any]:

@@ -60,7 +60,7 @@ def _open_for(paths: Paths):
             _HANDLES[key] = fh
             return fh
         except Exception as exc:
-            print(f"[activity_log._open_for] failed: {exc}", file=sys.stderr)
+            print(f"[activity_log._open_for] failed for {target}: {exc}", file=sys.stderr)
             return None
 
 

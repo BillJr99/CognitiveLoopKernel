@@ -53,6 +53,7 @@ class PiProvider(AgentProvider):
                 cmd,
                 stdin_text=req.prompt,
                 timeout_s=req.timeout_s,
+                no_output_timeout_s=req.no_output_timeout_s,
                 cwd=req.workdir,
                 on_progress=req.on_progress,
             )
@@ -66,6 +67,8 @@ class PiProvider(AgentProvider):
         usage["source"] = "pi-estimate"
         if rc == -1:
             return AgentResponse(ok=False, error=f"timeout after {req.timeout_s}s", usage=usage)
+        if rc == -3:
+            return AgentResponse(ok=False, error=f"no output for {req.no_output_timeout_s}s", usage=usage)
         if rc != 0:
             return AgentResponse(
                 ok=False,

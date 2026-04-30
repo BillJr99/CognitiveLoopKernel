@@ -152,6 +152,7 @@ The harness state, written by `clk init` and grown by every command:
     casting.log          # JSONL of every roster decision (add/update/remove)
     done.md              # written only when completion criteria met
   logs/
+    activity.jsonl       # detailed agent activity log
     session.log          # mirror of the TUI status pane
     <cmd>-<ts>.log       # per-command log files
   runs/                  # per-invocation prompt + response capture

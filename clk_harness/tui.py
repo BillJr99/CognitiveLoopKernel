@@ -35,6 +35,7 @@ from __future__ import annotations
 import curses
 import json
 import queue
+import re
 import sys
 import textwrap
 import threading
@@ -66,6 +67,7 @@ from .orchestration import (
     WorkflowRunner,
     casting_objective,
     is_baseline,
+    is_provider_failure,
     list_roles,
     load_workflow,
     register_role,
@@ -95,6 +97,9 @@ class _StreamToLog:
     """
 
     LEVEL_TAGS = ("[ERROR]", "[WARN]", "[INFO]")
+    LOG_PREFIX_RE = re.compile(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\s+\[(ERROR|WARN|INFO)\]\s*(.*)$"
+    )
 
     def __init__(self, state: "DashboardState", default_level: str = "INFO") -> None:
         self.state = state
@@ -112,10 +117,15 @@ class _StreamToLog:
             if not line.strip():
                 continue
             level = self.default_level
-            for tag in self.LEVEL_TAGS:
-                if tag in line:
-                    level = tag.strip("[]")
-                    break
+            m = self.LOG_PREFIX_RE.match(line)
+            if m:
+                level = m.group(1)
+                line = m.group(2)
+            else:
+                for tag in self.LEVEL_TAGS:
+                    if tag in line:
+                        level = tag.strip("[]")
+                        break
             try:
                 self.state.add_log(line[:300], level=level)
             except Exception:
@@ -179,6 +189,7 @@ class AgentStatus:
     WORKING = "working"
     DONE = "done"
     FAILED = "failed"
+    PROVIDER_ERROR = "provider"
 
 
 @dataclass
@@ -217,6 +228,12 @@ class AgentCard:
     live_stdout_chars: int = 0
     live_stderr_chars: int = 0
     live_last_update_mono: float = 0.0
+    provider_issue: bool = False
+    provider_resolution: str = ""
+    live_cpu_pct: str = ""
+    live_rss_kb: str = ""
+    live_idle_s: float = 0.0
+    live_elapsed_s: float = 0.0
 
 
 def _format_tokens(n: int) -> str:
@@ -298,6 +315,7 @@ class DashboardState:
         self.phase: str = "idle"
         self.busy: bool = False
         self.input_buffer: str = ""
+        self.input_cursor: int = 0
         self.conversation: List[Tuple[str, str]] = []
         self.stop_requested: bool = False
         self.iteration_count: int = 0
@@ -389,6 +407,12 @@ class DashboardState:
             card.live_stdout_chars = 0
             card.live_stderr_chars = 0
             card.live_last_update_mono = time.monotonic()
+            card.provider_issue = False
+            card.provider_resolution = ""
+            card.live_cpu_pct = ""
+            card.live_rss_kb = ""
+            card.live_idle_s = 0.0
+            card.live_elapsed_s = 0.0
         self.add_log(f"{name} :: start :: {objective[:80]}", level="INFO")
 
     def report_progress(self, name: str, kind: str, message: str) -> None:
@@ -424,6 +448,25 @@ class DashboardState:
                     card.live_stdout_chars += len(message) + 1
                 else:
                     card.live_stderr_chars += len(message) + 1
+            elif kind == "tick":
+                card.live_last_line = message[:200]
+                for tok in message.split():
+                    if tok.startswith("cpu="):
+                        card.live_cpu_pct = tok.split("=", 1)[1]
+                    elif tok.startswith("rss_kb="):
+                        card.live_rss_kb = tok.split("=", 1)[1]
+                    elif tok.startswith("idle_s="):
+                        try:
+                            card.live_idle_s = float(tok.split("=", 1)[1])
+                        except Exception:
+                            pass
+                    elif tok.startswith("elapsed_s="):
+                        try:
+                            card.live_elapsed_s = float(tok.split("=", 1)[1])
+                        except Exception:
+                            pass
+            elif kind in ("command", "retry", "killed"):
+                card.live_last_line = message[:200]
             elif kind in ("end", "timeout"):
                 card.live_pid = 0
                 card.live_last_line = f"{kind}: {message}"[:200]
@@ -431,6 +474,29 @@ class DashboardState:
         # what's happening even when not looking at a card.
         if kind == "start":
             self.add_log(f"{name} :: subprocess {message}", level="SYSTEM")
+        elif kind == "command":
+            try:
+                meta = json.loads(message)
+                argv = meta.get("argv") or []
+                args = meta.get("args") or []
+                arg_note = "no args" if not args else f"args={args}"
+                self.add_log(
+                    f"{name} :: command :: {meta.get('cmd')} "
+                    f"(argv_count={meta.get('argv_count')}; {arg_note}; "
+                    f"stdin={meta.get('stdin')} {meta.get('stdin_chars')} chars; "
+                    f"cwd={meta.get('cwd')})",
+                    level="SYSTEM",
+                )
+            except Exception:
+                self.add_log(f"{name} :: command :: {message[:240]}", level="SYSTEM")
+        elif kind == "tick":
+            self.add_log(f"{name} :: telemetry :: {message[:240]}", level="INFO")
+        elif kind == "retry":
+            self.add_log(f"{name} :: retry :: {message[:240]}", level="WARN")
+        elif kind == "killed":
+            self.add_log(f"{name} :: killed :: {message[:240]}", level="WARN")
+        elif kind.startswith("http_"):
+            self.add_log(f"{name} :: {kind} :: {message[:240]}", level="SYSTEM")
         elif kind == "stderr_line" and message:
             self.add_log(f"{name} stderr: {message[:200]}", level="INFO")
         elif kind == "stdout_line":
@@ -471,9 +537,12 @@ class DashboardState:
     ) -> None:
         files_written = list(files_written or [])
         usage = dict(usage or {})
+        provider_issue = (not ok) and is_provider_failure(error)
         with self.lock:
             card = self.agents.setdefault(name, AgentCard(name=name))
-            card.status = AgentStatus.DONE if ok else AgentStatus.FAILED
+            card.status = AgentStatus.DONE if ok else (
+                AgentStatus.PROVIDER_ERROR if provider_issue else AgentStatus.FAILED
+            )
             card.current_task = ""
             card.last_result = (preview or "").strip().replace("\n", " ")[:240]
             card.last_error = error[:240]
@@ -492,6 +561,9 @@ class DashboardState:
             card.total_tokens += tot_tok
             card.last_run_tokens = tot_tok
             card.last_usage_source = str(usage.get("source") or card.last_usage_source)
+            card.provider_issue = provider_issue
+            if provider_issue:
+                card.provider_resolution = self._provider_resolution_message(error)
             self.total_input_tokens += in_tok
             self.total_output_tokens += out_tok
             self.total_tokens += tot_tok
@@ -505,10 +577,33 @@ class DashboardState:
             f"{(preview or '').strip().splitlines()[0][:60] if preview else ''}",
             level="INFO" if ok else "WARN",
         )
+        if provider_issue:
+            self.add_log(
+                f"{name} :: provider issue :: {error[:200]}",
+                level="ERROR",
+            )
+            self.add_log(
+                f"{name} :: resolution :: {self._provider_resolution_message(error)}",
+                level="WARN",
+            )
         # File-action log lines: one INFO entry per file so the user
         # sees creation activity as it happens.
         for fpath in files_written:
             self.add_log(f"{name} :: wrote {fpath}", level="SYSTEM")
+
+    def _provider_resolution_message(self, error: str) -> str:
+        msg = (error or "").lower()
+        if "rate limit" in msg or "quota" in msg:
+            return "provider rate/quota failure; backing off by aborting this cycle, then retry after quota/reset or switch provider"
+        if "timeout" in msg or "no output" in msg or "operation was aborted" in msg:
+            return "provider call stalled/aborted; stalled PID is killed, configured retries are reissued with backoff, then the cycle stops if retries fail"
+        if "api key" in msg or "authentication" in msg or "unauthorized" in msg or "forbidden" in msg:
+            return "provider auth/config failure; fix credentials or switch provider before retrying"
+        if "no endpoints available" in msg or "guardrail restrictions" in msg or "data policy" in msg:
+            return "provider endpoint/policy routing issue; configured retries are reissued with backoff because this can be transient, then switch provider or adjust provider privacy settings if retries fail"
+        if "cli not found" in msg or "not found" in msg:
+            return "provider executable/config missing; install/configure provider or switch provider"
+        return "provider failure; workflow recovery is aborted until the provider is fixed or changed"
 
     def upsert_agent(self, name: str, *, role: str = "", baseline: bool = False, status: str = "added") -> None:
         with self.lock:
@@ -566,6 +661,7 @@ class DashboardState:
                 "phase": self.phase,
                 "busy": self.busy,
                 "input_buffer": self.input_buffer,
+                "input_cursor": self.input_cursor,
                 "conversation": list(self.conversation),
             }
 
@@ -1000,6 +1096,7 @@ class TuiApp:
         # Compute how many rows the input field needs right now.
         with self.state.lock:
             buf = self.state.input_buffer
+            cursor = self.state.input_cursor
         input_rows = self._input_row_count(buf, w)
         # Layout from the bottom up:
         #   y=h-input_rows..h-1                 input field rows (1..N)
@@ -1009,7 +1106,7 @@ class TuiApp:
         log_height = max(3, h - idea_bottom - input_rows - 3)
         self._draw_log(stdscr, top=idea_bottom + 1, height=log_height, width=w)
         self._draw_totals(stdscr, top=h - input_rows - 2, width=w)
-        self._draw_input(stdscr, top=h - input_rows - 1, width=w, rows=input_rows)
+        self._draw_input(stdscr, top=h - input_rows - 1, width=w, rows=input_rows, cursor=cursor)
         stdscr.refresh()
 
     def _tick_heartbeat(self) -> None:
@@ -1174,7 +1271,7 @@ class TuiApp:
         # View 1: live work
         live = [
             ("task", card.current_task or "-"),
-            ("rsp", card.last_result or card.last_error or "-"),
+            ("rsp", card.provider_resolution or card.last_result or card.last_error or "-"),
         ]
         # View 2: I/O
         io = [
@@ -1210,6 +1307,7 @@ class TuiApp:
         live_meta = (
             f"out={card.live_stdout_chars}b "
             f"err={card.live_stderr_chars}b "
+            f"cpu={card.live_cpu_pct or '?'}% "
             f"{live_label}"
         )
         subprocess_view = [
@@ -1224,6 +1322,7 @@ class TuiApp:
             AgentStatus.WORKING: self.COLOR_WORKING,
             AgentStatus.DONE: self.COLOR_DONE,
             AgentStatus.FAILED: self.COLOR_FAILED,
+            AgentStatus.PROVIDER_ERROR: self.COLOR_FAILED,
         }.get(card.status, self.COLOR_IDLE)
         attr = curses.color_pair(col)
         frame_attr = curses.color_pair(self.COLOR_FRAME)
@@ -1407,31 +1506,35 @@ class TuiApp:
         # Pad to width so the line reads as a band rather than a phrase.
         self._safe_addstr(stdscr, top, 0, line.ljust(width - 1)[: width - 1], width, attr)
 
-    def _draw_input(self, stdscr, *, top: int, width: int, rows: int = 1) -> None:
+    def _draw_input(self, stdscr, *, top: int, width: int, rows: int = 1, cursor: int = 0) -> None:
         # Frame line above the input rows.
         self._safe_addstr(
             stdscr, top, 0, "-" * (width - 1), width, curses.color_pair(self.COLOR_FRAME)
         )
         with self.state.lock:
             buf = self.state.input_buffer
+            cursor = max(0, min(cursor, len(buf)))
         prompt = "> "
         full = prompt + buf
         eff = max(1, width - 1)
         # Character-wrap so cursor math is exact even when the user
         # types continuous strings (URLs, paste).
-        chunks = [full[i:i + eff] for i in range(0, max(eff, len(full)), eff)] or [""]
+        chunks_all = [full[i:i + eff] for i in range(0, max(eff, len(full)), eff)] or [""]
+        cursor_abs = len(prompt) + cursor
+        cursor_chunk = min(len(chunks_all) - 1, cursor_abs // eff)
+        first_chunk = max(0, min(cursor_chunk, len(chunks_all) - rows))
         # If the buffer needs more rows than we have, show the LAST
-        # ``rows`` chunks so the cursor stays visible.
-        if len(chunks) > rows:
-            chunks = chunks[-rows:]
+        # ``rows`` chunks containing the cursor so the cursor stays visible.
+        chunks = chunks_all[first_chunk:first_chunk + rows]
         attr = curses.color_pair(self.COLOR_PROMPT) | curses.A_BOLD
         base_y = top + 1
         for i, line in enumerate(chunks):
             self._safe_addstr(stdscr, base_y + i, 0, line, width, attr)
         # Cursor goes after the last visible character.
         try:
-            cursor_x = min(len(chunks[-1]), width - 2)
-            cursor_y = base_y + len(chunks) - 1
+            rel = cursor_abs - first_chunk * eff
+            cursor_y = base_y + max(0, min(rows - 1, rel // eff))
+            cursor_x = max(0, min(rel % eff, width - 2))
             stdscr.move(cursor_y, cursor_x)
         except Exception:
             pass
@@ -1456,21 +1559,49 @@ class TuiApp:
         if ch == curses.KEY_END:
             self.scroll_offset = 0
             return True
+        if ch == curses.KEY_LEFT:
+            with self.state.lock:
+                self.state.input_cursor = max(0, self.state.input_cursor - 1)
+            return True
+        if ch == curses.KEY_RIGHT:
+            with self.state.lock:
+                self.state.input_cursor = min(len(self.state.input_buffer), self.state.input_cursor + 1)
+            return True
+        if ch in (curses.KEY_SLEFT, 1):  # Shift-left where supported, Ctrl-A
+            with self.state.lock:
+                self.state.input_cursor = 0
+            return True
+        if ch in (curses.KEY_SRIGHT, 5):  # Shift-right where supported, Ctrl-E
+            with self.state.lock:
+                self.state.input_cursor = len(self.state.input_buffer)
+            return True
+        if ch == curses.KEY_DC:
+            with self.state.lock:
+                i = self.state.input_cursor
+                if i < len(self.state.input_buffer):
+                    self.state.input_buffer = self.state.input_buffer[:i] + self.state.input_buffer[i + 1:]
+            return True
         if ch in (curses.KEY_BACKSPACE, 127, 8):
             with self.state.lock:
-                self.state.input_buffer = self.state.input_buffer[:-1]
+                i = self.state.input_cursor
+                if i > 0:
+                    self.state.input_buffer = self.state.input_buffer[:i - 1] + self.state.input_buffer[i:]
+                    self.state.input_cursor = i - 1
             return True
         if ch in (10, 13, curses.KEY_ENTER):
             with self.state.lock:
                 msg = self.state.input_buffer
                 self.state.input_buffer = ""
+                self.state.input_cursor = 0
             if msg.strip():
                 return self._dispatch(msg.strip())
             return True
         if 32 <= ch < 127:
             with self.state.lock:
                 if len(self.state.input_buffer) < 1024:
-                    self.state.input_buffer += chr(ch)
+                    i = max(0, min(self.state.input_cursor, len(self.state.input_buffer)))
+                    self.state.input_buffer = self.state.input_buffer[:i] + chr(ch) + self.state.input_buffer[i:]
+                    self.state.input_cursor = i + 1
             return True
         return True
 

@@ -104,6 +104,7 @@ class ClaudeProvider(AgentProvider):
                 cmd,
                 stdin_text=req.prompt,
                 timeout_s=req.timeout_s,
+                no_output_timeout_s=req.no_output_timeout_s,
                 cwd=req.workdir,
                 on_progress=req.on_progress,
             )
@@ -114,6 +115,8 @@ class ClaudeProvider(AgentProvider):
 
         if rc == -1:
             return AgentResponse(ok=False, error=f"timeout after {req.timeout_s}s")
+        if rc == -3:
+            return AgentResponse(ok=False, error=f"no output for {req.no_output_timeout_s}s")
         if rc != 0:
             usage = estimate_tokens(req.prompt, stdout or "")
             usage["source"] = "claude-estimate"
@@ -183,7 +186,7 @@ class ClaudeProvider(AgentProvider):
             },
             method="POST",
         )
-        progress("start", f"http POST {endpoint} model={model}")
+        progress("http_request", f"POST {endpoint} model={model} timeout_s={req.timeout_s}")
         try:
             with urllib.request.urlopen(request, timeout=req.timeout_s) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
@@ -192,20 +195,20 @@ class ClaudeProvider(AgentProvider):
                 detail = exc.read().decode("utf-8", errors="replace")[:300]
             except Exception:
                 detail = ""
-            progress("end", f"http rc={exc.code}")
+            progress("http_response", f"rc={exc.code} reason={exc.reason} detail={detail}")
             return AgentResponse(
                 ok=False,
                 error=f"claude api HTTP {exc.code}: {exc.reason} {detail}".strip(),
             )
         except urllib.error.URLError as exc:
-            progress("end", f"http unreachable: {exc.reason}")
+            progress("http_error", f"unreachable: {exc.reason}")
             return AgentResponse(ok=False, error=f"claude api unreachable: {exc.reason}")
         except Exception as exc:
             print(f"[providers.claude._invoke_api] failed: {exc}", file=sys.stderr)
             traceback.print_exc()
-            progress("end", f"http error: {exc}")
+            progress("http_error", f"{exc}")
             return AgentResponse(ok=False, error=str(exc))
-        progress("end", "http rc=200")
+        progress("http_response", "rc=200")
         # Concatenate text blocks from the response content array.
         text_parts = []
         for block in (payload.get("content") or []):

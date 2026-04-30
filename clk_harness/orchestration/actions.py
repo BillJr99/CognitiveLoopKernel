@@ -328,14 +328,39 @@ def apply_actions(
             if action.kind == "done":
                 _do_done(paths, action, result)
                 log_event(paths, "action_applied", agent=agent_name, kind="done",
-                          reason=action.reason, ok=True)
+                          action="done", reason=action.reason, ok=True)
                 continue
             if action.kind == "run":
                 pre_cmds = len(result.commands_run)
+                pre_errors = len(result.errors)
+                log_event(
+                    paths,
+                    "shell_command_start",
+                    agent=agent_name,
+                    action="run",
+                    cmd=action.cmd,
+                    cwd=str(paths.workspace),
+                    timeout_s=timeout_s,
+                )
                 _do_run(paths, action, result, timeout_s=timeout_s)
-                ok = len(result.commands_run) > pre_cmds and not result.errors[-1:0:-1]
+                ran = len(result.commands_run) > pre_cmds
+                output = result.command_outputs[-1] if ran and result.command_outputs else ""
+                errors = result.errors[pre_errors:]
                 log_event(paths, "action_applied", agent=agent_name, kind="run",
-                          cmd=action.cmd, ok=bool(result.commands_run and not result.errors))
+                          action="run", cmd=action.cmd, ok=ran and not errors,
+                          output=output, output_chars=len(output or ""),
+                          errors=list(errors), timeout_s=timeout_s)
+                log_event(
+                    paths,
+                    "shell_command_end",
+                    agent=agent_name,
+                    action="run",
+                    cmd=action.cmd,
+                    ok=ran and not errors,
+                    output=output,
+                    output_chars=len(output or ""),
+                    errors=list(errors),
+                )
                 continue
             # File-mutating actions
             if applied_files >= cap:
@@ -344,6 +369,7 @@ def apply_actions(
                           path=action.path, reason="cap_reached")
                 continue
             applied_files += 1
+            pre_skips = len(result.skipped)
             normalized_path = _normalize_rel(paths.workspace, action.path) if action.path else action.path
             if action.kind == "write":
                 _do_write(paths, action, result, backup_root)
@@ -364,17 +390,22 @@ def apply_actions(
                           kind=action.kind, original=action.path, used=normalized_path)
             written = result.files_written[-1:] if result.files_written else []
             deleted = result.files_deleted[-1:] if result.files_deleted else []
-            skipped = result.skipped[-1:] if result.skipped else []
+            skipped = result.skipped[pre_skips:]
             log_event(
                 paths,
                 "action_applied",
                 agent=agent_name,
                 kind=action.kind,
+                action=action.kind,
                 path=normalized_path,
                 ok=bool(written or deleted) and not (skipped and skipped[0].startswith(action.kind)),
                 file_written=(written[0] if written else None),
                 file_deleted=(deleted[0] if deleted else None),
                 content_chars=len(action.content) if action.content else 0,
+                content=action.content if action.kind in ("write", "append") else "",
+                old=action.old if action.kind == "edit" else "",
+                new=action.new if action.kind == "edit" else "",
+                skipped=list(skipped),
             )
         except Exception as exc:
             log_exception(f"orchestration.actions.apply[{action.kind}]", exc)
@@ -477,7 +508,7 @@ def _do_run(paths: Paths, action: Action, result: ActionResult, *, timeout_s: in
         )
         out = (r.stdout or "") + (r.stderr or "")
         result.commands_run.append(cmd)
-        result.command_outputs.append(out[:2000])
+        result.command_outputs.append(out)
         if r.returncode != 0:
             result.errors.append(f"run rc={r.returncode}: {cmd[:80]}")
     except subprocess.TimeoutExpired:

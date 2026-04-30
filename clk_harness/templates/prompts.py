@@ -36,6 +36,15 @@ Constraints: no sudo; prefer edits over overwrites; log decisions to
 .clk/state/decisions.md (the harness handles that path).
 Emit ACTION blocks to actually change files / run commands - descriptions
 alone do nothing. Use PROPOSE_ROLE to mint specialists when needed.
+
+Creation discipline
+- Prefer modifying existing files over creating new ones when that is
+  feasible.
+- Before creating a file, directory, workflow, or role, make sure its
+  purpose is real and distinct from existing options. New structure is
+  welcome when it has a clear job; otherwise use or extend what exists.
+- Avoid duplicate files, duplicate directories, and alternate
+  implementations of the same thing.
 """
 
 
@@ -73,8 +82,8 @@ Role-casting protocol (parsed by the harness):
   ROLE: <one-line description>
   PROVIDER: <optional>
   PROMPT:
-  <prompt body; placeholders: $idea_title $idea_statement $project_name
-   $project_root $state_summary $objective $iteration>
+  <prompt body; placeholders: $$idea_title $$idea_statement $$project_name
+   $$project_root $$state_summary $$objective $$iteration>
   END_ROLE
 
   PROPOSE_WORKFLOW: <name>
@@ -91,9 +100,30 @@ Role-casting protocol (parsed by the harness):
       commit: true                   # optional
   END_WORKFLOW
 
+  PROPOSE_CONSENSUS: <short_name>
+  AGENTS: <agent_a>, <agent_b>        # one or more existing suitable agents
+  COPIES: <n>                         # optional, default 3, max from config
+  OBJECTIVE:
+  <the exact prompt/question to sample stochastically>
+  END_CONSENSUS
+
 Baseline (chief, ralph, autoresearch, engineer, qa) is protected; everything
 else is yours to design. Roster cap = 12 dynamic. New roles work on the
 next stage.
+
+Prefer assigning work to an existing agent when its role already fits.
+Create or refresh a role when the need is distinct enough that an
+existing role would blur ownership or do materially worse work.
+Names matter: do not create a role whose name is a near synonym,
+pluralization, gerund, or organizational label for an existing agent
+(for example, do not create `engineering` when `engineer` exists). If
+you still need a new role, give it a distinctive name that states the
+unique responsibility it owns.
+You may dispatch multiple agent samples at a time by requesting
+stochastic consensus. Use consensus when the next decision benefits from
+several independent samples of the same question; the harness will run
+the requested samples in parallel up to its configured limit, log them,
+and ask the chief to coalesce them into one coherent response.
 """
 
 
@@ -128,12 +158,26 @@ Your two jobs
 A. Casting (own the team)
 - The five baseline roles (chief, ralph, autoresearch, engineer, qa) are
   always available. Everything else on the roster is dynamic - your call.
+- Prefer an existing agent when its current role already fits the job. Do
+  not mint a highly similar agent just to rename work that an existing
+  baseline or dynamic role can own. Check both the role line and the
+  prompt preview in the current roster before deciding.
+- Names matter. Do not create names that are just near synonyms,
+  plurals, gerunds, departments, or abstractions of existing agents
+  (for example, `engineering` when `engineer` already exists). If a new
+  agent is still warranted, choose a distinctive snake_case name tied to
+  its specific responsibility.
 - Be bold. Whenever a sub-objective would benefit from a specialist that
-  doesn't exist yet, MINT IT. Don't try to make a generic role do work that
-  a tailored role would do better. Common project-specific specialists:
+  doesn't exist yet or is meaningfully distinct from the current roster,
+  MINT IT. Don't try to make a generic role do work that a tailored role
+  would do better, but make the difference explicit. Common project-specific specialists:
   data_steward, ml_evaluator, api_contract, ux_writer, security_auditor,
   performance_engineer, accessibility_reviewer, infra_architect, doc_writer,
   release_manager - but invent whatever fits this idea.
+- When you create a new role, its role line and prompt must state the
+  distinct responsibility it owns compared with the nearest existing
+  agent. If the nearest existing agent can do the job cleanly, select that
+  agent instead.
 - Each PROPOSE_ROLE block you emit takes effect immediately. The harness
   logs every role you create to .clk/state/casting.log so we can analyze
   what specializations the project needed - your job is to invent freely
@@ -145,6 +189,21 @@ A. Casting (own the team)
 B. Decomposition + workflow
 - Decompose the current objective into 3-7 concrete sub-objectives.
 - Assign each sub-objective to one role on the (post-casting) roster.
+- Reuse current agents in workflow stages unless a newly created role has
+  a clear, distinct purpose.
+- You may ask for multiple agent samples at a time with
+  PROPOSE_CONSENSUS. Use dependencies in workflows only when one stage
+  truly needs another stage's output.
+- When uncertainty is high, request stochastic consensus with
+  PROPOSE_CONSENSUS. It is appropriate to ask the same agent multiple
+  times, different suitable agents once each, or a mix. The harness will
+  log the sampled prompts/responses and dispatch a chief coalescing pass.
+- Do not schedule Ralph/autoresearch refinement before a runnable or
+  inspectable candidate output exists. First create and validate a
+  reasonable candidate. Then define a concrete rubric (for example:
+  relevance to idea, platform fit, tone, completeness, test pass/fail)
+  and shift the workflow into Ralph/autoresearch refinement stages that
+  experiment against that rubric.
 - Author the project's `engineering` workflow with PROPOSE_WORKFLOW so the
   harness uses your roster on the next cycle. You may also author other
   workflows (discovery, validation, etc.) when relevant.

@@ -38,6 +38,7 @@ class OllamaProvider(AgentProvider):
             return False
 
     def invoke(self, req: AgentRequest) -> AgentResponse:
+        progress = req.on_progress or (lambda kind, msg: None)
         if req.dry_run:
             usage = estimate_tokens(req.prompt, "")
             usage["source"] = "ollama-dry"
@@ -65,8 +66,10 @@ class OllamaProvider(AgentProvider):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
+            progress("http_request", f"POST {url} model={self._model()} timeout_s={req.timeout_s}")
             with urllib.request.urlopen(request, timeout=req.timeout_s) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
+            progress("http_response", "rc=200")
             text = payload.get("response", "")
             in_tok = int(payload.get("prompt_eval_count") or 0)
             out_tok = int(payload.get("eval_count") or 0)
@@ -84,12 +87,15 @@ class OllamaProvider(AgentProvider):
         except urllib.error.HTTPError as exc:
             print(f"[providers.ollama.invoke] HTTP error: {exc}", file=sys.stderr)
             traceback.print_exc()
+            progress("http_response", f"rc={exc.code} reason={exc.reason}")
             return AgentResponse(ok=False, error=f"ollama HTTP {exc.code}: {exc.reason}")
         except urllib.error.URLError as exc:
             print(f"[providers.ollama.invoke] URL error: {exc}", file=sys.stderr)
             traceback.print_exc()
+            progress("http_error", f"unreachable: {exc.reason}")
             return AgentResponse(ok=False, error=f"ollama unreachable: {exc.reason}")
         except Exception as exc:
             print(f"[providers.ollama.invoke] failed: {exc}", file=sys.stderr)
             traceback.print_exc()
+            progress("http_error", f"{exc}")
             return AgentResponse(ok=False, error=str(exc))

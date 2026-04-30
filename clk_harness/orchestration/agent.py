@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -157,13 +159,26 @@ class AgentRunner:
         paths = self.paths
 
         def _on_progress(kind: str, message: str) -> None:
-            # Log subprocess lifecycle to the consolidated activity log
-            # too. We don't log every stdout_line at INFO level (those
-            # can be very chatty for large model responses) but we do
-            # capture stderr and the start/end markers verbatim.
+            # Log the provider subprocess stream verbatim. This log is
+            # intended for post-run forensics, so detail is more useful
+            # than compactness here.
             try:
-                if kind in ("start", "end", "timeout", "stderr_line"):
-                    log_event(paths, "subprocess_" + kind, agent=agent.name, message=message[:500])
+                extra: Dict[str, Any] = {}
+                if kind == "command":
+                    try:
+                        parsed = json.loads(message)
+                        if isinstance(parsed, dict):
+                            extra = parsed
+                    except Exception:
+                        extra = {}
+                log_event(
+                    paths,
+                    ("http_" + kind[5:] if kind.startswith("http_") else "subprocess_" + kind),
+                    agent=agent.name,
+                    message=message,
+                    message_chars=len(message or ""),
+                    **extra,
+                )
             except Exception:
                 pass
             if observer is None:
@@ -174,32 +189,52 @@ class AgentRunner:
                 log_exception("orchestration.agent.observer.progress", exc)
 
         timeout_s = int((self.clk_cfg.get("provider_timeout_s") or 300))
+        no_output_timeout_s = int((self.clk_cfg.get("provider_no_output_timeout_s") or 0))
+        retry_cfg = self.clk_cfg.get("provider_retry") or {}
+        max_retries = int(retry_cfg.get("max_retries", self.clk_cfg.get("provider_max_retries", 1)) or 0)
+        backoff_s = float(retry_cfg.get("backoff_s", self.clk_cfg.get("provider_retry_backoff_s", 5)) or 0)
         req = AgentRequest(
             agent=agent.name,
             prompt=prompt,
             workdir=self.paths.root,
             dry_run=bool(is_dry),
             timeout_s=timeout_s,
+            no_output_timeout_s=no_output_timeout_s,
             on_progress=_on_progress,
         )
         started = datetime.now().isoformat(timespec="seconds")
+        run_id = f"{started.replace(':','-')}-{agent.name}"
+        run_dir_rel = f".clk/runs/{run_id}"
         log_event(
             self.paths,
             "agent_dispatch",
             agent=agent.name,
-            objective=objective[:500],
+            action="dispatch",
+            objective=objective,
+            objective_chars=len(objective or ""),
             workflow=(extra or {}).get("workflow"),
             stage_id=(extra or {}).get("stage_id"),
             iteration=(extra or {}).get("iteration"),
             phase=(extra or {}).get("phase"),
             provider=provider.describe(),
+            dry_run=bool(is_dry),
+            timeout_s=timeout_s,
+            no_output_timeout_s=no_output_timeout_s,
+            prompt_file=agent.prompt_file,
+            role=agent.role,
+            run_id=run_id,
+            max_retries=max_retries,
+            retry_backoff_s=backoff_s,
         )
         log_event(
             self.paths,
             "prompt_sent",
             agent=agent.name,
+            action="prompt_sent",
             prompt_chars=len(prompt),
-            prompt_path=f".clk/runs/{started.replace(':','-')}-{agent.name}/prompt.txt",
+            prompt_path=f"{run_dir_rel}/prompt.txt",
+            prompt=prompt,
+            run_id=run_id,
         )
         if self.observer is not None:
             try:
@@ -210,11 +245,43 @@ class AgentRunner:
                 self.observer.prompt_sent(agent.name, prompt)
             except Exception as exc:
                 log_exception("orchestration.agent.observer.prompt_sent", exc)
-        try:
-            resp = provider.invoke(req)
-        except Exception as exc:
-            log_exception(f"orchestration.agent.run[{agent_name}]", exc)
-            resp = AgentResponse(ok=False, error=str(exc))
+        resp = AgentResponse(ok=False, error="provider_not_invoked")
+        attempt = 0
+        while True:
+            attempt += 1
+            log_event(
+                self.paths,
+                "provider_attempt",
+                agent=agent.name,
+                run_id=run_id,
+                attempt=attempt,
+                max_attempts=max_retries + 1,
+                provider=provider.describe(),
+            )
+            try:
+                resp = provider.invoke(req)
+            except Exception as exc:
+                log_exception(f"orchestration.agent.run[{agent_name}]", exc)
+                resp = AgentResponse(ok=False, error=str(exc))
+            if resp.ok or not self._should_retry_provider(resp.error or "") or attempt > max_retries:
+                break
+            log_event(
+                self.paths,
+                "provider_retry",
+                agent=agent.name,
+                run_id=run_id,
+                attempt=attempt,
+                next_attempt=attempt + 1,
+                backoff_s=backoff_s,
+                error=resp.error,
+            )
+            _on_progress(
+                "retry",
+                f"provider error '{resp.error}'; killed stalled process if present; "
+                f"backing off {backoff_s:.1f}s then reissuing attempt {attempt + 1}/{max_retries + 1}",
+            )
+            if backoff_s > 0:
+                time.sleep(backoff_s)
         finished = datetime.now().isoformat(timespec="seconds")
         run = AgentRun(
             agent=agent.name,
@@ -229,20 +296,24 @@ class AgentRunner:
             self.paths,
             "agent_response",
             agent=agent.name,
+            action="response_received",
             ok=run.response.ok,
             error=run.response.error,
             response_chars=len(run.response.text or ""),
-            response_path=f".clk/runs/{run.started_at.replace(':','-')}-{run.agent}/response.txt",
+            response_path=f"{run_dir_rel}/response.txt",
+            response_text=run.response.text or "",
             tokens_total=int((run.response.usage or {}).get("total_tokens") or 0),
             tokens_in=int((run.response.usage or {}).get("input_tokens") or 0),
             tokens_out=int((run.response.usage or {}).get("output_tokens") or 0),
             usage_source=(run.response.usage or {}).get("source"),
             files_reported=list(run.files_written or []),
+            run_id=run_id,
         )
         # Apply any PROPOSE_ROLE / PROPOSE_WORKFLOW blocks the agent
         # emitted. Mutates ``self.agents_cfg`` in place so the very next
         # stage that names a freshly-proposed role can dispatch to it.
         self._apply_proposals(run)
+        self._apply_consensus(run, extra or {})
         # Execute any ACTION blocks the agent emitted. Real file edits
         # / shell runs land here regardless of which provider produced
         # the response, so even non-tool-using providers can drive real
@@ -256,6 +327,203 @@ class AgentRunner:
             except Exception as exc:
                 log_exception("orchestration.agent.observer.end", exc)
         return run
+
+    def _should_retry_provider(self, error: str) -> bool:
+        msg = (error or "").lower()
+        retryable = [
+            "no output for",
+            "timeout after",
+            "operation was aborted",
+            # OpenRouter can report this routing/policy text transiently
+            # even when a later identical request succeeds.
+            "no endpoints available",
+            "guardrail restrictions",
+            "data policy",
+            "connection reset",
+            "temporarily unavailable",
+            "try again",
+        ]
+        non_retryable = [
+            "api key",
+            "authentication",
+            "unauthorized",
+            "forbidden",
+            "cli not found",
+        ]
+        return any(s in msg for s in retryable) and not any(s in msg for s in non_retryable)
+
+    def _observer_log(self, line: str) -> None:
+        log(line)
+        if self.observer is not None:
+            try:
+                self.observer.log(line)
+            except Exception as exc:
+                log_exception("orchestration.agent.observer.log", exc)
+
+    def _apply_consensus(self, run: AgentRun, extra: Dict[str, Any]) -> None:
+        text = run.response.text or ""
+        if not text or "PROPOSE_CONSENSUS" not in text:
+            return
+        if str(extra.get("phase") or "") == "consensus":
+            return
+        proposals = _casting.parse_consensus_proposals(text)
+        if not proposals:
+            return
+        cfg = self.clk_cfg.get("consensus") or {}
+        max_samples = int(cfg.get("max_samples") or 6)
+        max_parallel = int(cfg.get("max_parallel") or 4)
+        for prop in proposals:
+            agents = [a for a in prop.agents if a in (self.agents_cfg.get("agents") or {})]
+            if not agents:
+                agents = [run.agent]
+            sample_count = min(max_samples, max(1, int(prop.copies or 3)))
+            assignments = [agents[i % len(agents)] for i in range(sample_count)]
+            log_event(
+                self.paths,
+                "consensus_started",
+                agent=run.agent,
+                name=prop.name,
+                objective=prop.objective,
+                agents=list(assignments),
+                samples=sample_count,
+                max_parallel=max_parallel,
+            )
+            self._observer_log(
+                f"consensus :: {prop.name} :: starting {sample_count} samples "
+                f"across {', '.join(sorted(set(assignments)))}"
+            )
+            results: List[Dict[str, Any]] = []
+            with ThreadPoolExecutor(max_workers=max(1, min(max_parallel, sample_count))) as pool:
+                futs = {
+                    pool.submit(self._run_consensus_sample, prop.name, idx + 1, agent_name, prop.objective): (
+                        idx + 1,
+                        agent_name,
+                    )
+                    for idx, agent_name in enumerate(assignments)
+                }
+                for fut in as_completed(futs):
+                    idx, agent_name = futs[fut]
+                    try:
+                        results.append(fut.result())
+                    except Exception as exc:
+                        log_exception("orchestration.agent._apply_consensus.sample", exc)
+                        results.append({"sample": idx, "agent": agent_name, "ok": False, "error": str(exc), "text": ""})
+            results.sort(key=lambda r: int(r.get("sample") or 0))
+            log_event(
+                self.paths,
+                "consensus_samples_completed",
+                agent=run.agent,
+                name=prop.name,
+                results=results,
+            )
+            self._observer_log(f"consensus :: {prop.name} :: samples complete; coalescing with chief")
+            coalesce = self._consensus_coalesce_objective(prop.name, prop.objective, results)
+            coalesced = self.run(
+                "chief",
+                coalesce,
+                extra={"phase": "consensus", "consensus_name": prop.name},
+            )
+            log_event(
+                self.paths,
+                "consensus_coalesced",
+                agent="chief",
+                name=prop.name,
+                ok=coalesced.response.ok,
+                response_text=coalesced.response.text or "",
+                error=coalesced.response.error,
+            )
+            self._observer_log(f"consensus :: {prop.name} :: coalesced by chief")
+
+    def _run_consensus_sample(self, name: str, sample: int, agent_name: str, objective: str) -> Dict[str, Any]:
+        label = f"{agent_name}#consensus{sample}"
+        agent = self.get_agent(agent_name)
+        provider = self.get_provider(agent.provider)
+        sample_objective = (
+            f"Stochastic consensus sample `{name}` #{sample}.\n\n"
+            "Answer independently. Do not coordinate with other samples.\n\n"
+            f"Consensus objective:\n{objective}"
+        )
+        prompt = self.render_prompt(agent, sample_objective, {"phase": "consensus_sample", "agent": agent_name})
+        started = datetime.now().isoformat(timespec="seconds")
+        run_id = f"{started.replace(':','-')}-{label}"
+        timeout_s = int((self.clk_cfg.get("provider_timeout_s") or 300))
+        no_output_timeout_s = int((self.clk_cfg.get("provider_no_output_timeout_s") or 0))
+
+        def _progress(kind: str, message: str) -> None:
+            log_event(
+                self.paths,
+                ("http_" + kind[5:] if kind.startswith("http_") else "subprocess_" + kind),
+                agent=label,
+                consensus=name,
+                sample=sample,
+                message=message,
+                message_chars=len(message or ""),
+            )
+            if self.observer is not None:
+                try:
+                    self.observer.progress(label, kind, message)
+                except Exception:
+                    pass
+
+        log_event(
+            self.paths,
+            "consensus_sample_dispatch",
+            agent=label,
+            base_agent=agent_name,
+            consensus=name,
+            sample=sample,
+            objective=objective,
+            provider=provider.describe(),
+            run_id=run_id,
+        )
+        if self.observer is not None:
+            self.observer.begin(label, sample_objective)
+            self.observer.prompt_sent(label, prompt)
+        req = AgentRequest(
+            agent=label,
+            prompt=prompt,
+            workdir=self.paths.root,
+            dry_run=bool(self.clk_cfg.get("dry_run", False)),
+            timeout_s=timeout_s,
+            no_output_timeout_s=no_output_timeout_s,
+            on_progress=_progress,
+        )
+        try:
+            resp = provider.invoke(req)
+        except Exception as exc:
+            resp = AgentResponse(ok=False, error=str(exc))
+        finished = datetime.now().isoformat(timespec="seconds")
+        arun = AgentRun(agent=label, objective=sample_objective, response=resp, started_at=started, finished_at=finished)
+        self._record(arun, prompt, provider.describe())
+        if self.observer is not None:
+            self.observer.end(label, arun)
+        log_event(
+            self.paths,
+            "consensus_sample_response",
+            agent=label,
+            base_agent=agent_name,
+            consensus=name,
+            sample=sample,
+            ok=resp.ok,
+            error=resp.error,
+            response_text=resp.text or "",
+        )
+        return {"sample": sample, "agent": agent_name, "label": label, "ok": resp.ok, "error": resp.error, "text": resp.text or ""}
+
+    def _consensus_coalesce_objective(self, name: str, objective: str, results: List[Dict[str, Any]]) -> str:
+        parts = [
+            f"Coalesce stochastic consensus `{name}` into one coherent response.",
+            "",
+            "Original consensus objective:",
+            objective,
+            "",
+            "Samples:",
+        ]
+        for r in results:
+            parts.append(f"\n--- sample {r.get('sample')} agent={r.get('agent')} ok={r.get('ok')} error={r.get('error') or ''} ---")
+            parts.append((r.get("text") or "").strip() or "(no response)")
+        parts.append("\nReturn a unified answer with agreements, disagreements, and the recommended decision.")
+        return "\n".join(parts)
 
     # -- casting -----------------------------------------------------------
 
@@ -280,6 +548,7 @@ class AgentRunner:
             text,
             agents_cfg=self.agents_cfg,
             max_dynamic=cap,
+            source_agent=run.agent,
             on_change=_on_change,
         )
         if not result.is_empty():
@@ -437,7 +706,18 @@ class AgentRunner:
             cfg = (self.agents_cfg.get("agents") or {}).get(n) or {}
             marker = "[baseline]" if _casting.is_baseline(n) else "[dynamic]"
             role = (cfg.get("role") or "").strip()
-            roster_lines.append(f"- {marker} {n} :: {role}")
+            prompt_file = cfg.get("prompt") or f"{n}.md"
+            prompt_preview = ""
+            try:
+                prompt_path = self.paths.prompts / prompt_file
+                if prompt_path.exists():
+                    prompt_preview = " ".join(prompt_path.read_text(encoding="utf-8").strip().split())[:220]
+            except Exception as exc:
+                log_exception(f"orchestration.agent._collect_context.roster_prompt.{n}", exc)
+            roster_lines.append(
+                f"- {marker} {n} :: {role} "
+                f"(prompt={prompt_file}; prompt_preview={prompt_preview or '(missing)'})"
+            )
         roster_text = "\n".join(roster_lines) or "(no agents registered yet)"
 
         ctx = {
@@ -468,6 +748,7 @@ class AgentRunner:
             mem = self.paths.state / "agent_memory.jsonl"
             payload = {
                 "agent": run.agent,
+                "run_id": f"{run.started_at.replace(':','-')}-{run.agent}",
                 "objective": run.objective,
                 "ok": run.response.ok,
                 "error": run.response.error,

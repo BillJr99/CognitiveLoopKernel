@@ -106,6 +106,14 @@ class WorkflowProposal:
     yaml_body: str = ""
 
 
+@dataclass
+class ConsensusProposal:
+    name: str
+    agents: List[str] = field(default_factory=list)
+    copies: int = 3
+    objective: str = ""
+
+
 _ROLE_HEAD_RE = re.compile(r"^\s*PROPOSE_ROLE\s*:\s*([A-Za-z][A-Za-z0-9_\-]*)\s*$", re.MULTILINE)
 _ROLE_FIELD_RE = re.compile(r"^(ROLE|PROVIDER)\s*:\s*(.*)$", re.IGNORECASE)
 _ROLE_PROMPT_RE = re.compile(r"^\s*PROMPT\s*:\s*$", re.IGNORECASE)
@@ -115,6 +123,11 @@ _WF_HEAD_RE = re.compile(r"^\s*PROPOSE_WORKFLOW\s*:\s*([A-Za-z][A-Za-z0-9_\-]*)\
 _WF_FIELD_RE = re.compile(r"^(DESCRIPTION)\s*:\s*(.*)$", re.IGNORECASE)
 _WF_YAML_RE = re.compile(r"^\s*YAML\s*:\s*$", re.IGNORECASE)
 _WF_END_RE = re.compile(r"^\s*END_WORKFLOW\s*$", re.IGNORECASE)
+
+_CONS_HEAD_RE = re.compile(r"^\s*PROPOSE_CONSENSUS\s*:\s*([A-Za-z][A-Za-z0-9_\-]*)\s*$", re.MULTILINE)
+_CONS_FIELD_RE = re.compile(r"^(AGENTS?|COPIES)\s*:\s*(.*)$", re.IGNORECASE)
+_CONS_OBJECTIVE_RE = re.compile(r"^\s*OBJECTIVE\s*:\s*$", re.IGNORECASE)
+_CONS_END_RE = re.compile(r"^\s*END_CONSENSUS\s*$", re.IGNORECASE)
 
 
 def parse_role_proposals(text: str) -> List[RoleProposal]:
@@ -211,6 +224,58 @@ def parse_workflow_proposals(text: str) -> List[WorkflowProposal]:
     return out
 
 
+def parse_consensus_proposals(text: str) -> List[ConsensusProposal]:
+    if not text:
+        return []
+    out: List[ConsensusProposal] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        m = _CONS_HEAD_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        prop = ConsensusProposal(name=m.group(1).strip())
+        i += 1
+        objective_lines: List[str] = []
+        in_objective = False
+        while i < len(lines):
+            line = lines[i]
+            if _CONS_END_RE.match(line):
+                i += 1
+                break
+            if not in_objective:
+                fm = _CONS_FIELD_RE.match(line)
+                if fm:
+                    key = fm.group(1).upper()
+                    val = fm.group(2).strip()
+                    if key in ("AGENT", "AGENTS"):
+                        prop.agents = [
+                            _normalize_name(a)
+                            for a in re.split(r"[, ]+", val)
+                            if _normalize_name(a)
+                        ]
+                    elif key == "COPIES":
+                        try:
+                            prop.copies = max(1, int(val))
+                        except ValueError:
+                            prop.copies = 3
+                    i += 1
+                    continue
+                if _CONS_OBJECTIVE_RE.match(line):
+                    in_objective = True
+                    i += 1
+                    continue
+                i += 1
+                continue
+            objective_lines.append(line)
+            i += 1
+        prop.objective = "\n".join(objective_lines).strip()
+        if prop.name and prop.objective:
+            out.append(prop)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Registry mutators
 # ---------------------------------------------------------------------------
@@ -259,6 +324,36 @@ def _normalize_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]+", "_", (name or "").strip()).strip("_").lower()
 
 
+def _name_key(name: str) -> str:
+    """Compact name used to catch near-duplicate agent names.
+
+    This is intentionally conservative and name-focused. It catches cases
+    like ``engineering`` vs ``engineer`` without trying to make broad
+    semantic judgments that belong in the chief prompt.
+    """
+    key = re.sub(r"[^a-z0-9]+", "", _normalize_name(name))
+    for suffix in ("engineering", "engineers", "engineer"):
+        if key.endswith(suffix):
+            return key[: -len(suffix)] + "engineer"
+    for suffix in ("ing", "ers", "er", "ors", "or", "ists", "ist", "s"):
+        if len(key) > len(suffix) + 4 and key.endswith(suffix):
+            return key[: -len(suffix)]
+    return key
+
+
+def _similar_existing_name(name: str, agents: Dict[str, Any]) -> Optional[str]:
+    key = _name_key(name)
+    for existing in sorted(agents.keys()):
+        ex_key = _name_key(existing)
+        if not key or not ex_key:
+            continue
+        if key == ex_key:
+            return existing
+        if len(key) >= 6 and (key.startswith(ex_key) or ex_key.startswith(key)):
+            return existing
+    return None
+
+
 def _ensure_prompt_file(paths: Paths, name: str, prompt_body: str, role_line: str) -> str:
     """Write ``.clk/prompts/<name>.md`` if missing or if a body was provided.
 
@@ -291,7 +386,11 @@ def _ensure_prompt_file(paths: Paths, name: str, prompt_body: str, role_line: st
             "Operating constraints\n"
             "- Stay inside `$project_root`.\n"
             "- Do not install global packages or use sudo.\n"
-            "- Prefer editing existing files.\n"
+            "- Prefer editing existing files over creating new ones when feasible.\n"
+            "- Create files and directories only when they have a clear, distinct\n"
+            "  purpose that is not already served by existing project structure.\n"
+            "- Avoid duplicate files, duplicate directories, and alternate\n"
+            "  implementations of the same thing.\n"
             "- If you spot work that should be owned by a role that doesn't exist, emit a\n"
             "  `PROPOSE_ROLE:` block per the casting protocol.\n"
         )
@@ -342,6 +441,7 @@ def register_role(
     *,
     agents_cfg: Optional[Dict[str, Any]] = None,
     max_dynamic: int = DEFAULT_MAX_DYNAMIC_ROLES,
+    source_agent: str = "",
     on_change: Optional[Callable[[str, str], None]] = None,
 ) -> Tuple[bool, str]:
     """Register or refresh a single dynamic role.
@@ -360,6 +460,15 @@ def register_role(
         # or rebinding its role line aggressively. Treat as update.
         if proposal.prompt:
             _ensure_prompt_file(paths, name, proposal.prompt, proposal.role)
+            _log_casting_event(paths, {
+                "event": "baseline_prompt_refreshed",
+                "agent": source_agent,
+                "name": name,
+                "role": proposal.role,
+                "provider": proposal.provider,
+                "prompt_length": len(proposal.prompt or ""),
+                "prompt": proposal.prompt or "",
+            })
             if on_change is not None:
                 try:
                     on_change(name, "prompt_updated")
@@ -373,6 +482,10 @@ def register_role(
 
     existing = agents.get(name)
     is_update = existing is not None
+    if not is_update:
+        similar = _similar_existing_name(name, agents)
+        if similar:
+            return False, f"similar_to_existing:{similar}"
     if not is_update:
         # Enforce roster cap on *additions* only.
         dynamic_count = sum(1 for k in agents if k not in _RESERVED_NAMES)
@@ -391,10 +504,12 @@ def register_role(
     status = "updated" if is_update else "added"
     _log_casting_event(paths, {
         "event": "role_" + status,
+        "agent": source_agent,
         "name": name,
         "role": proposal.role,
         "provider": proposal.provider,
         "prompt_length": len(proposal.prompt or ""),
+        "prompt": proposal.prompt or "",
     })
     if on_change is not None:
         try:
@@ -434,6 +549,7 @@ def write_workflow(
     paths: Paths,
     proposal: WorkflowProposal,
     *,
+    source_agent: str = "",
     on_change: Optional[Callable[[str, str], None]] = None,
 ) -> Tuple[bool, str]:
     name = _normalize_name(proposal.name)
@@ -463,9 +579,11 @@ def write_workflow(
         return False, f"write_error:{exc}"
     _log_casting_event(paths, {
         "event": "workflow_written",
+        "agent": source_agent,
         "name": name,
         "description": proposal.description,
         "yaml_length": len(body),
+        "yaml": body,
     })
     if on_change is not None:
         try:
@@ -481,6 +599,7 @@ def apply_response_proposals(
     *,
     agents_cfg: Optional[Dict[str, Any]] = None,
     max_dynamic: int = DEFAULT_MAX_DYNAMIC_ROLES,
+    source_agent: str = "",
     on_change: Optional[Callable[[str, str], None]] = None,
 ) -> CastingResult:
     """Scan an agent's response, apply every proposal it contains.
@@ -499,20 +618,42 @@ def apply_response_proposals(
                 prop,
                 agents_cfg=agents_cfg,
                 max_dynamic=max_dynamic,
+                source_agent=source_agent,
                 on_change=on_change,
             )
             if not ok:
                 result.roles_skipped.append(f"{prop.name}:{status}")
+                log_event(
+                    paths,
+                    "role_skipped",
+                    agent=source_agent,
+                    name=prop.name,
+                    role=prop.role,
+                    provider=prop.provider,
+                    prompt_length=len(prop.prompt or ""),
+                    prompt=prop.prompt or "",
+                    reason=status,
+                )
             elif status == "added":
                 result.roles_added.append(prop.name)
             else:
                 result.roles_updated.append(prop.name)
         for wf in parse_workflow_proposals(response_text):
-            ok, status = write_workflow(paths, wf, on_change=on_change)
+            ok, status = write_workflow(paths, wf, source_agent=source_agent, on_change=on_change)
             if ok:
                 result.workflows_written.append(wf.name)
             else:
                 result.workflows_skipped.append(f"{wf.name}:{status}")
+                log_event(
+                    paths,
+                    "workflow_skipped",
+                    agent=source_agent,
+                    name=wf.name,
+                    description=wf.description,
+                    yaml_length=len(wf.yaml_body or ""),
+                    yaml=wf.yaml_body or "",
+                    reason=status,
+                )
     except Exception as exc:
         log_exception("orchestration.casting.apply_response_proposals", exc)
         result.errors.append(str(exc))
@@ -537,8 +678,8 @@ Add or refresh a role:
   ROLE: <one-line description>
   PROVIDER: <optional provider name, omit to inherit default>
   PROMPT:
-  <full prompt body. Use $idea_title, $idea_statement, $project_name,
-   $project_root, $state_summary, $objective, $iteration as placeholders.>
+  <full prompt body. Use $$idea_title, $$idea_statement, $$project_name,
+   $$project_root, $$state_summary, $$objective, $$iteration as placeholders.>
   END_ROLE
 
 Author or replace a workflow (the harness will save it as
@@ -566,6 +707,16 @@ Rules
 - If a stage references an agent you have not defined yet, define it in
   the same response with a PROPOSE_ROLE block.
 - Workflows may use any combination of baseline and dynamic agents.
+- Prefer assigning work to an existing agent when its role already fits.
+  Create or refresh a role when the need is distinct enough that an
+  existing role would blur ownership or do materially worse work.
+- Check existing names, role lines, and prompt previews before creating
+  a role. Do not create a near-synonym, pluralization, gerund, or
+  department label for an existing role (for example, `engineering`
+  when `engineer` exists).
+- New role prompts and role lines should state the distinct responsibility
+  the role owns compared with the nearest existing agent, and new role
+  names should be distinctive from the current roster.
 """
 
 
@@ -580,7 +731,18 @@ def render_roster_summary(paths: Paths) -> str:
         marker = "[baseline]" if is_baseline(name) else "[dynamic]"
         role = (cfg.get("role") or "").strip()
         prov = cfg.get("provider") or "(default)"
-        lines.append(f"- {marker} {name} :: {role} (provider={prov})")
+        prompt_file = cfg.get("prompt") or f"{name}.md"
+        prompt_preview = ""
+        try:
+            prompt_path = paths.prompts / prompt_file
+            if prompt_path.exists():
+                prompt_preview = " ".join(prompt_path.read_text(encoding="utf-8").strip().split())[:220]
+        except Exception as exc:
+            log_exception(f"orchestration.casting.render_roster_summary.{name}", exc)
+        lines.append(
+            f"- {marker} {name} :: {role} "
+            f"(provider={prov}; prompt={prompt_file}; prompt_preview={prompt_preview or '(missing)'})"
+        )
     return "\n".join(lines)
 
 
@@ -592,6 +754,7 @@ def casting_objective(idea_title: str, idea_statement: str) -> str:
         f"Idea: {idea_title}\n{idea_statement}\n\n"
         "Use the role-casting protocol to add or refresh agents and to write the "
         "`engineering` workflow. Keep the roster small and specific to this project: "
-        "drop generic roles that won't earn their keep, invent specialists that this "
-        "particular system needs."
+        "reuse existing agents when they fit, drop generic roles that won't earn "
+        "their keep, and invent specialists only when this particular system needs "
+        "a distinct owner."
     )

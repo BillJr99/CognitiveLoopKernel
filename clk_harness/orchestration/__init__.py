@@ -1,13 +1,14 @@
 """Orchestration primitives for CLK."""
 
 from .agent import AgentObserver, AgentRunner
-from .workflow import Workflow, WorkflowRunner, load_workflow
+from .workflow import Workflow, WorkflowRunner, is_provider_failure, load_workflow
 from .ralph_loop import RalphLoop
 from .autoresearch_loop import AutoresearchLoop
 from .evaluator import Evaluator, EvalResult
 from .scheduler import Scheduler
 from .casting import (
     BASELINE_AGENTS,
+    ConsensusProposal,
     CastingResult,
     RoleProposal,
     WorkflowProposal,
@@ -16,6 +17,7 @@ from .casting import (
     is_baseline,
     list_roles,
     parse_role_proposals,
+    parse_consensus_proposals,
     parse_workflow_proposals,
     register_role,
     remove_role,
@@ -28,6 +30,7 @@ __all__ = [
     "AgentRunner",
     "Workflow",
     "WorkflowRunner",
+    "is_provider_failure",
     "load_workflow",
     "RalphLoop",
     "AutoresearchLoop",
@@ -35,6 +38,7 @@ __all__ = [
     "EvalResult",
     "Scheduler",
     "BASELINE_AGENTS",
+    "ConsensusProposal",
     "CastingResult",
     "RoleProposal",
     "WorkflowProposal",
@@ -43,6 +47,7 @@ __all__ = [
     "is_baseline",
     "list_roles",
     "parse_role_proposals",
+    "parse_consensus_proposals",
     "parse_workflow_proposals",
     "register_role",
     "remove_role",

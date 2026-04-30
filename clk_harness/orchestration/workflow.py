@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import Paths
 from ..git_ops import add_all, commit as git_commit, has_changes
+from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
 from .agent import AgentRunner, AgentRun
 
@@ -39,6 +40,28 @@ except Exception:
     # subset CLK uses, so we silently fall back rather than spraying a
     # warning across stderr (which would also corrupt the TUI).
     yaml = None
+
+
+def is_provider_failure(error: str) -> bool:
+    """Return True for failures a downstream agent cannot fix."""
+    msg = (error or "").lower()
+    patterns = [
+        "no endpoints available",
+        "guardrail restrictions",
+        "data policy",
+        "api key",
+        "cli not found",
+        "not found",
+        "authentication",
+        "unauthorized",
+        "forbidden",
+        "rate limit",
+        "quota",
+        "operation was aborted",
+        "timeout after",
+        "no output for",
+    ]
+    return any(p in msg for p in patterns)
 
 
 def _mini_yaml_loads(text: str) -> Dict[str, Any]:
@@ -113,6 +136,23 @@ def _mini_yaml_loads(text: str) -> Dict[str, Any]:
             out.append(buf.strip())
         return out
 
+    def continuation(start: int, base_indent: int) -> Tuple[str, int]:
+        parts: List[str] = []
+        j = start
+        while j < len(lines):
+            line = lines[j]
+            stripped = line.lstrip()
+            indent = len(line) - len(stripped)
+            if indent <= base_indent:
+                break
+            if stripped.startswith("- "):
+                break
+            if ":" in stripped:
+                break
+            parts.append(stripped)
+            j += 1
+        return " ".join(parts).strip(), j
+
     lines = [l.rstrip() for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")]
     result: Dict[str, Any] = {}
     i = 0
@@ -130,6 +170,10 @@ def _mini_yaml_loads(text: str) -> Dict[str, Any]:
         if val:
             result[key] = parse_scalar(val)
             i += 1
+            extra, ni = continuation(i, 0)
+            if extra and isinstance(result[key], str):
+                result[key] = f"{result[key]} {extra}".strip()
+                i = ni
             continue
         # value on subsequent indented lines
         i += 1
@@ -146,13 +190,27 @@ def _mini_yaml_loads(text: str) -> Dict[str, Any]:
                     rest = stripped[2:]
                     if ":" in rest:
                         k2, _, v2 = rest.partition(":")
-                        cur[k2.strip()] = parse_scalar(v2)
+                        k2 = k2.strip()
+                        cur[k2] = parse_scalar(v2)
+                        i += 1
+                        extra, ni = continuation(i, len(sub) - len(stripped))
+                        if extra and isinstance(cur[k2], str):
+                            cur[k2] = f"{cur[k2]} {extra}".strip()
+                            i = ni
+                        continue
                 else:
                     if cur is None:
                         cur = {}
                     if ":" in stripped:
                         k2, _, v2 = stripped.partition(":")
-                        cur[k2.strip()] = parse_scalar(v2)
+                        k2 = k2.strip()
+                        cur[k2] = parse_scalar(v2)
+                        i += 1
+                        extra, ni = continuation(i, len(sub) - len(stripped))
+                        if extra and isinstance(cur[k2], str):
+                            cur[k2] = f"{cur[k2]} {extra}".strip()
+                            i = ni
+                        continue
                 i += 1
             if cur is not None:
                 items.append(cur)
@@ -250,7 +308,7 @@ class WorkflowRunner:
         cfg = (self.runner.clk_cfg.get("recovery") or {})
         return int(cfg.get("max_per_stage") or self.DEFAULT_MAX_RECOVERY_PER_STAGE)
 
-    DEFAULT_MAX_SUPERVISE_CYCLES = 5
+    DEFAULT_MAX_SUPERVISE_CYCLES = 20
 
     @property
     def max_supervise_cycles(self) -> int:
@@ -279,6 +337,7 @@ class WorkflowRunner:
            ACTION:done. Capped at ``DEFAULT_MAX_SUPERVISE_CYCLES``.
         """
         all_results: List[StageResult] = []
+        stopped_for_provider_failure = False
         for cycle in range(1, self.max_supervise_cycles + 1):
             if (self.paths.state / "done.md").exists():
                 log(f"workflow {workflow.name}: done.md present, stopping supervise loop")
@@ -291,9 +350,20 @@ class WorkflowRunner:
                 refreshed = workflow
             cycle_results = self._run_once(refreshed, dry_run=dry_run, cycle=cycle)
             all_results.extend(cycle_results)
+            if any(self._is_provider_failure((r.run.response.error or "")) for r in cycle_results if not r.run.response.ok):
+                log(
+                    f"workflow {workflow.name}: stopping supervise cycles after provider failure",
+                    level="ERROR",
+                )
+                stopped_for_provider_failure = True
+                break
             if dry_run:
                 break
-        if not (self.paths.state / "done.md").exists() and self.max_supervise_cycles > 1:
+        if (
+            not stopped_for_provider_failure
+            and not (self.paths.state / "done.md").exists()
+            and self.max_supervise_cycles > 1
+        ):
             log(
                 f"workflow {workflow.name}: supervise cycle limit reached "
                 f"({self.max_supervise_cycles}); type /run to continue or set "
@@ -372,6 +442,27 @@ class WorkflowRunner:
             results.append(sr)
             result_by_id[stage.id] = sr
             completed[stage.id] = ok and v_ok
+            if not ok and self._is_provider_failure(run.response.error or ""):
+                log(
+                    f"workflow {workflow.name}: aborting recovery loop after provider failure "
+                    f"in stage {stage.id}: {run.response.error}",
+                    level="ERROR",
+                )
+                log(
+                    f"workflow {workflow.name}: no recovery dispatch will be attempted; "
+                    "fix provider settings, wait/back off if rate-limited, or switch provider before retrying",
+                    level="WARN",
+                )
+                log_event(
+                    self.paths,
+                    "workflow_aborted",
+                    agent=stage.agent,
+                    workflow=workflow.name,
+                    stage_id=stage.id,
+                    reason="provider_failure",
+                    error=run.response.error,
+                )
+                break
             i += 1
             stages, wf_mtime = self._maybe_refresh_workflow(
                 workflow.name, wf_path, wf_mtime, stages, i
@@ -383,6 +474,9 @@ class WorkflowRunner:
 
     def _unmet_deps(self, stage: WorkflowStage, completed: Dict[str, bool]) -> List[str]:
         return [d for d in stage.depends_on if not completed.get(d)]
+
+    def _is_provider_failure(self, error: str) -> bool:
+        return is_provider_failure(error)
 
     def _log_skip(
         self,
@@ -431,7 +525,8 @@ class WorkflowRunner:
             "      no longer required, OR\n"
             "  (b) Emit ACTION blocks that fix the upstream failure (write/edit/run\n"
             "      to satisfy the failed validation), OR\n"
-            "  (c) PROPOSE_ROLE for a specialist that can do (b), then dispatch them.\n"
+            "  (c) dispatch an existing suitable agent, or PROPOSE_ROLE for a\n"
+            "      distinct specialist if no current agent fits (b).\n"
             "Do NOT skip silently. The harness will retry this stage after you respond."
         )
         log(f"workflow {workflow.name}: dispatching chief recovery for stage {stage.id}")
@@ -488,6 +583,16 @@ class WorkflowRunner:
         if not stage.validation:
             return True, ""
         try:
+            log_event(
+                self.paths,
+                "shell_command_start",
+                agent=stage.agent,
+                action="validation",
+                stage_id=stage.id,
+                cmd=stage.validation,
+                cwd=str(self.paths.root),
+                timeout_s=120,
+            )
             r = subprocess.run(
                 stage.validation,
                 shell=True,
@@ -497,9 +602,31 @@ class WorkflowRunner:
                 timeout=120,
             )
             output = (r.stdout or "") + (r.stderr or "")
+            log_event(
+                self.paths,
+                "shell_command_end",
+                agent=stage.agent,
+                action="validation",
+                stage_id=stage.id,
+                cmd=stage.validation,
+                ok=r.returncode == 0,
+                returncode=r.returncode,
+                output=output,
+                output_chars=len(output or ""),
+            )
             return r.returncode == 0, output.strip()
         except Exception as exc:
             log_exception("orchestration.workflow._validate", exc)
+            log_event(
+                self.paths,
+                "shell_command_end",
+                agent=stage.agent,
+                action="validation",
+                stage_id=stage.id,
+                cmd=stage.validation,
+                ok=False,
+                error=str(exc),
+            )
             return False, str(exc)
 
     def _commit(

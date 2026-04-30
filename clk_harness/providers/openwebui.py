@@ -95,6 +95,7 @@ class OpenWebUIProvider(AgentProvider):
             return False
 
     def invoke(self, req: AgentRequest) -> AgentResponse:
+        progress = req.on_progress or (lambda kind, msg: None)
         if req.dry_run:
             usage = estimate_tokens(req.prompt, "")
             usage["source"] = "openwebui-dry"
@@ -131,8 +132,10 @@ class OpenWebUIProvider(AgentProvider):
                 },
                 method="POST",
             )
+            progress("http_request", f"POST {url} model={self._model()} timeout_s={req.timeout_s}")
             with urllib.request.urlopen(request, timeout=req.timeout_s) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
+            progress("http_response", "rc=200")
             choices = payload.get("choices") or []
             if choices:
                 msg = (choices[0] or {}).get("message") or {}
@@ -161,6 +164,7 @@ class OpenWebUIProvider(AgentProvider):
                 detail = exc.read().decode("utf-8", errors="replace")[:300]
             except Exception:
                 detail = ""
+            progress("http_response", f"rc={exc.code} reason={exc.reason} detail={detail}")
             return AgentResponse(
                 ok=False,
                 error=f"openwebui HTTP {exc.code}: {exc.reason} {detail}".strip(),
@@ -168,8 +172,10 @@ class OpenWebUIProvider(AgentProvider):
         except urllib.error.URLError as exc:
             print(f"[providers.openwebui.invoke] URL error: {exc}", file=sys.stderr)
             traceback.print_exc()
+            progress("http_error", f"unreachable: {exc.reason}")
             return AgentResponse(ok=False, error=f"openwebui unreachable: {exc.reason}")
         except Exception as exc:
             print(f"[providers.openwebui.invoke] failed: {exc}", file=sys.stderr)
             traceback.print_exc()
+            progress("http_error", f"{exc}")
             return AgentResponse(ok=False, error=str(exc))
