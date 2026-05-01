@@ -36,7 +36,6 @@ Optional environment overrides (also accepted via .env in the script directory):
   CLK_PROVIDER          shell | claude | codex | gemini | pi | ollama | openwebui
                                                                (default: shell)
   CLK_MAX_ITERATIONS    integer                                (default: 10)
-  CLK_LOOP_MODE         ralph | autoresearch                   (default: ralph)
   CLK_PROJECT_NAME      project name shown in commits          (default: clk-app)
   CLK_RUN_INSTALL       true | false - run scripts/install_local.sh first (default: false)
   CLK_NO_TUI            true | false - skip the TUI and run the legacy
@@ -108,7 +107,6 @@ prompt_secret() {
 # ---------------------------------------------------------------------------
 prompt_default CLK_PROVIDER       "Provider (shell|claude|codex|gemini|pi|ollama|openwebui)" "shell"
 prompt_default CLK_MAX_ITERATIONS "Max loop iterations"                          "10"
-prompt_default CLK_LOOP_MODE      "Loop mode (ralph|autoresearch)"               "ralph"
 prompt_default CLK_PROJECT_NAME   "Project name"                                 "clk-app"
 prompt_default CLK_RUN_INSTALL    "Run scripts/install_local.sh? (true|false)"   "false"
 
@@ -209,11 +207,6 @@ PY
     ;;
 esac
 
-case "$CLK_LOOP_MODE" in
-  ralph|autoresearch) ;;
-  *) echo "[kickoff] invalid CLK_LOOP_MODE='$CLK_LOOP_MODE' (use ralph or autoresearch)" >&2; exit 2 ;;
-esac
-
 if ! [[ "$CLK_MAX_ITERATIONS" =~ ^[0-9]+$ ]]; then
   echo "[kickoff] CLK_MAX_ITERATIONS must be an integer (got '$CLK_MAX_ITERATIONS')" >&2
   exit 2
@@ -276,7 +269,6 @@ cat > "$KICKOFF_DIR/KICKOFF.md" <<MANIFEST
 | Source dir       | $SCRIPT_DIR |
 | Project name     | $CLK_PROJECT_NAME |
 | Provider         | $CLK_PROVIDER |
-| Loop mode        | $CLK_LOOP_MODE |
 | Max iterations   | $CLK_MAX_ITERATIONS |
 | Ran installer    | $CLK_RUN_INSTALL |
 | Idea             | $IDEA |
@@ -384,8 +376,8 @@ if [ "${CLK_NO_TUI:-false}" = "true" ]; then
   "$CLK" plan || echo "[kickoff] plan reported failures (continuing)"
   echo "[kickoff] clk run"
   "$CLK" run || echo "[kickoff] run reported failures (continuing)"
-  echo "[kickoff] clk loop --mode $CLK_LOOP_MODE --max-iterations $CLK_MAX_ITERATIONS"
-  "$CLK" loop --mode "$CLK_LOOP_MODE" --max-iterations "$CLK_MAX_ITERATIONS"
+  echo "[kickoff] clk loop --max-iterations $CLK_MAX_ITERATIONS"
+  "$CLK" loop --max-iterations "$CLK_MAX_ITERATIONS"
 else
   # Default: hand control to the TUI dashboard. If $IDEA is set, it pre-seeds
   # the idea and starts an engineering cycle; otherwise the dashboard waits
