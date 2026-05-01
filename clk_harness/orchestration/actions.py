@@ -53,6 +53,10 @@ Safety rules (enforced here, not on the agent)
   ``rm -rf ~``).
 - ``done`` writes ``.clk/state/done.md`` with the supplied reason; the
   loops already treat that as a "stop iterating" signal.
+- ``.clk/blackboard/`` is an exception to the ``.clk/`` sandbox: agents
+  may write JSON post files there directly (short alias ``blackboard/``
+  is rewritten automatically). POST blocks are still preferred because
+  the harness stamps metadata; direct writes are for advanced use.
 """
 
 from __future__ import annotations
@@ -215,12 +219,14 @@ _HARNESS_DIR_NAMES = (".clk", "workspace")
 
 
 def _normalize_rel(root: Path, rel: str) -> str:
-    """Strip redundant prefixes that agents commonly add by mistake.
+    """Strip redundant prefixes and rewrite blackboard paths.
 
-    Agents now operate directly at the project root (the ``workspace/``
-    directory has been folded into root). They occasionally still emit
-    ``PATH: workspace/foo.py`` out of habit; we strip that prefix to
-    avoid creating a stray ``workspace/`` subdirectory.
+    Agents operate directly at the project root. They occasionally emit
+    ``PATH: workspace/foo.py`` out of habit; we strip that prefix.
+
+    Bare ``blackboard/`` paths are rewritten to ``.clk/blackboard/`` so
+    agents can use the short form and still land in harness state where
+    the exception in ``_resolve_safe`` lets them through.
 
     Also strips a leading ``./`` for the same ergonomics.
     """
@@ -235,12 +241,19 @@ def _normalize_rel(root: Path, rel: str) -> str:
             rel = rel[len("workspace") + 1:] if len(rel) > len("workspace") else ""
         else:
             break
+    # Rewrite a bare ``blackboard/`` prefix to ``.clk/blackboard/`` so
+    # agents can address the shared scratchpad without knowing the full
+    # harness path.  The sandbox exception below then allows it through.
+    if rel == "blackboard" or rel.startswith("blackboard/") or rel.startswith("blackboard\\"):
+        tail = rel[len("blackboard") + 1:] if len(rel) > len("blackboard") else ""
+        rel = f".clk/blackboard/{tail}" if tail else ".clk/blackboard"
     return rel
 
 
 def _resolve_safe(root: Path, rel: str) -> Optional[Path]:
     """Resolve ``rel`` relative to the project ``root``, refusing escapes
-    and refusing any path that targets the harness (``.clk/``) tree.
+    and refusing any path that targets the harness (``.clk/``) tree,
+    with one exception: ``.clk/blackboard/`` may be written directly.
 
     Returns the resolved Path on success, or ``None`` when the path is
     rejected. The two failure modes:
@@ -248,10 +261,13 @@ def _resolve_safe(root: Path, rel: str) -> Optional[Path]:
       * The path resolves outside the project root (``../escape``,
         absolute paths).
       * The path resolves into ``.clk/`` — that subtree is reserved
-        for the harness (config, runs, prompts, blackboard, harness
-        sources) and never directly written by agent ACTION blocks.
-        Agents emit POST blocks instead; the harness routes those into
-        ``.clk/blackboard/``.
+        for the harness (config, runs, prompts, harness sources).
+        Exception: ``.clk/blackboard/`` is the shared cross-agent
+        scratchpad; agents are allowed to write there directly (or via
+        the short alias ``blackboard/`` which ``_normalize_rel`` maps
+        here).  POST blocks remain the preferred interface because the
+        harness stamps metadata automatically, but direct writes are
+        accepted for flexibility.
     """
     rel = _normalize_rel(root, rel)
     if not rel:
@@ -267,6 +283,9 @@ def _resolve_safe(root: Path, rel: str) -> Optional[Path]:
         return None
     parts = relative.parts
     if parts and parts[0] == ".clk":
+        # Allow writes into the blackboard subtree only.
+        if len(parts) >= 2 and parts[1] == "blackboard":
+            return candidate
         return None
     return candidate
 

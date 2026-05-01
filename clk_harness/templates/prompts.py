@@ -26,15 +26,16 @@ Filesystem
   is resolved relative to that root. Project source, docs, tests,
   configs — everything you build sits in this tree.
 - The ``.clk/`` subdirectory is HARNESS state (config, prompts, runs,
-  logs, blackboard, harness sources). Do NOT write there with
-  ACTION:write — the harness rejects any PATH that resolves into
-  ``.clk/``. To share findings with other agents, use the POST block
-  (the harness routes posts into ``.clk/blackboard/`` for you).
-  Examples: PATH: src/foo.py     GOOD
-            PATH: README.md      GOOD
-            PATH: tests/test.py  GOOD
-            PATH: .clk/anything  WRONG (rejected; harness state)
-            PATH: ../escape      WRONG (rejected; outside root)
+  logs, harness sources). Do NOT write there with ACTION:write — the
+  harness rejects any PATH that resolves into ``.clk/``, EXCEPT for
+  ``.clk/blackboard/``. To share findings with other agents, use a
+  POST block (preferred) or write directly to ``blackboard/<id>.json``
+  (the harness routes it to ``.clk/blackboard/``).
+  Examples: PATH: src/foo.py          GOOD
+            PATH: README.md           GOOD
+            PATH: blackboard/my.json  GOOD (shared scratchpad)
+            PATH: .clk/config/x.json WRONG (rejected; harness state)
+            PATH: ../escape           WRONG (rejected; outside root)
 - ``workspace/`` no longer exists as a special directory. Older prompts
   may mention it; if you emit ``PATH: workspace/foo``, the harness
   strips the prefix and writes to ``$project_root/foo``.
