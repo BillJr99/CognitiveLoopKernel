@@ -14,19 +14,19 @@ committed automatically.
 - **Provider-agnostic.** Works with Claude Code, OpenAI Codex, Google
   Gemini, OpenWebUI (any OpenAI-compatible HTTP server), Pi, local
   Ollama, or a built-in dummy "shell" provider for testing.
-- **Dynamic team.** A baseline of five agents (`chief`, `engineer`,
-  `qa`, `ralph`, `autoresearch`) ships with the harness; the chief
-  invents project-specific specialists on the fly, writes their prompts,
-  and authors the workflow YAML that wires them together.
+- **Dynamic team.** A baseline of four agents (`chief`, `engineer`,
+  `qa`, `ralph`) ships with the harness; the chief invents
+  project-specific specialists on the fly, writes their prompts, and
+  authors the workflow YAML that wires them together.
 - **Real actions, not just descriptions.** Agents emit `ACTION:` blocks
   (write/edit/append/delete/run/done) that the harness applies with
   path-safety checks, automatic backups, and per-agent git commits.
 - **Self-healing.** When a stage's dependencies fail, the chief is
   dispatched in recovery mode (capped) to fix or re-cast rather than
   silently skipping.
-- **Iterative by design.** Ships with Archon-style YAML workflows, a
-  Ralph/gnhf-style improvement loop, and a Karpathy-style autoresearch
-  loop.
+- **Iterative by design.** Ships with Archon-style YAML workflows and
+  a Ralph/gnhf-style improvement loop; the same ralph agent also drives
+  Karpathy-style autoresearch cycles when the state has open questions.
 - **Memory through git.** Every successful milestone (and every action
   batch) is committed with a structured message so future agent runs
   can mine the log for context. A separate `.clk/state/casting.log`
@@ -61,8 +61,8 @@ engineering cycle so the agents react to the new context.
 | `/roles add NAME "role description"` | add a dynamic role (the chief usually does this for you) |
 | `/roles drop NAME`                   | remove a dynamic role (baseline cannot be removed) |
 | `/run [workflow]`                    | run a single workflow cycle (default `engineering`) |
-| `/loop ralph 5`                      | start a Ralph loop with 5 iterations |
-| `/loop autoresearch 3`               | start an autoresearch loop |
+| `/loop ralph 5`                      | start a Ralph refinement loop with 5 iterations |
+| `/loop autoresearch 3`               | start a Karpathy-style research loop (ralph agent, research mode) |
 | `/stop`                              | request the active loop to stop after the current iteration |
 | `/abort`                             | SIGTERM any running CLI subprocess (use when an agent is genuinely hung; the heartbeat tells you when this is likely) |
 | `/provider <name>`                   | switch the active provider (shell, claude, codex, gemini, pi, ollama, openwebui) |
@@ -121,7 +121,7 @@ clk_harness/
   config.py              # paths, default configs, JSON load/save
   git_ops.py             # init, commit, revert, status helpers
   providers/             # claude, codex, pi, ollama, shell adapters
-  orchestration/         # agent runner, workflow runner, ralph + autoresearch loops
+  orchestration/         # agent runner, workflow runner, ralph loop (refinement + autoresearch)
   templates/             # bundled prompts and workflows
   utils/                 # logging
 scripts/
@@ -252,13 +252,13 @@ runaway loops.
 
 ## Dynamic agents (casting)
 
-The harness ships with five baseline agents that cannot be removed:
+The harness ships with four baseline agents that cannot be removed:
 
 - `chief` — decomposes objectives, casts the team, authors workflow YAML.
 - `engineer` — default implementer.
 - `qa` — default validator.
-- `ralph` — drives the Ralph improvement loop.
-- `autoresearch` — drives the Karpathy-style research loop.
+- `ralph` — drives both the Ralph refinement loop and Karpathy-style
+  autoresearch cycles; the mode is inferred from the current project state.
 
 Everything else is dynamic. On the first user message, the chief is
 auto-dispatched with the captured idea and is encouraged to invent
@@ -329,14 +329,17 @@ in the Ralph loop, are reverted to the pre-iteration HEAD).
 
 ## Loops
 
-- **Ralph (`--mode ralph`, default).** Each iteration: Ralph picks one
-  measurable improvement, the engineer implements it, QA validates, and
-  the harness commits or reverts.
-- **Autoresearch (`--mode autoresearch`).** Each iteration: survey
-  state, pick the highest-value open question, design and run a small
-  experiment, record the learning regardless of pass/fail.
+Ralph runs in two modes (selected automatically based on project state,
+or forced via `/loop`):
 
-Both loops respect `max_iterations` and stop early when
+- **Refinement mode (`/loop ralph N`, default).** Each iteration: ralph
+  picks one measurable improvement, the engineer implements it, QA
+  validates, and the harness commits or reverts.
+- **Autoresearch mode (`/loop autoresearch N`).** Each iteration: ralph
+  surveys state, picks the highest-value open question, designs and runs
+  a small experiment, and records the learning regardless of pass/fail.
+
+Both modes respect `max_iterations` and stop early when
 `.clk/state/done.md` is created.
 
 ## Completion criteria

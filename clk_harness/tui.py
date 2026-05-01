@@ -23,7 +23,7 @@ Conversational dispatch:
   * Slash commands give explicit control:
       /idea <text>           replace the captured idea
       /run [workflow]        run a single workflow cycle (default: engineering)
-      /loop ralph|autoresearch [N]  start a loop
+      /loop ralph|autoresearch [N]  start a loop (autoresearch uses ralph in research mode)
       /stop                  request the active loop to stop
       /provider <name>       switch active provider
       /status                show a status snapshot in the log

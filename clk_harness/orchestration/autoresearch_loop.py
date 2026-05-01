@@ -1,13 +1,15 @@
-"""Karpathy-style autoresearch loop.
+"""Karpathy-style autoresearch loop, driven by the ralph agent.
 
 Repeatedly:
-  1. survey what is known (state + git log)
-  2. pick the highest-value open question
-  3. design and run a small experiment
+  1. ralph surveys what is known and picks the highest-value open question
+  2. analyst investigates the question
+  3. critic reviews the finding
   4. record the learning, regardless of pass/fail
 
-Where Ralph optimizes the implementation, autoresearch optimizes the
-*plan*. The two loops are designed to be composable.
+Ralph handles both refinement mode (pick one improvement → implement →
+validate) and research mode (survey → question → experiment → record).
+This loop puts ralph in research mode by framing each iteration as an
+autoresearch step.
 """
 
 from __future__ import annotations
@@ -64,7 +66,7 @@ class AutoresearchLoop:
     def _step(self, idx: int, *, dry_run: bool) -> Experiment:
         started = datetime.now().isoformat(timespec="seconds")
         survey = self.runner.run(
-            "autoresearch",
+            "ralph",
             f"Autoresearch step #{idx}: survey state and propose next experiment.",
             extra={"iteration": idx, "loop": "autoresearch"},
             dry_run=dry_run,

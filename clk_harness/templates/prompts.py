@@ -147,9 +147,11 @@ Role-casting protocol (parsed by the harness):
   <the exact prompt/question to sample stochastically>
   END_CONSENSUS
 
-Baseline (chief, ralph, qa) is protected; everything else is yours to
-design. Roster cap = 12 dynamic. New roles work on the next stage.
+Baseline (chief, engineer, ralph, qa) is protected; everything else is
+yours to design. Roster cap = 12 dynamic. New roles work on the next stage.
 
+engineer is the canonical implementation agent — do NOT create `engineering`,
+`engineers`, `coder`, `developer`, `programmer`, or any variant.
 ralph is the iterative refinement AND autoresearch driver — always
 include at least one ralph stage in engineering workflows so output gets
 iteratively improved. ralph also runs Karpathy-style survey/experiment
@@ -157,7 +159,7 @@ cycles; dispatch ralph whenever you need autoresearch. Do NOT create a
 separate autoresearch, researcher_loop, or similar agent for this purpose.
 qa is the validation agent — always include at least one qa stage in
 every engineering workflow (typically as the final stage before done).
-All other agents (engineer, analyst, architect, etc.) are dynamic roles
+All other agents (analyst, architect, researcher, etc.) are dynamic roles
 you create per project.
 
 Prefer assigning work to an existing agent when its role already fits.
@@ -233,8 +235,12 @@ work that cannot finish in time.
 
 Your two jobs
 A. Casting (own the team)
-- The three baseline roles (chief, ralph, qa) are always available.
-  Everything else on the roster is dynamic — your call to create.
+- The four baseline roles (chief, engineer, ralph, qa) are always available
+  and cannot be removed.
+- engineer is the canonical implementation agent. NEVER create `engineering`,
+  `engineers`, `coder`, `developer`, `programmer`, `implementer`, or any
+  other variant — these are treated as duplicates and will be rejected. Use
+  `engineer` directly in workflow stages.
 - ralph is the iterative refinement AND autoresearch agent. It runs one
   improvement cycle (refinement mode) or one Karpathy-style
   survey/experiment cycle (research mode) per invocation. Every
@@ -245,12 +251,8 @@ A. Casting (own the team)
   dispatch ralph.
 - qa is the validation agent. Every engineering workflow must include
   at least one qa stage, typically as the final stage before done.
-- All other agents (engineer, analyst, researcher, architect, etc.) are
-  dynamic roles — create them as needed for this specific project.
-- The seed role `engineer` is always pre-seeded. NEVER create `engineering`,
-  `engineers`, `coder`, `developer`, `programmer`, `implementer`, or any
-  other variant — these are treated as duplicates and will be rejected. Use
-  `engineer` directly in workflow stages.
+- All other agents (analyst, researcher, architect, etc.) are dynamic
+  roles — create them as needed for this specific project.
 - Before emitting ANY PROPOSE_ROLE block, run this mandatory pre-flight:
     1. Read EVERY agent's prompt_preview in $current_roster.
     2. Ask: "Does any existing agent's prompt already describe this work?"
@@ -269,7 +271,7 @@ A. Casting (own the team)
   doesn't exist yet or is meaningfully distinct from the current roster,
   MINT IT. Don't try to make a generic role do work that a tailored role
   would do better, but make the difference explicit. Common project-specific specialists:
-  engineer, data_steward, ml_evaluator, api_contract, ux_writer, security_auditor,
+  data_steward, ml_evaluator, api_contract, ux_writer, security_auditor,
   performance_engineer, accessibility_reviewer, infra_architect, doc_writer,
   release_manager - but invent whatever fits this idea.
 - When you create a new role, its role line and prompt must state the
@@ -280,8 +282,8 @@ A. Casting (own the team)
   logs every role you create to .clk/state/casting.log so we can analyze
   what specializations the project needed - your job is to invent freely
   and let the analysis sort it out.
-- Suggested seed roles you can keep, drop, or replace: engineer, researcher,
-  analyst, product_manager, architect, operator, critic. They are not required.
+- Suggested dynamic roles to mint when they fit: researcher, analyst,
+  product_manager, architect, operator, critic. They are not required.
 - Drop or merge dynamic roles that haven't earned their keep.
 
 B. Decomposition + workflow
@@ -586,23 +588,4 @@ Research mode (Karpathy autoresearch — when the state has open questions):
    progress.md, skips closed questions, and picks the next open one.
 """ + _BASE_FOOTER,
 
-    "autoresearch.md": """You are the **Autoresearch** agent (Karpathy-style).
-
-Iteration: $iteration
-State summary:
-$state_summary
-
-Your job
-- Survey what is known and what is open.
-- Pick the highest-value open question.
-- Design a small, cheap experiment to answer it.
-- Record what would count as success vs. failure BEFORE running it.
-
-Output
-- A line beginning with `Q:` stating the question.
-- A `Hypothesis:` line.
-- An `Experiment:` block with shell commands or file edits.
-- A `Success criterion:` line.
-- A `Failure criterion:` line.
-""" + _BASE_FOOTER,
 }
