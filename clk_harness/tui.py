@@ -467,7 +467,10 @@ class DashboardState:
                 else:
                     card.live_stderr_chars += len(message) + 1
             elif kind == "tick":
-                card.live_last_line = message[:200]
+                # Strip pid= token before storing — live_pid tracks it separately
+                # and we don't want it duplicated in the card's status line.
+                stripped = re.sub(r"\bpid=\S+\s*", "", message).strip()
+                card.live_last_line = stripped[:200]
                 for tok in message.split():
                     if tok.startswith("cpu="):
                         card.live_cpu_pct = tok.split("=", 1)[1]
