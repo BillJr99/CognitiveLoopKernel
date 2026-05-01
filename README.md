@@ -111,6 +111,85 @@ or:
 ./scripts/clk configure --set default_provider=claude
 ```
 
+## Docker
+
+The harness ships with a `Dockerfile`. Kickoff directories are created under
+`workspace/` inside the container; mount a volume there to keep them after
+the container exits.
+
+### Build
+
+```bash
+docker build -t clk .
+```
+
+### Run
+
+The container defaults to the non-interactive pipeline (`CLK_NO_TUI=true`).
+Pass your idea as the first argument.
+
+**Ephemeral** — no persistent storage; kickoffs are lost when the container exits:
+
+```bash
+docker run --rm clk "A local-first journaling app that summarises my week"
+```
+
+**Named volume** — kickoffs persist in a Docker-managed volume across runs:
+
+```bash
+docker volume create clk-workspace
+
+docker run --rm \
+  -v clk-workspace:/app/workspace \
+  clk "A local-first journaling app that summarises my week"
+```
+
+**Host directory** — kickoffs written directly to a directory on your machine:
+
+```bash
+docker run --rm \
+  -v /path/to/my/projects:/app/workspace \
+  clk "A local-first journaling app that summarises my week"
+```
+
+### Provider and authentication
+
+Pass any `CLK_*` variable or API key with `-e`:
+
+```bash
+docker run --rm \
+  -v clk-workspace:/app/workspace \
+  -e CLK_PROVIDER=claude \
+  -e CLK_AUTH_MODE=apikey \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  clk "A local-first journaling app that summarises my week"
+```
+
+For `ollama` or `openwebui` running on the host, use `host.docker.internal`
+as the endpoint (macOS/Windows) or `--network host` (Linux):
+
+```bash
+docker run --rm \
+  -v clk-workspace:/app/workspace \
+  -e CLK_PROVIDER=ollama \
+  -e CLK_OLLAMA_ENDPOINT=http://host.docker.internal:11434 \
+  clk "A local-first journaling app that summarises my week"
+```
+
+### TUI mode (interactive)
+
+The curses TUI requires a pseudo-terminal; allocate one with `-it` and
+override the default:
+
+```bash
+docker run --rm -it \
+  -v clk-workspace:/app/workspace \
+  -e CLK_NO_TUI=false \
+  -e CLK_PROVIDER=claude \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  clk
+```
+
 ## Layout
 
 The package itself:

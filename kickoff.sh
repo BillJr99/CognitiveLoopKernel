@@ -213,10 +213,12 @@ if ! [[ "$CLK_MAX_ITERATIONS" =~ ^[0-9]+$ ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Create kickoff directory in CWD; never touch the source tree
+# 5. Create kickoff directory under workspace/; never touch the source tree
 # ---------------------------------------------------------------------------
 TS="$(date +%Y%m%d-%H%M%S)"
-KICKOFF_DIR="$(pwd)/kickoff-$TS"
+WORKSPACE_DIR="$(pwd)/workspace"
+KICKOFF_DIR="$WORKSPACE_DIR/kickoff-$TS"
+mkdir -p "$WORKSPACE_DIR"
 if [ -e "$KICKOFF_DIR" ]; then
   echo "[kickoff] $KICKOFF_DIR already exists; refusing to overwrite" >&2
   exit 1
@@ -394,4 +396,5 @@ echo
 echo "[kickoff] complete"
 echo "[kickoff] kickoff dir: $KICKOFF_DIR"
 echo "[kickoff] inspect:     cd \"$KICKOFF_DIR\" && ./.clk/scripts/clk status"
+echo "[kickoff] workspace:   $WORKSPACE_DIR"
 echo "[kickoff] reset:       rm -rf \"$KICKOFF_DIR\""
