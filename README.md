@@ -148,7 +148,17 @@ docker run --rm -it \
   clk "A local-first journaling app that summarises my week"
 ```
 
-**Ephemeral** — no persistent storage; kickoffs are lost when the container exits:
+**Anonymous volume** — Docker allocates a temporary volume that is
+automatically removed when the container exits (`--rm` handles cleanup):
+
+```bash
+docker run --rm -it \
+  -v /app/workspace \
+  clk "A local-first journaling app that summarises my week"
+```
+
+**Ephemeral** — no volume at all; kickoffs exist only inside the container's
+writable layer and are lost when it exits:
 
 ```bash
 docker run --rm -it clk "A local-first journaling app that summarises my week"
