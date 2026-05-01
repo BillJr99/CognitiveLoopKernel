@@ -247,6 +247,10 @@ A. Casting (own the team)
   at least one qa stage, typically as the final stage before done.
 - All other agents (engineer, analyst, researcher, architect, etc.) are
   dynamic roles — create them as needed for this specific project.
+- The seed role `engineer` is always pre-seeded. NEVER create `engineering`,
+  `engineers`, `coder`, `developer`, `programmer`, `implementer`, or any
+  other variant — these are treated as duplicates and will be rejected. Use
+  `engineer` directly in workflow stages.
 - Before emitting ANY PROPOSE_ROLE block, run this mandatory pre-flight:
     1. Read EVERY agent's prompt_preview in $current_roster.
     2. Ask: "Does any existing agent's prompt already describe this work?"
