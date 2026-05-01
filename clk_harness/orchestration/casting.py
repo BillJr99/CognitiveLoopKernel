@@ -288,6 +288,15 @@ def parse_consensus_proposals(text: str) -> List[ConsensusProposal]:
 # Reserved names that may never be assigned to a dynamic role.
 _RESERVED_NAMES = set(BASELINE_AGENTS)
 
+# Seed roles that ship in DEFAULT_AGENTS but are not in BASELINE_AGENTS.
+# They always act as similarity anchors in _similar_existing_name so the
+# chief cannot coin a near-duplicate name (e.g. "engineering" for
+# "engineer") even when agents.json was trimmed to only the baseline set.
+_SEED_ROLE_ANCHORS: frozenset = frozenset({
+    "engineer",
+    "autoresearch",
+})
+
 
 def is_baseline(name: str) -> bool:
     return name in _RESERVED_NAMES
@@ -335,6 +344,7 @@ def _normalize_name(name: str) -> str:
 _NAME_SYNONYMS: Dict[str, str] = {
     "coder": "engineer",
     "developer": "engineer",
+    "engineering": "engineer",  # gerund form — always a duplicate of the seed role
     "programmer": "engineer",
     "implementer": "engineer",
     "implementor": "engineer",
@@ -417,7 +427,10 @@ def _name_key(name: str) -> str:
 
 def _similar_existing_name(name: str, agents: Dict[str, Any]) -> Optional[str]:
     key = _name_key(name)
-    for existing in sorted(agents.keys()):
+    # Always include seed anchors so the check fires even when agents.json
+    # was manually trimmed to baseline-only and the seed role is absent.
+    all_names = set(agents.keys()) | _SEED_ROLE_ANCHORS | set(BASELINE_AGENTS)
+    for existing in sorted(all_names):
         ex_key = _name_key(existing)
         if not key or not ex_key:
             continue
@@ -913,6 +926,11 @@ Rules
 - Prefer assigning work to an existing agent when its role already fits.
   Create or refresh a role when the need is distinct enough that an
   existing role would blur ownership or do materially worse work.
+- The seed role `engineer` is always pre-seeded and is the canonical
+  implementation role. NEVER create `engineering`, `engineers`, `coder`,
+  `developer`, `programmer`, `implementer`, or any other variant — the
+  harness treats them as duplicates of `engineer` and will reject them.
+  Use `engineer` directly in workflow stages.
 - Before emitting ANY PROPOSE_ROLE block, run this mandatory pre-flight:
     1. Read every agent's prompt_preview in the current roster.
     2. Ask: "Does any existing agent's prompt already describe this work?"

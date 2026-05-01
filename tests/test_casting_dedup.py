@@ -124,6 +124,19 @@ def test_register_role_rejects_synonym_name(paths: Paths) -> None:
     assert status.startswith("similar_to_existing:engineer")
 
 
+def test_register_role_rejects_engineering_even_without_engineer_in_agents(paths: Paths) -> None:
+    # "engineer" is a seed-role anchor; the check must fire even when it is
+    # absent from agents.json (e.g. after a manual reset to baseline-only).
+    cfg: dict = {"agents": {}}  # engineer intentionally absent
+    ok, status = casting.register_role(
+        paths,
+        _proposal("engineering", prompt="implement the objective"),
+        agents_cfg=cfg,
+    )
+    assert ok is False
+    assert "engineer" in status
+
+
 def test_register_role_rejects_synonym_via_synonym_table(paths: Paths) -> None:
     cfg: dict = {"agents": {"engineer": {"prompt": "engineer.md", "role": "implement"}}}
     ok, status = casting.register_role(
