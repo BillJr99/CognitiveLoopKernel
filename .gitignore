@@ -38,8 +38,8 @@ Thumbs.db
 .idea/
 *.swp
 
-# Kickoff scratch directories (created by kickoff.sh)
-kickoff-*/
+# Kickoff workspace (kickoff dirs created by kickoff.sh land here)
+workspace/
 
 # Local env overrides (kickoff.sh reads .env if present)
 .env
