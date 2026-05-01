@@ -1,9 +1,25 @@
 FROM python:3.11-slim
 
-# git is required for the harness commit operations inside each kickoff dir.
+# System deps: git (harness commits), curl/gnupg/ca-certificates (NodeSource setup).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git \
+        git curl ca-certificates gnupg \
     && rm -rf /var/lib/apt/lists/*
+
+# Node.js LTS via NodeSource (needed for claude, codex, gemini, pi CLIs).
+RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+       | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_lts.x nodistro main" \
+       > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Provider CLIs — installed globally so they're on PATH for all agents.
+RUN npm install -g \
+        @anthropic-ai/claude-code \
+        @openai/codex \
+        @google/gemini-cli \
+        pi
 
 WORKDIR /app
 
