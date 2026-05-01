@@ -28,8 +28,6 @@ RUN git config --global user.name  "CLK Container" \
 RUN mkdir -p workspace
 VOLUME /app/workspace
 
-# Default to non-interactive pipeline; override with -e CLK_NO_TUI=false -it
-# for the full curses TUI (requires a pseudo-terminal).
-ENV CLK_NO_TUI=true
-
+# Run with -it for the interactive TUI (the default). For non-interactive
+# use (CI, scripting) pass -e CLK_NO_TUI=true and omit -it.
 ENTRYPOINT ["./kickoff.sh"]
