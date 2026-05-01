@@ -122,6 +122,35 @@ container has a terminal. If no `.env` is present it will prompt for provider
 and settings before launching. Pass your idea as the first argument to skip
 the prompt and go straight to the engineering workflow.
 
+### First-run setup
+
+Run the setup wizard to create your `.env` before starting a session. The
+wizard copies `.env.example` → `.env` (if absent), then walks you through
+every setting: provider, API keys, git identity, etc.
+
+Inside Docker the `.env` lives at `/app/.env`, which is outside the workspace
+volume. Bind-mount a file on your host so the config persists across runs:
+
+```bash
+# Create an empty config file on the host (once)
+touch ~/clk.env
+
+# Run the wizard — writes into the bind-mounted file
+docker run --rm -it \
+  -v ~/clk.env:/app/.env \
+  -v clk-workspace:/app/workspace \
+  clk --setup
+
+# Subsequent runs load the config automatically
+docker run --rm -it \
+  -v ~/clk.env:/app/.env \
+  -v clk-workspace:/app/workspace \
+  clk "My idea here"
+```
+
+`--setup` also works locally (outside Docker) and updates `./kickoff.sh`'s
+own `.env` in-place.
+
 ### Build
 
 ```bash
