@@ -117,29 +117,25 @@ The harness ships with a `Dockerfile`. Kickoff directories are created under
 `workspace/` inside the container; mount a volume there to keep them after
 the container exits.
 
+The default mode is the interactive TUI dashboard — run with `-it` so the
+container has a terminal. If no `.env` is present it will prompt for provider
+and settings before launching. Pass your idea as the first argument to skip
+the prompt and go straight to the engineering workflow.
+
 ### Build
 
 ```bash
 docker build -t clk .
 ```
 
-### Run
-
-The container defaults to the non-interactive pipeline (`CLK_NO_TUI=true`).
-Pass your idea as the first argument.
-
-**Ephemeral** — no persistent storage; kickoffs are lost when the container exits:
-
-```bash
-docker run --rm clk "A local-first journaling app that summarises my week"
-```
+### Run (interactive TUI — default)
 
 **Named volume** — kickoffs persist in a Docker-managed volume across runs:
 
 ```bash
 docker volume create clk-workspace
 
-docker run --rm \
+docker run --rm -it \
   -v clk-workspace:/app/workspace \
   clk "A local-first journaling app that summarises my week"
 ```
@@ -147,9 +143,25 @@ docker run --rm \
 **Host directory** — kickoffs written directly to a directory on your machine:
 
 ```bash
-docker run --rm \
+docker run --rm -it \
   -v /path/to/my/projects:/app/workspace \
   clk "A local-first journaling app that summarises my week"
+```
+
+**Anonymous volume** — Docker allocates a temporary volume that is
+automatically removed when the container exits (`--rm` handles cleanup):
+
+```bash
+docker run --rm -it \
+  -v /app/workspace \
+  clk "A local-first journaling app that summarises my week"
+```
+
+**Ephemeral** — no volume at all; kickoffs exist only inside the container's
+writable layer and are lost when it exits:
+
+```bash
+docker run --rm -it clk "A local-first journaling app that summarises my week"
 ```
 
 ### Provider and authentication
@@ -157,7 +169,7 @@ docker run --rm \
 Pass any `CLK_*` variable or API key with `-e`:
 
 ```bash
-docker run --rm \
+docker run --rm -it \
   -v clk-workspace:/app/workspace \
   -e CLK_PROVIDER=claude \
   -e CLK_AUTH_MODE=apikey \
@@ -169,25 +181,26 @@ For `ollama` or `openwebui` running on the host, use `host.docker.internal`
 as the endpoint (macOS/Windows) or `--network host` (Linux):
 
 ```bash
-docker run --rm \
+docker run --rm -it \
   -v clk-workspace:/app/workspace \
   -e CLK_PROVIDER=ollama \
   -e CLK_OLLAMA_ENDPOINT=http://host.docker.internal:11434 \
   clk "A local-first journaling app that summarises my week"
 ```
 
-### TUI mode (interactive)
+### Non-interactive / CI mode
 
-The curses TUI requires a pseudo-terminal; allocate one with `-it` and
-override the default:
+For scripted or CI use, skip the TUI entirely. The pipeline runs
+`init → idea → plan → run → loop` without any curses UI:
 
 ```bash
-docker run --rm -it \
+docker run --rm \
   -v clk-workspace:/app/workspace \
-  -e CLK_NO_TUI=false \
+  -e CLK_NO_TUI=true \
   -e CLK_PROVIDER=claude \
+  -e CLK_AUTH_MODE=apikey \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  clk
+  clk "A local-first journaling app that summarises my week"
 ```
 
 ## Layout
