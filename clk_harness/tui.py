@@ -735,6 +735,11 @@ class DashboardObserver(AgentObserver):
         self.state.add_log(line)
 
     def roster_changed(self, name: str, status: str) -> None:
+        # workflow_written is a workflow event, not a roster change — log it
+        # separately and don't create/modify an agent card for it.
+        if status == "workflow_written":
+            self.state.add_log(f"workflow :: {name} :: written", level="INFO")
+            return
         # Refresh the card from the (just-mutated) agents config so the
         # role / baseline / provider fields stay accurate.
         try:
@@ -1525,7 +1530,7 @@ class TuiApp:
         flat: List[Tuple[int, str]] = []  # (level_attr, text)
         for line in lines:
             attr = self._log_attr(line.level)
-            head = f"{line.ts} [{line.level:<5}] {line.text}"
+            head = f"{line.ts} [{line.level}] {line.text}"
             wrapped = _word_wrap(head, inner_w)
             for k, row in enumerate(wrapped):
                 flat.append((attr, row if k == 0 else cont_indent + row.lstrip()))
