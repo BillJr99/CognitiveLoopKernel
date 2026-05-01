@@ -26,17 +26,24 @@ CLK_DIR_NAME = ".clk"
 class Paths:
     """Resolved filesystem layout for a CLK project.
 
-    The harness lives under ``.clk/`` (config, state, logs, runs).
-    The actual product the agents are building lives under
-    ``workspace/``. Keeping them separate means:
+    The harness lives under ``.clk/`` (config, state, logs, runs,
+    blackboard, and the harness sources copied in by ``kickoff.sh``).
+    The actual product the agents are building lives at the project
+    root, side-by-side with the user's existing repo layout. Keeping
+    them separate means:
 
-      * git history in the kickoff dir tells the project's story
-        without harness chatter (we gitignore everything outside
-        workspace/ and a few state files).
-      * Action paths emitted by agents resolve under ``workspace/``,
-        so a confused agent can't write into the harness.
-      * The user can ``rm -rf workspace`` to reset the build without
-        losing memory in ``.clk/``.
+      * Agents address files at the project root naturally — no
+        ``workspace/`` indirection — and the project tree looks like
+        a normal codebase.
+      * Action paths emitted by agents resolve at project root but
+        the harness rejects any path that targets ``.clk/`` so the
+        sandbox stays intact.
+      * The user can ``rm -rf .clk`` to reset all harness state
+        (memory, runs, blackboard, harness sources) without touching
+        the project itself.
+
+    ``Paths.workspace`` is retained as an alias for ``Paths.root`` so
+    older call sites keep working; new code should prefer ``root``.
     """
 
     root: Path
@@ -51,6 +58,8 @@ class Paths:
     runs: Path = field(init=False)
     backups: Path = field(init=False)
     cache: Path = field(init=False)
+    blackboard: Path = field(init=False)
+    harness: Path = field(init=False)
     workspace: Path = field(init=False)
 
     def __post_init__(self) -> None:
@@ -65,7 +74,11 @@ class Paths:
         self.runs = self.clk / "runs"
         self.backups = self.clk / "backups"
         self.cache = self.clk / "cache"
-        self.workspace = self.root / "workspace"
+        self.blackboard = self.clk / "blackboard"
+        self.harness = self.clk / "harness"
+        # Backward-compat alias: agents now operate at the project root,
+        # so paths.workspace == paths.root. Old call sites keep working.
+        self.workspace = self.root
 
     def ensure(self) -> None:
         """Create all directories. Idempotent."""
@@ -80,7 +93,7 @@ class Paths:
             self.runs,
             self.backups,
             self.cache,
-            self.workspace,
+            self.blackboard,
         ]:
             try:
                 p.mkdir(parents=True, exist_ok=True)

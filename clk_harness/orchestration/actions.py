@@ -211,47 +211,47 @@ class ActionResult:
         return " ".join(bits) or "(no actions)"
 
 
+_HARNESS_DIR_NAMES = (".clk", "workspace")
+
+
 def _normalize_rel(root: Path, rel: str) -> str:
     """Strip redundant prefixes that agents commonly add by mistake.
 
-    Agents are told ``$workspace_root`` is their filesystem root, but
-    they sometimes still emit ``PATH: workspace/foo.py`` because they
-    can see the directory's name in their context. Without this
-    normalization the harness would create
-    ``workspace/workspace/foo.py`` and a re-run would create
-    ``workspace/workspace/workspace/foo.py``, etc. The fix: if the
-    leading path segment matches the workspace's basename, drop it.
+    Agents now operate directly at the project root (the ``workspace/``
+    directory has been folded into root). They occasionally still emit
+    ``PATH: workspace/foo.py`` out of habit; we strip that prefix to
+    avoid creating a stray ``workspace/`` subdirectory.
 
     Also strips a leading ``./`` for the same ergonomics.
     """
     rel = (rel or "").strip()
     if not rel:
         return rel
-    # Trim ./ prefix.
     while rel.startswith("./"):
         rel = rel[2:]
-    # Drop leading basename of workspace if it appears as the first
-    # path segment. Repeat once in case the agent doubled it.
-    base = root.name
+    # Drop a leading ``workspace/`` left over from the previous layout.
     for _ in range(2):
-        if rel == base or rel.startswith(base + "/") or rel.startswith(base + "\\"):
-            rel = rel[len(base) + 1:] if len(rel) > len(base) else ""
+        if rel == "workspace" or rel.startswith("workspace/") or rel.startswith("workspace\\"):
+            rel = rel[len("workspace") + 1:] if len(rel) > len("workspace") else ""
         else:
             break
     return rel
 
 
 def _resolve_safe(root: Path, rel: str) -> Optional[Path]:
-    """Resolve ``rel`` relative to ``root``, refusing escapes.
+    """Resolve ``rel`` relative to the project ``root``, refusing escapes
+    and refusing any path that targets the harness (``.clk/``) tree.
 
-    ``root`` is the agent filesystem root (workspace/ by default), not
-    the project root. This keeps agents from accidentally writing into
-    the harness state directory ``.clk/`` or overwriting the harness
-    sources copied into the kickoff dir.
+    Returns the resolved Path on success, or ``None`` when the path is
+    rejected. The two failure modes:
 
-    Common agent mistakes are normalized (see ``_normalize_rel``)
-    rather than rejected outright; only paths that genuinely escape
-    the workspace come back as ``None``.
+      * The path resolves outside the project root (``../escape``,
+        absolute paths).
+      * The path resolves into ``.clk/`` — that subtree is reserved
+        for the harness (config, runs, prompts, blackboard, harness
+        sources) and never directly written by agent ACTION blocks.
+        Agents emit POST blocks instead; the harness routes those into
+        ``.clk/blackboard/``.
     """
     rel = _normalize_rel(root, rel)
     if not rel:
@@ -260,9 +260,13 @@ def _resolve_safe(root: Path, rel: str) -> Optional[Path]:
         return None
     root.mkdir(parents=True, exist_ok=True)
     candidate = (root / rel).resolve()
+    root_resolved = root.resolve()
     try:
-        candidate.relative_to(root.resolve())
+        relative = candidate.relative_to(root_resolved)
     except ValueError:
+        return None
+    parts = relative.parts
+    if parts and parts[0] == ".clk":
         return None
     return candidate
 
@@ -271,13 +275,12 @@ def _backup(paths: Paths, target: Path, backup_root: Path) -> None:
     if not target.exists():
         return
     try:
-        # Compute relative path from workspace; falling back to project
-        # root if the target lives outside workspace (shouldn't happen
-        # given _resolve_safe, but be defensive).
         try:
-            rel = target.relative_to(paths.workspace)
-        except ValueError:
             rel = target.relative_to(paths.root)
+        except ValueError:
+            # Target lives outside the project; back it up by basename
+            # rather than dropping the backup entirely.
+            rel = Path(target.name)
         dest = backup_root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(target, dest)
@@ -295,9 +298,11 @@ def apply_actions(
 ) -> ActionResult:
     """Parse and execute every ACTION block in ``response_text``.
 
-    File-mutating actions resolve paths under ``paths.workspace`` (the
-    agent filesystem root). ``run`` commands execute with cwd set to
-    the same workspace so any files they write or read stay inside it.
+    File-mutating actions resolve paths under ``paths.root`` (the
+    project root, which is also ``paths.workspace`` under the current
+    layout). The ``.clk/`` subtree is reserved for the harness and is
+    rejected by ``_resolve_safe``. ``run`` commands execute with cwd
+    set to the project root.
 
     Returns an ``ActionResult`` that callers should merge into the
     ``files_written`` reported on the AgentRun, so the TUI's per-card
