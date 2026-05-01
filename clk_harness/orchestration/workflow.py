@@ -18,6 +18,7 @@ A workflow file looks like:
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 import sys
@@ -32,7 +33,22 @@ from ..config import Paths
 from ..git_ops import add_all, commit as git_commit, has_changes
 from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
+from . import blackboard as _blackboard
 from .agent import AgentRunner, AgentRun
+
+
+_ROUND_STATUS_RE = re.compile(r"^\s*ROUND_STATUS\s*:\s*(continue|done|finished)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _round_status(text: str) -> str:
+    """Return 'continue' or 'done'. Default 'done' when no marker found."""
+    if not text:
+        return "done"
+    matches = _ROUND_STATUS_RE.findall(text)
+    if not matches:
+        return "done"
+    last = matches[-1].lower()
+    return "continue" if last == "continue" else "done"
 
 
 try:
@@ -235,8 +251,29 @@ class WorkflowStage:
     depends_on: List[str] = field(default_factory=list)
     validation: Optional[str] = None
     commit: bool = True
+    # Blackboard contract: ``inputs`` selectors filter the blackboard
+    # digest spliced into the worker's prompt; ``outputs`` are contract
+    # keys the worker promises to satisfy via POST blocks. Missing
+    # outputs surface as a warning (not a hard failure) post-run so
+    # downstream stages can still attempt their work.
     inputs: List[str] = field(default_factory=list)
     outputs: List[str] = field(default_factory=list)
+    # Phase tag. ``review`` makes this a chief-review stage that auto-
+    # digests upstream post-output and asks the chief to decide
+    # CONTINUE / REDIRECT / ABORT. Unknown phases are passed through to
+    # the worker prompt as-is for downstream behaviors to interpret.
+    phase: str = ""
+    # When > 1, the stage runs in turn-based rounds: after each round
+    # the runner refreshes the worker's prompt with any new blackboard
+    # posts (including those from sibling parallel workers) and re-
+    # dispatches. The worker stops the loop early by emitting
+    # ``ROUND_STATUS: done`` (default), or requests another round with
+    # ``ROUND_STATUS: continue``.
+    rounds: int = 1
+    # Tag for sensitive stages. When true, the runner runs an extra
+    # chief checkpoint after the stage completes (CONTINUE / REDIRECT /
+    # ABORT) AND uses meta-prompt drafting on dispatch when configured.
+    careful: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -264,6 +301,10 @@ def load_workflow(path: Path) -> Workflow:
 
     stages: List[WorkflowStage] = []
     for raw in data.get("stages") or []:
+        try:
+            rounds = int(raw.get("rounds") or 1)
+        except (TypeError, ValueError):
+            rounds = 1
         stages.append(
             WorkflowStage(
                 id=str(raw.get("id") or raw.get("agent") or "stage"),
@@ -274,6 +315,9 @@ def load_workflow(path: Path) -> Workflow:
                 commit=bool(raw.get("commit", True)),
                 inputs=list(raw.get("inputs") or []),
                 outputs=list(raw.get("outputs") or []),
+                phase=str(raw.get("phase") or "").strip().lower(),
+                rounds=max(1, rounds),
+                careful=bool(raw.get("careful") or False),
                 metadata=dict(raw.get("metadata") or {}),
             )
         )
@@ -452,11 +496,11 @@ class WorkflowRunner:
 
             # Run: parallel when multiple independent stages are ready
             if len(ready) == 1 or dry_run:
-                batch = [self._run_stage(ready[0], workflow, cycle_context, dry_run)]
+                batch = [self._run_stage(ready[0], workflow, cycle_context, dry_run, result_by_id)]
             else:
                 with ThreadPoolExecutor(max_workers=len(ready)) as pool:
                     fmap = {
-                        pool.submit(self._run_stage, s, workflow, cycle_context, dry_run): s
+                        pool.submit(self._run_stage, s, workflow, cycle_context, dry_run, result_by_id): s
                         for s in ready
                     }
                     batch = [fut.result() for fut in as_completed(fmap)]
@@ -531,19 +575,131 @@ class WorkflowRunner:
         workflow: Workflow,
         cycle_context: str,
         dry_run: Optional[bool],
+        result_by_id: Optional[Dict[str, "StageResult"]] = None,
     ) -> StageResult:
-        """Run a single stage and return its result."""
-        run = self.runner.run(
-            stage.agent,
-            stage.objective,
-            extra={"stage_id": stage.id, "workflow": workflow.name, "cycle_context": cycle_context},
-            dry_run=dry_run,
-        )
+        """Run a single stage and return its result.
+
+        Handles all the new stage semantics on top of the basic single-
+        dispatch path: inputs (blackboard filtering), outputs (contract
+        verification), phase=review (chief review prompt synthesis),
+        rounds>1 (turn-based re-dispatch with refreshed digest), and
+        careful=True (extra chief checkpoint after the run).
+        """
+        result_by_id = result_by_id or {}
+
+        # Build objective: chief-review stages get a synthesized prompt
+        # that includes the upstream stages' blackboard posts.
+        if stage.phase == "review" and stage.depends_on:
+            objective = self._build_review_objective(workflow, stage, result_by_id)
+        else:
+            objective = stage.objective
+
+        # Optional meta-prompt drafting for sensitive (careful) stages or
+        # when meta_prompt.dispatch is "always". The chief is asked to
+        # tighten the worker's task prompt; result is cached on disk.
+        if (
+            not dry_run
+            and stage.agent != "chief"
+            and stage.phase != "review"
+            and self._meta_dispatch_enabled(stage)
+        ):
+            try:
+                drafted = self.runner.meta_draft_dispatch_prompt(
+                    agent_name=stage.agent,
+                    base_objective=objective,
+                    blackboard_inputs=list(stage.inputs),
+                )
+                if drafted:
+                    objective = drafted
+            except Exception as exc:
+                log_exception("orchestration.workflow._run_stage.meta_dispatch", exc)
+
+        # Inputs filter the blackboard digest. Review stages auto-include
+        # all posts from the stages they depend on.
+        bb_inputs = list(stage.inputs)
+        if stage.phase == "review" and not bb_inputs:
+            bb_inputs = [f"stage:{d}" for d in stage.depends_on]
+
+        base_extra: Dict[str, Any] = {
+            "stage_id": stage.id,
+            "workflow": workflow.name,
+            "cycle_context": cycle_context,
+            "blackboard_inputs": bb_inputs,
+            "stage_outputs": list(stage.outputs),
+        }
+        if stage.phase:
+            base_extra["phase"] = stage.phase
+
+        # Turn-based rounds: keep dispatching until the worker emits
+        # ROUND_STATUS: done (or absent), or the round cap is reached.
+        rounds_max = max(1, int(stage.rounds or 1))
+        run: Optional[AgentRun] = None
+        for round_idx in range(1, rounds_max + 1):
+            extra = dict(base_extra)
+            extra["round"] = round_idx
+            extra["rounds_total"] = rounds_max
+            if round_idx == 1:
+                round_objective = objective
+            else:
+                round_objective = (
+                    f"Round {round_idx}/{rounds_max} of stage `{stage.id}`.\n\n"
+                    "Sibling agents may have posted to the blackboard since your last "
+                    "round; the digest above has the latest. Continue your work, "
+                    "post new findings via POST blocks, and emit `ROUND_STATUS: done` "
+                    "in your final round (or `ROUND_STATUS: continue` to request "
+                    "another round before the cap).\n\n"
+                    f"Original objective:\n{objective}"
+                )
+            run = self.runner.run(
+                stage.agent,
+                round_objective,
+                extra=extra,
+                dry_run=dry_run,
+            )
+            if rounds_max == 1:
+                break
+            status = _round_status(run.response.text or "")
+            log_event(
+                self.paths,
+                "workflow_round_complete",
+                agent=stage.agent,
+                workflow=workflow.name,
+                stage_id=stage.id,
+                round=round_idx,
+                rounds_total=rounds_max,
+                round_status=status,
+                ok=run.response.ok,
+            )
+            if status == "done" or not run.response.ok:
+                break
+
+        assert run is not None  # the loop runs at least once
         ok = run.response.ok
         if dry_run:
             v_ok, v_out = True, "(dry-run: validation skipped)"
         else:
             v_ok, v_out = self._validate(stage)
+
+        # Outputs contract: warn (not fail) when the stage's promised
+        # POST keys never landed. Cheap to detect and very useful for
+        # the chief review stage to diagnose silent worker failures.
+        unmet_outputs = self._check_outputs_contract(stage)
+        if unmet_outputs:
+            log(
+                f"workflow {workflow.name}: stage {stage.id} did not satisfy "
+                f"declared outputs: {unmet_outputs}",
+                level="WARN",
+            )
+            log_event(
+                self.paths,
+                "workflow_outputs_unmet",
+                agent=stage.agent,
+                workflow=workflow.name,
+                stage_id=stage.id,
+                expected=list(stage.outputs),
+                missing=list(unmet_outputs),
+            )
+
         committed = False
         if run.committed:
             committed = True
@@ -554,13 +710,190 @@ class WorkflowRunner:
             failure_reason = (run.response.error or "agent_failed")[:200]
         elif not v_ok:
             failure_reason = f"validation_failed: {v_out[:200]}" if v_out else "validation_failed"
-        return StageResult(
+        elif unmet_outputs:
+            # Soft-fail tag — does not unset stage completion but visible
+            # in the result for downstream consumers.
+            failure_reason = f"outputs_unmet: {','.join(unmet_outputs)[:160]}"
+
+        result = StageResult(
             stage=stage,
             run=run,
             validated=v_ok,
             validation_output=v_out,
             committed=committed,
             failure_reason=failure_reason,
+        )
+
+        # Per-stage chief checkpoint for sensitive stages. Cheap, gated,
+        # and never blocks: it just keeps the chief in the loop without
+        # waiting for the next supervise cycle.
+        if (
+            ok
+            and v_ok
+            and not dry_run
+            and self._checkpoint_enabled(stage)
+            and stage.agent != "chief"  # avoid recursion on review/checkpoint stages
+        ):
+            try:
+                self._dispatch_checkpoint(workflow, stage, result, cycle_context, dry_run)
+            except Exception as exc:
+                log_exception("orchestration.workflow._run_stage.checkpoint", exc)
+
+        return result
+
+    # -- new helpers (blackboard / review / checkpoint) ------------------
+
+    def _check_outputs_contract(self, stage: WorkflowStage) -> List[str]:
+        """Return the list of declared output contract keys not yet posted
+        by ``stage.id``. Empty list when the contract is satisfied or not
+        declared.
+        """
+        if not stage.outputs:
+            return []
+        try:
+            posts = _blackboard.list_posts(self.paths)
+            return _blackboard.find_outputs_satisfied(
+                posts, stage_id=stage.id, expected=stage.outputs
+            )
+        except Exception as exc:
+            log_exception("orchestration.workflow._check_outputs_contract", exc)
+            return []
+
+    def _build_review_objective(
+        self,
+        workflow: Workflow,
+        stage: WorkflowStage,
+        result_by_id: Dict[str, "StageResult"],
+    ) -> str:
+        """Render the chief-review prompt for ``stage`` using upstream stages'
+        actual posts so the chief reads the real artifacts, not the
+        worker's self-report.
+        """
+        try:
+            all_posts = _blackboard.list_posts(self.paths)
+        except Exception:
+            all_posts = []
+        upstream_ids = list(stage.depends_on)
+        sections: List[str] = [
+            f"Review dispatch for workflow `{workflow.name}` stage `{stage.id}`.",
+            "",
+            "You are reviewing the output of these upstream stages:",
+        ]
+        for sid in upstream_ids:
+            sr = result_by_id.get(sid)
+            if sr is None:
+                sections.append(f"- `{sid}`: (no result on record)")
+                continue
+            agent = sr.stage.agent
+            ok = sr.run.response.ok
+            v_ok = sr.validated
+            reason = sr.failure_reason or ""
+            sections.append(
+                f"- `{sid}` (agent {agent}): ok={ok} validated={v_ok} "
+                + (f"reason={reason}" if reason else "no failure")
+            )
+        sections.append("")
+        sections.append("Blackboard posts produced by these stages:")
+        any_posts = False
+        for p in all_posts:
+            if p.stage_id in upstream_ids:
+                any_posts = True
+                body = (p.body or "").strip()
+                if len(body) > 1200:
+                    body = body[:1200].rstrip() + " …"
+                sections.append(
+                    f"\n--- post id={p.id} author={p.author} type={p.post_type} "
+                    f"stage={p.stage_id} produces={','.join(p.produces) or '-'} ---"
+                )
+                sections.append(body or "(empty body)")
+        if not any_posts:
+            sections.append("(no blackboard posts from upstream — workers may have skipped POST.)")
+        sections.append("")
+        sections.append(
+            "Decide one of:\n"
+            "  (a) ACTION:done with REASON — the user's prompt is fully addressed.\n"
+            "  (b) PROPOSE_WORKFLOW with a refined next iteration (always include\n"
+            "      a final supervise stage so the loop continues).\n"
+            "  (c) PROPOSE_CONSENSUS to re-sample a specific decision when the\n"
+            "      upstream results disagree or seem unreliable.\n"
+            "Also emit a brief POST: review block summarizing what passed, what\n"
+            "needs more work, and the chosen path."
+        )
+        if stage.objective:
+            sections.append("")
+            sections.append("Review-stage author's objective (from the workflow YAML):")
+            sections.append(stage.objective)
+        return "\n".join(sections)
+
+    @property
+    def _checkpoint_default_per_stage(self) -> bool:
+        cfg = (self.runner.clk_cfg.get("review") or {})
+        return bool(cfg.get("per_stage", False))
+
+    def _checkpoint_enabled(self, stage: WorkflowStage) -> bool:
+        if stage.careful:
+            return True
+        return self._checkpoint_default_per_stage
+
+    def _meta_dispatch_enabled(self, stage: WorkflowStage) -> bool:
+        cfg = (self.runner.clk_cfg.get("meta_prompt") or {})
+        mode = str(cfg.get("dispatch") or "off").lower()
+        if mode in ("", "off", "false", "0"):
+            return False
+        if mode == "always":
+            return True
+        # default mode "careful_only"
+        return bool(stage.careful)
+
+    def _dispatch_checkpoint(
+        self,
+        workflow: Workflow,
+        stage: WorkflowStage,
+        result: "StageResult",
+        cycle_context: str,
+        dry_run: Optional[bool],
+    ) -> None:
+        """Light-weight chief checkpoint after a sensitive stage.
+
+        Cost-bounded: a small prompt with the stage's posts and a
+        request for a CONTINUE / REDIRECT / ABORT verdict. The chief
+        emits ACTION:done if the project is finished, or PROPOSE_WORKFLOW
+        if the plan should change. Otherwise we just log the verdict and
+        let the workflow proceed.
+        """
+        try:
+            posts = _blackboard.list_posts(self.paths)
+        except Exception:
+            posts = []
+        produced = [p for p in posts if p.stage_id == stage.id]
+        snapshot = "\n".join(
+            f"- {p.id} type={p.post_type} produces={','.join(p.produces) or '-'} "
+            f"body_chars={len(p.body or '')}"
+            for p in produced[-10:]
+        ) or "(no posts from this stage)"
+        objective = (
+            f"Chief checkpoint after stage `{stage.id}` (agent {stage.agent}, "
+            f"workflow `{workflow.name}`).\n\n"
+            f"Stage objective:\n{stage.objective}\n\n"
+            f"Posts produced by this stage:\n{snapshot}\n\n"
+            "Reply with one of:\n"
+            "  CHECKPOINT: continue — let the workflow proceed as planned.\n"
+            "  CHECKPOINT: redirect — emit PROPOSE_WORKFLOW with a revised plan.\n"
+            "  CHECKPOINT: abort — emit ACTION:done if the project is finished.\n"
+            "Keep the response short — this is a verification, not a redo."
+        )
+        log(f"workflow {workflow.name}: checkpoint after stage {stage.id}")
+        self.runner.run(
+            "chief",
+            objective,
+            extra={
+                "phase": "checkpoint",
+                "workflow": workflow.name,
+                "stage_id": stage.id,
+                "cycle_context": cycle_context,
+                "blackboard_inputs": [f"stage:{stage.id}"],
+            },
+            dry_run=dry_run,
         )
 
     # -- helpers ---------------------------------------------------------

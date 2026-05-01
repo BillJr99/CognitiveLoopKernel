@@ -18,12 +18,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+HARNESS_HOME="$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+# In the kickoff layout the harness lives under <project>/.clk/harness/,
+# but the venv and site-packages should live at <project>/.clk/. Honor
+# CLK_PROJECT_ROOT (set by the kickoff shim) when present.
+PROJECT_ROOT="${CLK_PROJECT_ROOT:-$HARNESS_HOME}"
 VENV="$PROJECT_ROOT/.clk/venv"
 TARGET_DIR="$PROJECT_ROOT/.clk/site-packages"
 EXTRAS="${1:-}"
 
-cd "$PROJECT_ROOT"
+# pip needs to install from the harness sources (where pyproject.toml is)
+# but venv / site-packages are anchored to PROJECT_ROOT.
+cd "$HARNESS_HOME"
 
 pkg_spec() {
   if [ -n "$EXTRAS" ]; then printf '%s' ".[$EXTRAS]"; else printf '.'; fi

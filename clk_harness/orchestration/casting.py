@@ -328,20 +328,90 @@ def _normalize_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]+", "_", (name or "").strip()).strip("_").lower()
 
 
+# Curated synonym table — coarse, hand-maintained. Catches role-name
+# pairs that are functionally identical even though their morphology is
+# unrelated (``coder`` and ``engineer``). Both sides collapse to the
+# canonical form on the right.
+_NAME_SYNONYMS: Dict[str, str] = {
+    "coder": "engineer",
+    "developer": "engineer",
+    "programmer": "engineer",
+    "implementer": "engineer",
+    "implementor": "engineer",
+    "builder": "engineer",
+    "tester": "qa",
+    "quality": "qa",
+    "validator": "qa",
+    "auditor": "qa",
+    "reviewer": "qa",
+    "research": "researcher",
+    "scientist": "researcher",
+    "investigator": "researcher",
+    "analysis": "analyst",
+    "analytics": "analyst",
+    "writer": "doc_writer",
+    "documenter": "doc_writer",
+    "scribe": "doc_writer",
+    "operator": "operator",
+    "ops": "operator",
+    "devops": "operator",
+    "deploy": "operator",
+    "deployer": "operator",
+    "ux": "ux_writer",
+    "designer": "ux_writer",
+}
+
+
+# Suffix → reduction. Order matters (longest first). Each entry is
+# (suffix, replacement). Rules apply when ``key`` ends in ``suffix`` and
+# the remainder is at least 3 chars. The loop runs to a fixed point so
+# ``engineers`` → ``engineer`` → ``engine`` collapses cleanly.
+_NAME_SUFFIXES: List[Tuple[str, str]] = [
+    ("ization", ""),
+    ("ation", ""),
+    ("ment", ""),
+    ("ance", ""),
+    ("ence", ""),
+    ("ity", ""),
+    ("ies", "y"),
+    ("ing", ""),
+    # Plural ``s``/``es`` come BEFORE ``er``/``or``/``ist`` so
+    # ``developers`` first reduces to ``developer`` (then synonym maps
+    # to ``engineer``, then ``-er`` strips to ``engine``). If we strip
+    # ``ers`` here directly the chain skips the synonym table.
+    ("es", ""),
+    ("s", ""),
+    ("er", ""),
+    ("or", ""),
+    ("ist", ""),
+]
+
+
 def _name_key(name: str) -> str:
     """Compact name used to catch near-duplicate agent names.
 
-    This is intentionally conservative and name-focused. It catches cases
-    like ``engineering`` vs ``engineer`` without trying to make broad
-    semantic judgments that belong in the chief prompt.
+    Lower-cases, strips punctuation, applies synonym substitution
+    (``coder`` → ``engineer``), then iteratively peels morphological
+    suffixes (``-er``, ``-ing``, ``-ation``, ``-ity``, ...) to the
+    smallest stable form. The output is not meant to be human-readable
+    — only to compare equal across near-duplicates so
+    ``_similar_existing_name`` can reject them.
     """
     key = re.sub(r"[^a-z0-9]+", "", _normalize_name(name))
-    for suffix in ("engineering", "engineers", "engineer"):
-        if key.endswith(suffix):
-            return key[: -len(suffix)] + "engineer"
-    for suffix in ("ing", "ers", "er", "ors", "or", "ists", "ist", "s"):
-        if len(key) > len(suffix) + 4 and key.endswith(suffix):
-            return key[: -len(suffix)]
+    if not key:
+        return key
+    # Repeat (synonym → strip-one-suffix) until a fixed point. Capped
+    # iteration count guards against accidental rule cycles.
+    for _ in range(6):
+        prev = key
+        if key in _NAME_SYNONYMS:
+            key = _NAME_SYNONYMS[key]
+        for suffix, replacement in _NAME_SUFFIXES:
+            if key.endswith(suffix) and len(key) - len(suffix) >= 3:
+                key = key[: -len(suffix)] + replacement
+                break
+        if key == prev:
+            break
     return key
 
 
@@ -356,6 +426,93 @@ def _similar_existing_name(name: str, agents: Dict[str, Any]) -> Optional[str]:
         if len(key) >= 6 and (key.startswith(ex_key) or ex_key.startswith(key)):
             return existing
     return None
+
+
+# ---------------------------------------------------------------------------
+# Prompt-body similarity (TF-IDF-ish, dependency-free)
+# ---------------------------------------------------------------------------
+
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# Throw out boilerplate footer text, role name itself, and overly common
+# tokens that appear in nearly every prompt; without this every prompt
+# similarity score floats around 0.5 just because of the shared scaffold.
+_PROMPT_STOPWORDS: frozenset = frozenset({
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for",
+    "you", "your", "is", "are", "be", "this", "that", "with", "at",
+    "by", "as", "it", "its", "from", "into", "if", "when", "must",
+    "do", "does", "not", "no", "any", "all", "one", "each", "per",
+    "agent", "agents", "role", "roles", "objective", "state", "summary",
+    "project", "name", "root", "workspace", "idea", "title", "statement",
+    "iteration", "section", "output", "outputs", "input", "inputs",
+    "validation", "commit", "validate", "validated",
+    "action", "actions", "block", "blocks", "harness", "rules",
+    "stay", "inside", "$project_name", "$project_root", "$objective",
+    "$state_summary", "$idea_title", "$idea_statement",
+})
+
+
+def _prompt_tokens(text: str) -> List[str]:
+    return [
+        t for t in _TOKEN_RE.findall((text or "").lower())
+        if t not in _PROMPT_STOPWORDS and len(t) > 2
+    ]
+
+
+def _prompt_similarity(a: str, b: str) -> float:
+    """Jaccard similarity of token sets after stopword removal.
+
+    Cheap, dependency-free, good enough to flag prompts that are
+    near-duplicates of an existing role's prompt body. Returns a value
+    in [0.0, 1.0]. Empty inputs return 0.0.
+    """
+    sa = set(_prompt_tokens(a))
+    sb = set(_prompt_tokens(b))
+    if not sa or not sb:
+        return 0.0
+    inter = len(sa & sb)
+    union = len(sa | sb)
+    return inter / union if union else 0.0
+
+
+# Threshold above which a new prompt is considered a duplicate of an
+# existing one. Tuned conservatively: well-distinct specialists score
+# under ~0.4; deliberate copies score 0.7+.
+DEFAULT_PROMPT_SIM_THRESHOLD = 0.45
+
+
+def _similar_existing_prompt(
+    paths: Paths,
+    new_prompt: str,
+    agents: Dict[str, Any],
+    *,
+    threshold: float = DEFAULT_PROMPT_SIM_THRESHOLD,
+) -> Optional[Tuple[str, float]]:
+    """Return ``(existing_name, score)`` when ``new_prompt`` is too close
+    to an already-registered prompt body, else ``None``.
+
+    Reads each existing prompt off disk (from ``paths.prompts``) so
+    the comparison sees what the agent will actually be invoked with,
+    not the cached config role line. Failures reading a prompt skip
+    that comparison rather than crash registration.
+    """
+    if not (new_prompt or "").strip():
+        return None
+    best: Optional[Tuple[str, float]] = None
+    for ex_name in sorted(agents.keys()):
+        cfg = agents.get(ex_name) or {}
+        prompt_file = cfg.get("prompt") or f"{ex_name}.md"
+        ex_path = paths.prompts / prompt_file
+        if not ex_path.exists():
+            continue
+        try:
+            ex_body = ex_path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        score = _prompt_similarity(new_prompt, ex_body)
+        if score >= threshold and (best is None or score > best[1]):
+            best = (ex_name, score)
+    return best
 
 
 def _ensure_prompt_file(paths: Paths, name: str, prompt_body: str, role_line: str) -> str:
@@ -381,14 +538,22 @@ def _ensure_prompt_file(paths: Paths, name: str, prompt_body: str, role_line: st
             "Working directory: $project_root\n"
             "Idea: $idea_title - $idea_statement\n\n"
             "Current state summary:\n$state_summary\n\n"
+            "Blackboard digest (peer posts filtered to your stage's inputs):\n"
+            "$blackboard_digest\n\n"
             "Objective:\n$objective\n\n"
             "Output\n"
             "- The deliverable for this objective.\n"
+            "- A POST: <type> block summarising the headline result so the\n"
+            "  blackboard reflects what you produced. If your stage YAML\n"
+            "  declared `outputs: [...]`, include each declared key in the\n"
+            "  POST's PRODUCES list, otherwise the runner will warn the\n"
+            "  contract is unmet.\n"
             "- A `Validation` section: a shell command (or `none`) that proves the deliverable.\n"
             "- A `Commit` section: a one-sentence commit message.\n"
             "\n"
             "Operating constraints\n"
-            "- Stay inside `$project_root`.\n"
+            "- Stay inside `$project_root`. The `.clk/` subtree is harness state\n"
+            "  and the harness rejects any ACTION:write that targets it.\n"
             "- Do not install global packages or use sudo.\n"
             "- Prefer editing existing files over creating new ones when feasible.\n"
             "- Create files and directories only when they have a clear, distinct\n"
@@ -490,6 +655,14 @@ def register_role(
         similar = _similar_existing_name(name, agents)
         if similar:
             return False, f"similar_to_existing:{similar}"
+        # Prompt-body similarity check: catches the case where the chief
+        # invents a distinct name but writes a body that overlaps an
+        # existing role's prompt. Skipped when no body is provided (the
+        # scaffolded prompt is generic by design, would false-positive).
+        if proposal.prompt and proposal.prompt.strip():
+            sim = _similar_existing_prompt(paths, proposal.prompt, agents)
+            if sim is not None:
+                return False, f"similar_prompt_to:{sim[0]}({sim[1]:.2f})"
     if not is_update:
         # Enforce roster cap on *additions* only.
         dynamic_count = sum(1 for k in agents if k not in _RESERVED_NAMES)

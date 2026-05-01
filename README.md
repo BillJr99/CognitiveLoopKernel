@@ -197,27 +197,43 @@ The other providers don't need this knob: `shell` and `pi` have no
 remote auth, `ollama` is local, and `openwebui` always uses an explicit
 bearer token configured at kickoff time.
 
-## Workspace
+## Layout
 
-The kickoff dir is laid out so the agents' work is cleanly separated
-from the harness scaffolding:
+The kickoff dir lays the agents' work out as a normal project tree
+with all harness machinery folded under `.clk/`:
 
 ```
 kickoff-<ts>/
-  workspace/              # agent filesystem root - ACTION blocks land here
-  .clk/                   # harness state, prompts, configs (gitignored except curated state)
-  clk_harness/            # harness sources copied from the parent (gitignored)
-  scripts/, kickoff.sh    # harness scripts (gitignored)
-  KICKOFF.md              # provenance manifest
+  src/, tests/, README.md ...   # the project the agents are building
+                                # (agents write directly to project root)
+  scripts/clk                   # convenience launcher shim
+  KICKOFF.md                    # provenance manifest
+  .clk/                         # ALL harness state — sandboxed off
+    harness/clk_harness/        # harness sources copied from parent
+    harness/scripts/            # original launcher / installer
+    harness/pyproject.toml      # package metadata for pip install -e
+    config/                     # clk.config.json, providers.json, agents.json
+    state/                      # idea.json, prd.json, decisions.md ...
+    prompts/                    # per-agent system prompts
+    blackboard/                 # cross-agent shared scratchpad (POST blocks land here)
+    runs/                       # per-dispatch prompt + response logs
+    backups/                    # pre-write copies of mutated files
+    cache/, logs/, venv/        # local-only artifacts
 ```
 
-ACTION blocks resolve relative to `workspace/`. The harness rejects
-any path that would escape it, so agents can't write into `.clk/` or
-overwrite the harness sources. `run` commands cwd into `workspace/`.
-The kickoff `.gitignore` hides everything outside `workspace/` and the
+ACTION blocks resolve relative to the project root. The harness rejects
+any path that resolves into `.clk/` so agents can't accidentally (or
+intentionally) write into harness state. `run` commands cwd into the
+project root. To share findings across agents, workers emit POST
+blocks; the harness routes those into `.clk/blackboard/` even though
+agents cannot write there directly.
+
+The kickoff `.gitignore` keeps `.clk/` out of git except for the
 curated state files (`idea.json`, `system_brief.md`, `prd.json`,
-`decisions.md`, `progress.md`, `casting.log`, `done.md`), so `git log`
-in the kickoff dir tells the project's story without harness chatter.
+`decisions.md`, `progress.md`, `casting.log`, `done.md`, plus the
+blackboard) so `git log` in the kickoff dir tells the project's story
+without harness chatter. Deleting `.clk/` resets the harness without
+touching the project tree.
 
 ## Chief supervisor loop
 

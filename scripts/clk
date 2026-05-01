@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 # CLK launcher.
 #
-# Resolves the project root, prefers the local .clk/venv interpreter if present,
-# and falls back to the system python3. Always invokes clk_harness.cli as a
-# module so no global install is required.
+# Resolves two anchors:
+#   * HARNESS_HOME  - directory holding clk_harness/, scripts/, pyproject.toml
+#                     (this script's parent's parent). Both layouts work:
+#                       source tree      -> HARNESS_HOME == repo root
+#                       kickoff layout   -> HARNESS_HOME == <kickoff>/.clk/harness
+#   * PROJECT_ROOT  - directory containing .clk/ (where harness state lives).
+#                     Defaults to HARNESS_HOME for the source-tree case, but
+#                     the kickoff shim exports CLK_PROJECT_ROOT explicitly.
+#
+# Prefers the project's local .clk/venv interpreter if present, falls back
+# to the system python3. Always invokes clk_harness.cli as a module.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+HARNESS_HOME="$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+PROJECT_ROOT="${CLK_PROJECT_ROOT:-$HARNESS_HOME}"
 
 PY=""
 if [ -x "$PROJECT_ROOT/.clk/venv/bin/python" ]; then
@@ -22,9 +31,12 @@ else
   exit 127
 fi
 
-EXTRA_PATH="$PROJECT_ROOT"
+EXTRA_PATH="$HARNESS_HOME"
 if [ -d "$PROJECT_ROOT/.clk/site-packages" ]; then
   EXTRA_PATH="$PROJECT_ROOT/.clk/site-packages:$EXTRA_PATH"
 fi
 export PYTHONPATH="${EXTRA_PATH}${PYTHONPATH:+:${PYTHONPATH}}"
+# cd into PROJECT_ROOT so relative paths printed by the harness and any
+# subprocess defaults align with the user's expected working directory.
+cd "$PROJECT_ROOT"
 exec "$PY" -m clk_harness.cli "$@"
