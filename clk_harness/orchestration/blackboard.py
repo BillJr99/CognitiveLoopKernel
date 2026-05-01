@@ -23,9 +23,11 @@ A post is a JSON file:
 
 Workers post by emitting a ``POST:`` block in their response (parsed
 in ``parse_post_blocks`` below); the harness translates it into a JSON
-file under ``.clk/blackboard/``. Workers cannot write directly to the
-blackboard via ACTION:write because ``.clk/`` is sandboxed off; the
-POST block is the only public interface.
+file under ``.clk/blackboard/``. Workers may also write JSON files
+directly via ``ACTION: write`` with path ``blackboard/<id>.json`` — the
+action sandbox rewrites that to ``.clk/blackboard/<id>.json`` as a
+permitted exception to the general ``.clk/`` write restriction. POST
+blocks are preferred because the harness stamps metadata automatically.
 
 The runner reads the blackboard via :func:`digest`, which returns a
 filtered text view suitable for splicing into a worker's prompt under
@@ -498,12 +500,10 @@ Blackboard protocol (shared scratchpad for cross-agent context)
 
 You can read posts other agents have written, and you can post your
 own findings so later agents (and the chief) see them. The blackboard
-lives in the harness state tree at ``.clk/blackboard/`` as JSON files;
-agents cannot write there with ACTION:write (the ``.clk/`` tree is
-sandboxed off). Use the POST block below instead — the harness routes
-your post into the blackboard for you.
+lives at ``.clk/blackboard/`` as JSON files. You may write there in
+two ways:
 
-To post a finding, decision, summary, or question, emit a POST block:
+1. POST block (preferred) — the harness stamps metadata automatically:
 
   POST: <post_type>
   TITLE: <short one-line title>            # optional
@@ -512,6 +512,11 @@ To post a finding, decision, summary, or question, emit a POST block:
   BODY:
   <multi-line markdown body — keep it short, headline-style>
   END_POST
+
+2. Direct write — use ACTION:write with path ``blackboard/<filename>.json``
+   (the harness rewrites it to ``.clk/blackboard/<filename>.json``).
+   The JSON must match the post schema: id, author, post_type, body,
+   ts, stage_id, workflow, consumes, produces.
 
 Rules
 - Post at most a handful of entries per turn — the blackboard is for

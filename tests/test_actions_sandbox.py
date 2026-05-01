@@ -30,10 +30,29 @@ def test_resolve_safe_strips_legacy_workspace_prefix(paths: Paths) -> None:
 
 
 def test_resolve_safe_rejects_dot_clk_writes(paths: Paths) -> None:
-    """Agents cannot write into harness state via ACTION:write."""
+    """Agents cannot write into harness state via ACTION:write (except blackboard)."""
     assert actions._resolve_safe(paths.root, ".clk/state/forbidden.md") is None
-    assert actions._resolve_safe(paths.root, ".clk/blackboard/anything.json") is None
     assert actions._resolve_safe(paths.root, ".clk/config/agents.json") is None
+
+
+def test_resolve_safe_allows_blackboard_writes(paths: Paths) -> None:
+    """Blackboard is an explicit exception: agents may write there directly."""
+    target = actions._resolve_safe(paths.root, ".clk/blackboard/my-post.json")
+    assert target is not None
+    assert target == (paths.root / ".clk" / "blackboard" / "my-post.json").resolve()
+
+
+def test_normalize_rel_rewrites_bare_blackboard_prefix(paths: Paths) -> None:
+    """``blackboard/`` is rewritten to ``.clk/blackboard/`` automatically."""
+    result = actions._normalize_rel(paths.root, "blackboard/my-post.json")
+    assert result == ".clk/blackboard/my-post.json"
+
+
+def test_resolve_safe_routes_bare_blackboard_to_clk(paths: Paths) -> None:
+    """``blackboard/x`` resolves into ``.clk/blackboard/x``, not project root."""
+    target = actions._resolve_safe(paths.root, "blackboard/my-post.json")
+    assert target is not None
+    assert target == (paths.root / ".clk" / "blackboard" / "my-post.json").resolve()
 
 
 def test_resolve_safe_rejects_absolute_paths(paths: Paths) -> None:
@@ -54,11 +73,29 @@ hello
 END_ACTION
 """
     result = actions.apply_actions(paths, text, agent_name="test")
-    # The action is rejected — nothing landed in workspace, and the
+    # The action is rejected — nothing landed in harness state, and the
     # skipped list records the reason.
     assert not (paths.clk / "state" / "sneaky.md").exists()
     assert any("path_outside" in s or "outside" in s.lower() for s in result.skipped) or \
            result.is_empty() or len(result.skipped) >= 1
+
+
+def test_apply_actions_allows_blackboard_write(paths: Paths) -> None:
+    """Agents can write JSON to blackboard/ (routed to .clk/blackboard/)."""
+    import json
+    post_data = {"id": "test-post", "author": "test-agent", "post_type": "note",
+                 "body": "hello", "ts": "", "stage_id": "", "workflow": "",
+                 "consumes": [], "produces": []}
+    text = f"""
+ACTION: write
+PATH: blackboard/test-post.json
+CONTENT:
+{json.dumps(post_data)}
+END_ACTION
+"""
+    result = actions.apply_actions(paths, text, agent_name="test")
+    assert (paths.blackboard / "test-post.json").exists()
+    assert not result.is_empty()
 
 
 def test_apply_actions_writes_at_project_root(paths: Paths) -> None:

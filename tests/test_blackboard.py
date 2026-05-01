@@ -40,11 +40,11 @@ def test_post_persists_json_with_schema(paths: Paths) -> None:
     assert raw["body"].startswith("Found that")
 
 
-def test_post_blocks_outside_workspace_sandbox(paths: Paths) -> None:
-    """Blackboard lives under .clk/, NOT under the project root, so an
-    agent cannot reach it via ACTION:write (which is sandboxed)."""
+def test_blackboard_lives_under_clk(paths: Paths) -> None:
+    """Blackboard lives under .clk/, not in the project root or src tree."""
     assert paths.blackboard.is_relative_to(paths.clk)
     assert not paths.blackboard.is_relative_to(paths.root / "src")
+    assert paths.blackboard == paths.clk / "blackboard"
 
 
 def test_list_posts_returns_in_chronological_order(paths: Paths) -> None:
