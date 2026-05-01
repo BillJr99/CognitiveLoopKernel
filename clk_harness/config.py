@@ -150,9 +150,9 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
     "provider_timeout_s": 0,
     "provider_no_output_timeout_s": 0,
     "provider_retry": {
-        "max_retries": 2,
+        "max_retries": 10,
         "backoff_s": 5,
-        "stage_max_retries": 2,
+        "stage_max_retries": 10,
         "stage_backoff_s": 30,
     },
     "supervise": {
@@ -222,15 +222,14 @@ DEFAULT_PROVIDERS: Dict[str, Any] = {
 
 DEFAULT_AGENTS: Dict[str, Any] = {
     # Only the immutable baseline ships in agents.json. The chief authors
-    # the rest of the roster dynamically once an idea is captured. Other
-    # prompt templates (researcher.md, analyst.md, ...) still ship to disk
-    # as scaffolds so the chief can re-cast a seed role with an empty
-    # PROMPT body and the existing file will be picked up.
+    # the rest of the roster dynamically once an idea is captured, including
+    # the `engineer` role.  Other prompt templates (engineer.md, researcher.md,
+    # analyst.md, ...) still ship to disk as scaffolds so the chief can cast a
+    # role with an empty PROMPT body and the existing file will be picked up.
     "agents": {
-        "chief":    {"prompt": "chief.md",    "provider": None, "role": "decompose objectives, cast the team, author workflows"},
-        "engineer": {"prompt": "engineer.md", "provider": None, "role": "implement vertical slices (baseline implementer)"},
-        "qa":       {"prompt": "qa.md",       "provider": None, "role": "test and audit changes (baseline validator)"},
-        "ralph":    {"prompt": "ralph.md",    "provider": None, "role": "drive iterative refinement and autoresearch loops"},
+        "chief": {"prompt": "chief.md", "provider": None, "role": "decompose objectives, cast the team, author workflows"},
+        "qa":    {"prompt": "qa.md",    "provider": None, "role": "test and audit changes (baseline validator)"},
+        "ralph": {"prompt": "ralph.md", "provider": None, "role": "drive iterative refinement and autoresearch loops"},
     }
 }
 

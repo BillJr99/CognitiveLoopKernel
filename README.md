@@ -14,10 +14,10 @@ committed automatically.
 - **Provider-agnostic.** Works with Claude Code, OpenAI Codex, Google
   Gemini, OpenWebUI (any OpenAI-compatible HTTP server), Pi, local
   Ollama, or a built-in dummy "shell" provider for testing.
-- **Dynamic team.** A baseline of four agents (`chief`, `engineer`,
-  `qa`, `ralph`) ships with the harness; the chief invents
-  project-specific specialists on the fly, writes their prompts, and
-  authors the workflow YAML that wires them together.
+- **Dynamic team.** A baseline of three agents (`chief`, `qa`, `ralph`)
+  ships with the harness; the chief invents project-specific specialists
+  on the fly — including `engineer` when an implementer is needed — writes
+  their prompts, and authors the workflow YAML that wires them together.
 - **Real actions, not just descriptions.** Agents emit `ACTION:` blocks
   (write/edit/append/delete/run/done) that the harness applies with
   path-safety checks, automatic backups, and per-agent git commits.
@@ -252,18 +252,22 @@ runaway loops.
 
 ## Dynamic agents (casting)
 
-The harness ships with four baseline agents that cannot be removed:
+The harness ships with three baseline agents that cannot be removed:
 
 - `chief` — decomposes objectives, casts the team, authors workflow YAML.
-- `engineer` — default implementer.
 - `qa` — default validator.
 - `ralph` — drives both the Ralph refinement loop and Karpathy-style
   autoresearch cycles; the mode is inferred from the current project state.
 
 Everything else is dynamic. On the first user message, the chief is
-auto-dispatched with the captured idea and is encouraged to invent
-project-specific specialists (e.g. `data_steward`, `ml_evaluator`,
-`api_contract`, `ux_writer`, `security_auditor`). Each role decision is
+auto-dispatched with the captured idea and casts the project-specific team,
+including `engineer` when an implementer is needed (e.g. `data_steward`,
+`ml_evaluator`, `api_contract`, `ux_writer`, `security_auditor`).
+
+The name `engineer` is reserved: the harness actively rejects any attempt
+to create `engineering`, `coder`, `developer`, or other aliases, and
+reports the denial directly to the chief via its `$casting_feedback` context
+so it learns to use `engineer` directly. Each role decision is
 applied immediately and persisted to `.clk/config/agents.json` plus
 `.clk/state/casting.log` (JSONL, one entry per add/update/remove).
 

@@ -121,7 +121,9 @@ def test_register_role_rejects_synonym_name(paths: Paths) -> None:
         agents_cfg=cfg,
     )
     assert ok is False
-    assert status.startswith("similar_to_existing:engineer")
+    # engineer variants get an explicit denial with the canonical name embedded
+    assert "engineer" in status
+    assert "engineer_alias_denied" in status or "engineering" in status
 
 
 def test_register_role_rejects_engineering_even_without_engineer_in_agents(paths: Paths) -> None:
@@ -181,3 +183,28 @@ def test_register_role_accepts_distinct(paths: Paths) -> None:
     assert ok is True
     assert status == "added"
     assert "data_steward" in cfg["agents"]
+
+
+def test_register_role_allows_chief_to_create_engineer(paths: Paths) -> None:
+    """engineer is no longer a default baseline — chief creates it dynamically."""
+    cfg: dict = {"agents": {}}
+    ok, status = casting.register_role(
+        paths,
+        _proposal("engineer", prompt="implement vertical slices", role="implementer"),
+        agents_cfg=cfg,
+    )
+    assert ok is True
+    assert status == "added"
+    assert "engineer" in cfg["agents"]
+
+
+def test_register_role_rejects_alias_when_engineer_exists(paths: Paths) -> None:
+    """If engineer exists, any alias (coder, engineering, ...) is denied with explicit message."""
+    cfg: dict = {"agents": {"engineer": {"prompt": "engineer.md", "role": "implement"}}}
+    for alias in ("coder", "engineering", "developer", "implementer"):
+        ok, status = casting.register_role(
+            paths, _proposal(alias, prompt="implement things"), agents_cfg=cfg
+        )
+        assert ok is False, f"alias '{alias}' should be denied"
+        assert "engineer" in status, f"status for '{alias}' should mention engineer: {status}"
+        assert "engineer_alias_denied" in status or "similar_to_existing" in status
