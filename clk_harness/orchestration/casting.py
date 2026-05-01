@@ -75,7 +75,6 @@ from ..utils.logging_utils import log, log_exception
 # to always include ralph and qa in every engineering workflow.
 BASELINE_AGENTS: Tuple[str, ...] = (
     "chief",
-    "engineer",
     "ralph",
     "qa",
 )
@@ -292,8 +291,11 @@ _RESERVED_NAMES = set(BASELINE_AGENTS)
 # Names that always act as similarity anchors even when absent from
 # agents.json.  "autoresearch" was absorbed into ralph; keeping it here
 # prevents the chief from accidentally re-creating it as a dynamic role.
+# "engineer" is no longer a default baseline but its name is reserved so
+# that variants like "engineering" or "coder" are always rejected.
 _SEED_ROLE_ANCHORS: frozenset = frozenset({
     "autoresearch",
+    "engineer",
 })
 
 
@@ -426,12 +428,17 @@ def _name_key(name: str) -> str:
 
 def _similar_existing_name(name: str, agents: Dict[str, Any]) -> Optional[str]:
     key = _name_key(name)
+    normalized = _normalize_name(name)
     # Always include seed anchors so the check fires even when agents.json
     # was manually trimmed to baseline-only and the seed role is absent.
     all_names = set(agents.keys()) | _SEED_ROLE_ANCHORS | set(BASELINE_AGENTS)
     for existing in sorted(all_names):
         ex_key = _name_key(existing)
         if not key or not ex_key:
+            continue
+        # Creating the exact canonical name is always allowed — only aliases
+        # are blocked. e.g. "engineer" vs seed anchor "engineer": OK.
+        if normalized == existing:
             continue
         if key == ex_key:
             return existing
@@ -666,6 +673,15 @@ def register_role(
     if not is_update:
         similar = _similar_existing_name(name, agents)
         if similar:
+            # Emit an explicit denial for engineer/engineering variants so the
+            # chief's $casting_feedback makes the rule unambiguous.
+            if _name_key(name) == _name_key("engineer"):
+                canonical = similar if similar != name else "engineer"
+                return False, (
+                    f"engineer_alias_denied:{canonical} — "
+                    f"'{name}' is a reserved alias of '{canonical}'; "
+                    f"use '{canonical}' directly and do not create variants"
+                )
             return False, f"similar_to_existing:{similar}"
         # Prompt-body similarity check: catches the case where the chief
         # invents a distinct name but writes a body that overlaps an
@@ -908,14 +924,16 @@ Author or replace a workflow (the harness will save it as
   END_WORKFLOW
 
 Rules
-- Roster cap is enforced (default 12 dynamic roles + the 4 baseline roles).
+- Roster cap is enforced (default 12 dynamic roles + the 3 baseline roles).
   Drop or merge before adding past the cap.
-- Baseline roles (chief, engineer, ralph, qa) cannot be removed but you
-  may refresh their prompt bodies.
-- engineer is the canonical implementation agent. NEVER create
-  `engineering`, `engineers`, `coder`, `developer`, `programmer`,
-  `implementer`, or any other variant — the harness treats them as
-  duplicates of `engineer` and will reject them. Use `engineer` directly.
+- Baseline roles (chief, ralph, qa) cannot be removed but you may refresh
+  their prompt bodies.
+- engineer is the canonical implementation agent. It is NOT a default
+  baseline — you must create it with PROPOSE_ROLE: engineer when a project
+  needs an implementer. The name is reserved: NEVER create `engineering`,
+  `engineers`, `coder`, `developer`, `programmer`, `implementer`, or any
+  other variant. The harness will explicitly deny such proposals and report
+  back to you via $casting_feedback. If engineer already exists, use it.
 - ralph is the iterative refinement and autoresearch driver. Always
   include at least one ralph stage in engineering workflows so the output
   gets iteratively improved before delivery. Do NOT create a separate
