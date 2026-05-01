@@ -130,6 +130,11 @@ def _ensure_gitignore(paths: Paths) -> bool:
             current = gi.read_text(encoding="utf-8")
             if block_marker in current:
                 return False
+            # If the whole .clk/ directory is already ignored (e.g. by kickoff),
+            # the detailed block is redundant — skip it.
+            existing_lines = {l.strip() for l in current.splitlines()}
+            if ".clk/" in existing_lines or ".clk" in existing_lines:
+                return False
             gi.write_text(current.rstrip() + "\n\n" + block, encoding="utf-8")
             return True
         gi.write_text(block, encoding="utf-8")
