@@ -227,11 +227,10 @@ DEFAULT_AGENTS: Dict[str, Any] = {
     # as scaffolds so the chief can re-cast a seed role with an empty
     # PROMPT body and the existing file will be picked up.
     "agents": {
-        "chief":        {"prompt": "chief.md",        "provider": None, "role": "decompose objectives, cast the team, author workflows"},
-        "engineer":     {"prompt": "engineer.md",     "provider": None, "role": "implement vertical slices (baseline implementer)"},
-        "qa":           {"prompt": "qa.md",           "provider": None, "role": "test and audit changes (baseline validator)"},
-        "ralph":        {"prompt": "ralph.md",        "provider": None, "role": "drive ralph-style iterative loops"},
-        "autoresearch": {"prompt": "autoresearch.md", "provider": None, "role": "drive autoresearch-style improvement"},
+        "chief":    {"prompt": "chief.md",    "provider": None, "role": "decompose objectives, cast the team, author workflows"},
+        "engineer": {"prompt": "engineer.md", "provider": None, "role": "implement vertical slices (baseline implementer)"},
+        "qa":       {"prompt": "qa.md",       "provider": None, "role": "test and audit changes (baseline validator)"},
+        "ralph":    {"prompt": "ralph.md",    "provider": None, "role": "drive iterative refinement and autoresearch loops"},
     }
 }
 

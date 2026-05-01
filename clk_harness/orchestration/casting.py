@@ -75,6 +75,7 @@ from ..utils.logging_utils import log, log_exception
 # to always include ralph and qa in every engineering workflow.
 BASELINE_AGENTS: Tuple[str, ...] = (
     "chief",
+    "engineer",
     "ralph",
     "qa",
 )
@@ -288,12 +289,10 @@ def parse_consensus_proposals(text: str) -> List[ConsensusProposal]:
 # Reserved names that may never be assigned to a dynamic role.
 _RESERVED_NAMES = set(BASELINE_AGENTS)
 
-# Seed roles that ship in DEFAULT_AGENTS but are not in BASELINE_AGENTS.
-# They always act as similarity anchors in _similar_existing_name so the
-# chief cannot coin a near-duplicate name (e.g. "engineering" for
-# "engineer") even when agents.json was trimmed to only the baseline set.
+# Names that always act as similarity anchors even when absent from
+# agents.json.  "autoresearch" was absorbed into ralph; keeping it here
+# prevents the chief from accidentally re-creating it as a dynamic role.
 _SEED_ROLE_ANCHORS: frozenset = frozenset({
-    "engineer",
     "autoresearch",
 })
 
@@ -909,28 +908,28 @@ Author or replace a workflow (the harness will save it as
   END_WORKFLOW
 
 Rules
-- Roster cap is enforced (default 12 dynamic roles + the 3 baseline roles).
+- Roster cap is enforced (default 12 dynamic roles + the 4 baseline roles).
   Drop or merge before adding past the cap.
-- Baseline roles (chief, ralph, qa) cannot be removed but you may refresh
-  their prompt bodies.
-- ralph is the iterative refinement driver. Always include at least one
-  ralph stage in engineering workflows so the output gets iteratively
-  improved before delivery.
+- Baseline roles (chief, engineer, ralph, qa) cannot be removed but you
+  may refresh their prompt bodies.
+- engineer is the canonical implementation agent. NEVER create
+  `engineering`, `engineers`, `coder`, `developer`, `programmer`,
+  `implementer`, or any other variant — the harness treats them as
+  duplicates of `engineer` and will reject them. Use `engineer` directly.
+- ralph is the iterative refinement and autoresearch driver. Always
+  include at least one ralph stage in engineering workflows so the output
+  gets iteratively improved before delivery. Do NOT create a separate
+  autoresearch agent — ralph handles both modes.
 - qa is the validation agent. Always include at least one qa stage in
   every engineering workflow, typically as the final stage before done.
-- All other roles (engineer, analyst, researcher, architect, etc.) are
-  dynamic — create them per project as needed.
+- All other roles (analyst, researcher, architect, etc.) are dynamic —
+  create them per project as needed.
 - If a stage references an agent you have not defined yet, define it in
   the same response with a PROPOSE_ROLE block.
 - Workflows may use any combination of baseline and dynamic agents.
 - Prefer assigning work to an existing agent when its role already fits.
   Create or refresh a role when the need is distinct enough that an
   existing role would blur ownership or do materially worse work.
-- The seed role `engineer` is always pre-seeded and is the canonical
-  implementation role. NEVER create `engineering`, `engineers`, `coder`,
-  `developer`, `programmer`, `implementer`, or any other variant — the
-  harness treats them as duplicates of `engineer` and will reject them.
-  Use `engineer` directly in workflow stages.
 - Before emitting ANY PROPOSE_ROLE block, run this mandatory pre-flight:
     1. Read every agent's prompt_preview in the current roster.
     2. Ask: "Does any existing agent's prompt already describe this work?"
