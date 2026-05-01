@@ -35,6 +35,16 @@ COPY .env.example ./
 
 RUN chmod +x kickoff.sh scripts/clk scripts/install_local.sh scripts/run_loop.sh 2>/dev/null || true
 
+# kickoff.sh loads /app/.env at startup (provider, API keys, git identity, ...).
+# Bind-mount your host file there to provide config from outside the image:
+#   docker run -v ~/clk.env:/app/.env ...
+# or pass the same file via Docker's --env-file flag (no mount needed):
+#   docker run --env-file ~/clk.env ...
+# An empty placeholder is created so the bind-mount target exists in the image;
+# kickoff.sh treats an empty file the same as no file (it just falls through to
+# prompts / -e overrides).
+RUN touch /app/.env
+
 # Global git identity used by the harness when committing inside kickoff dirs.
 RUN git config --global user.name  "CLK Container" \
  && git config --global user.email "clk@local.invalid"
