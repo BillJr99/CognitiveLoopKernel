@@ -50,13 +50,17 @@ _clk_setup() {
 
   local env_file="$SCRIPT_DIR/.env"
 
-  if [ ! -f "$env_file" ] && [ -f "$SCRIPT_DIR/.env.example" ]; then
-    cp "$SCRIPT_DIR/.env.example" "$env_file"
-    printf '[setup] created %s from .env.example\n' "$env_file" >/dev/tty
+  # Seed defaults from .env.example first, then let an existing .env override.
+  # The wizard always rewrites .env at the end; press Enter at each prompt to
+  # keep the value shown in [brackets].
+  if [ -f "$SCRIPT_DIR/.env.example" ]; then
+    set -a; . "$SCRIPT_DIR/.env.example"; set +a
   fi
-
-  if [ -f "$env_file" ]; then
+  if [ -s "$env_file" ]; then
     set -a; . "$env_file"; set +a
+    printf '[setup] loaded existing values from %s\n' "$env_file" >/dev/tty
+  else
+    printf '[setup] %s is empty or missing — using .env.example defaults\n' "$env_file" >/dev/tty
   fi
 
   printf '\n=== CLK Setup Wizard ===\nPress Enter to keep the value shown in [brackets].\n\n' >/dev/tty
