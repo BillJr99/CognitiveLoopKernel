@@ -7,6 +7,15 @@ chief casts the team dynamically per project, the agents emit machine-
 parsed `ACTION:` blocks that the harness executes, and every change is
 committed automatically.
 
+> **Experimental software — use at your own risk.**
+> CLK is a research prototype. It is not intended for, and has not been
+> evaluated or deemed suitable for, any particular purpose, production
+> use, or critical workload. No warranty is provided, express or implied.
+> By using this software you accept all associated risks.
+>
+> Contributions, bug reports, and ideas are very welcome — feel free to
+> open an issue or pull request!
+
 ## Why CLK
 
 - **Local-first.** Everything lives under `.clk/` in the project
