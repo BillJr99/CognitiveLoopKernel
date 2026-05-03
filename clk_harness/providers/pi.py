@@ -14,14 +14,20 @@ from pathlib import Path
 
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens, run_streaming
 
-# Maps key_type names to the environment variable each provider reads.
-_KEY_TYPE_ENV: dict = {
-    "openrouter": "OPENROUTER_API_KEY",
-    "openai":     "OPENAI_API_KEY",
-    "anthropic":  "ANTHROPIC_API_KEY",
-    "google":     "GOOGLE_API_KEY",
-    "gemini":     "GEMINI_API_KEY",
-}
+# Explicit overrides for providers whose env var doesn't follow the
+# {NAME.upper()}_API_KEY convention.  Empty today — add entries here
+# only if a future provider breaks the pattern.
+_KEY_TYPE_ENV_OVERRIDES: dict = {}
+
+
+def _env_var_for_key_type(key_type: str) -> str:
+    """Return the env var name for a given key_type.
+
+    Follows the convention ``{KEY_TYPE.upper()}_API_KEY`` unless an
+    explicit override is registered in ``_KEY_TYPE_ENV_OVERRIDES``.
+    Examples: openrouter -> OPENROUTER_API_KEY, mistral -> MISTRAL_API_KEY.
+    """
+    return _KEY_TYPE_ENV_OVERRIDES.get(key_type) or f"{key_type.upper()}_API_KEY"
 
 # Maps abstract capability names to pi CLI flags.
 _CAP_MAP: dict = {
@@ -85,9 +91,7 @@ class PiProvider(AgentProvider):
         api_key = (self.config.get("api_key") or "").strip()
         if api_key:
             key_type = (self.config.get("key_type") or "openrouter").strip().lower()
-            env_var = _KEY_TYPE_ENV.get(key_type)
-            if env_var:
-                extra_env[env_var] = api_key
+            extra_env[_env_var_for_key_type(key_type)] = api_key
 
         try:
             rc, stdout, stderr = run_streaming(

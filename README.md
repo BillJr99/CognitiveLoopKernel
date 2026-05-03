@@ -235,6 +235,18 @@ docker run --rm -it \
   clk "A local-first journaling app that summarises my week"
 ```
 
+For the `pi` provider with an OpenRouter key:
+
+```bash
+docker run --rm -it \
+  -v clk-workspace:/app/workspace \
+  -e CLK_PROVIDER=pi \
+  -e CLK_PI_MODEL=openrouter/free \
+  -e CLK_PI_KEY_TYPE=openrouter \
+  -e CLK_PI_API_KEY=sk-or-... \
+  clk "A local-first journaling app that summarises my week"
+```
+
 For `ollama` or `openwebui` running on the host, use `host.docker.internal`
 as the endpoint (macOS/Windows) or `--network host` (Linux):
 
@@ -319,7 +331,7 @@ The harness state, written by `clk init` and grown by every command:
 | `claude`    | `claude` on PATH                         | runs `claude --print` non-interactively. Add `"args": ["--print", "--output-format", "json"]` to `providers.json` to get real token counts. |
 | `codex`     | `codex` on PATH                          | runs `codex exec`. |
 | `gemini`    | `gemini` on PATH                         | runs the Google Gemini CLI; prompt fed on stdin. |
-| `pi`        | `pi` on PATH or `.clk/tools/pi/bin/pi`   | extensible terminal harness. |
+| `pi`        | `pi` on PATH or `.clk/tools/pi/bin/pi`   | pi.dev terminal harness; supports model selection, OpenRouter, and any API-key provider. See below. |
 | `ollama`    | TCP reachable at `endpoint`              | local-only LLM via HTTP. |
 | `openwebui` | TCP reachable at `endpoint`              | any OpenAI-compatible server. Configure `endpoint`, `api_key`, `model` in `providers.json`; kickoff offers a numbered model picker fetched from `/api/models`. |
 
@@ -343,9 +355,90 @@ choose how authentication works at kickoff:
   `"mode": "api"`. Each provider has a built-in HTTP client (Anthropic
   Messages, OpenAI Chat Completions, Gemini `generateContent`).
 
-The other providers don't need this knob: `shell` and `pi` have no
-remote auth, `ollama` is local, and `openwebui` always uses an explicit
-bearer token configured at kickoff time.
+The other providers don't need this knob: `shell` and `ollama` are
+local, `openwebui` uses an explicit bearer token, and `pi` has its own
+authentication model described below.
+
+### Pi provider
+
+`pi` (from [pi.dev](https://pi.dev)) is an extensible terminal
+harness. CLK drives it as a subprocess, piping the prompt on stdin and
+capturing stdout as the agent response.
+
+**Model selection**
+
+Pass a model to `pi` via `CLK_PI_MODEL`:
+
+```bash
+CLK_PI_MODEL=openrouter/free      # free tier via OpenRouter
+CLK_PI_MODEL=openrouter/auto      # let OpenRouter pick the best available free model
+CLK_PI_MODEL=anthropic/claude-3-5-sonnet  # specific model via OpenRouter
+```
+
+Leave `CLK_PI_MODEL` blank to use pi's own active profile or default.
+The value is forwarded to pi as `pi --model <value>`.
+
+**API keys**
+
+Pi reads provider-specific environment variables — one per backend.
+Two settings control this:
+
+| Setting | Purpose |
+|---|---|
+| `CLK_PI_KEY_TYPE` | The provider your key belongs to (default: `openrouter`) |
+| `CLK_PI_API_KEY` | The actual key value |
+
+The harness derives the env var name by convention:
+`{CLK_PI_KEY_TYPE.upper()}_API_KEY`. So:
+
+| `CLK_PI_KEY_TYPE` | Env var set for pi |
+|---|---|
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `openai` | `OPENAI_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `mistral` | `MISTRAL_API_KEY` |
+| any future provider | `{NAME}_API_KEY` automatically |
+
+This means new providers require no code changes — just set
+`CLK_PI_KEY_TYPE` to the provider name and `CLK_PI_API_KEY` to your key.
+
+Leave `CLK_PI_API_KEY` blank if you have already run `pi login` and pi
+has its own stored credentials.
+
+**Interactive pi setup**
+
+If you need to run `pi login`, configure a profile, or verify your
+setup interactively, kickoff offers to open pi's TUI before launching
+the harness. You'll be prompted at the end of the pi configuration
+questions during both `--setup` and a normal kickoff run (when `pi` is
+on PATH). Exit pi normally when done and kickoff will continue.
+
+This is useful for first-time Docker sessions where pi has no stored
+credentials yet:
+
+```bash
+# Run the setup wizard — it will offer to open pi if found on PATH
+./kickoff.sh --setup
+```
+
+Pi's own state (credentials, profiles) is stored in pi's own config
+directory (e.g. `~/.pi/`) — no extra Docker volume is required for
+CLK's harness state, but if you want pi credentials to persist across
+container restarts, mount the pi config directory:
+
+```bash
+docker run --rm -it \
+  -v ~/.pi:/root/.pi \
+  -v clk-workspace:/app/workspace \
+  -e CLK_PROVIDER=pi \
+  -e CLK_PI_MODEL=openrouter/free \
+  -e CLK_PI_KEY_TYPE=openrouter \
+  -e OPENROUTER_API_KEY=sk-or-... \
+  clk "My idea"
+```
+
+Alternatively, pass the API key directly via `CLK_PI_API_KEY` and skip
+`pi login` altogether — kickoff will set the right env var for you.
 
 ## Layout
 

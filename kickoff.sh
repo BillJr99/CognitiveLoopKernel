@@ -126,6 +126,15 @@ _clk_setup() {
       pi_key_type="$(_sv_read "Key type (openrouter|openai|anthropic|google|gemini)" "$pi_key_type")"
       printf '  Leave blank if you already ran `pi login` and have no separate key.\n' >/dev/tty
       new="$(_sv_secret "API key for $pi_key_type (leave blank to keep / skip)")"; [ -n "$new" ] && pi_key="$new"
+      if command -v pi >/dev/null 2>&1; then
+        local open_pi
+        open_pi="$(_sv_read "Open pi now to run login/config interactively? (y/N)" "N")"
+        if [ "${open_pi,,}" = "y" ]; then
+          printf '[setup] Opening pi — run `pi login` or any config commands, then exit to return.\n' >/dev/tty
+          pi </dev/tty >/dev/tty 2>/dev/tty || true
+          printf '[setup] Returned from pi.\n' >/dev/tty
+        fi
+      fi
       ;;
   esac
 
@@ -224,7 +233,8 @@ Optional environment overrides (also accepted via .env in the script directory):
   CLK_OPENWEBUI_API_KEY   used if CLK_PROVIDER=openwebui        (bearer token)
   CLK_OPENWEBUI_MODEL     used if CLK_PROVIDER=openwebui        (prompted if unset)
   CLK_PI_MODEL            used if CLK_PROVIDER=pi               (e.g. openrouter/free)
-  CLK_PI_KEY_TYPE         used if CLK_PROVIDER=pi               (openrouter|openai|anthropic|google|gemini)
+  CLK_PI_KEY_TYPE         used if CLK_PROVIDER=pi               (any provider name, e.g. openrouter, openai,
+                                                               anthropic, mistral — sets NAME_API_KEY)
   CLK_PI_API_KEY          used if CLK_PROVIDER=pi               (key for the provider named in CLK_PI_KEY_TYPE)
   CLK_GIT_NAME          git user.name  for kickoff commits
   CLK_GIT_EMAIL         git user.email for kickoff commits
@@ -333,12 +343,21 @@ case "$CLK_PROVIDER" in
     ;;
   pi)
     prompt_default CLK_PI_MODEL    "pi model (e.g. openrouter/free, openrouter/auto, leave blank for pi default)" ""
-    prompt_default CLK_PI_KEY_TYPE "Key type — sets which env var receives your API key (openrouter|openai|anthropic|google|gemini)" "openrouter"
+    prompt_default CLK_PI_KEY_TYPE "Key type — sets which env var receives your API key (openrouter|openai|anthropic|<any provider>)" "openrouter"
     if [ -z "${CLK_PI_API_KEY:-}" ] && [ -t 0 ]; then
       echo "  Tip: get a free key at openrouter.ai; leave blank if you already ran 'pi login'"
       read -r -s -p "API key for ${CLK_PI_KEY_TYPE:-openrouter} (leave blank to skip): " CLK_PI_API_KEY
       echo
       export CLK_PI_API_KEY
+    fi
+    if [ -t 0 ] && command -v pi >/dev/null 2>&1; then
+      local open_pi_rt
+      read -r -p "Open pi now to run login/config interactively? (y/N): " open_pi_rt
+      if [ "${open_pi_rt,,}" = "y" ]; then
+        echo "[kickoff] Opening pi — run 'pi login' or any config commands, then exit to return."
+        pi || true
+        echo "[kickoff] Returned from pi."
+      fi
     fi
     ;;
   ollama)
