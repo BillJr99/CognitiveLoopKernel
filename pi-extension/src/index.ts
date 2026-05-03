@@ -29,14 +29,16 @@ function piSubagentsInstalled(cwd?: string): boolean {
   } catch { /* not in npm tree */ }
 
   // 2. Pi's global extension directory — where `pi install npm:pi-subagents`
-  //    places the package (~/.pi/agent/extensions/pi-subagents/).
-  if (existsSync(join(homedir(), ".pi", "agent", "extensions", "pi-subagents"))) {
-    return true;
-  }
-
-  // 3. Project-local Pi extension directory — .pi/extensions/pi-subagents/.
-  if (cwd && existsSync(join(cwd, ".pi", "extensions", "pi-subagents"))) {
-    return true;
+  //    places the package. Pi registers it under the extension name "subagent"
+  //    (~/.pi/agent/extensions/subagent/), not the npm package name.
+  for (const dirName of ["subagent", "pi-subagents"]) {
+    if (existsSync(join(homedir(), ".pi", "agent", "extensions", dirName))) {
+      return true;
+    }
+    // 3. Project-local Pi extension directory.
+    if (cwd && existsSync(join(cwd, ".pi", "extensions", dirName))) {
+      return true;
+    }
   }
 
   return false;
