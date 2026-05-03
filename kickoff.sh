@@ -119,7 +119,10 @@ _clk_setup() {
     pi)
       printf '\n  Examples: openrouter/free  openrouter/auto  anthropic/claude-3-5-sonnet\n' >/dev/tty
       pi_model="$(_sv_read "pi model (leave blank for pi default)" "$pi_model")"
-      if command -v pi >/dev/null 2>&1; then
+      # Only offer the setup shell if a real pi.dev CLI is on PATH (not the
+      # system Debian/Ubuntu 'pi' calculator at /usr/bin/pi which prints π digits).
+      _pi_cmd="$(command -v pi 2>/dev/null || true)"
+      if [ -n "$_pi_cmd" ] && [ "$_pi_cmd" != "/usr/bin/pi" ] && [ "$_pi_cmd" != "/bin/pi" ]; then
         local open_pi
         open_pi="$(_sv_read "Open pi TUI to configure (login, profiles, etc.) before continuing? (y/N)" "N")"
         if [ "${open_pi,,}" = "y" ]; then
@@ -345,7 +348,8 @@ case "$CLK_PROVIDER" in
     ;;
   pi)
     prompt_default CLK_PI_MODEL "pi model (e.g. openrouter/free, openrouter/auto, leave blank for pi default)" ""
-    if [ -t 0 ] && command -v pi >/dev/null 2>&1; then
+    _pi_cmd_rt="$(command -v pi 2>/dev/null || true)"
+    if [ -t 0 ] && [ -n "$_pi_cmd_rt" ] && [ "$_pi_cmd_rt" != "/usr/bin/pi" ] && [ "$_pi_cmd_rt" != "/bin/pi" ]; then
       read -r -p "[kickoff] Open pi TUI to configure (login, profiles, etc.) before continuing? (y/N): " open_pi_rt
       if [ "${open_pi_rt,,}" = "y" ]; then
         echo "[kickoff] Dropping into a shell — run pi commands (e.g. 'pi login'), then type 'exit' to return."
