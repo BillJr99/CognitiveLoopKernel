@@ -166,8 +166,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           () => pi.sendUserMessage(clkChiefPrimer(idea)),
           {
             signal: sig,
+            // Free-tier upstream rate limits can persist for 30–120 s; use a
+            // 15 s base so the four attempts span ~3.5 min (15→30→60→120 s).
             maxAttempts: 4,
-            baseDelayMs: 2000,
+            baseDelayMs: 15000,
             onRetry: (err, attempt, delayMs) => {
               const cls = classifyError(err);
               ctx.ui.notify(
