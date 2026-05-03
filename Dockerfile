@@ -20,7 +20,7 @@ RUN npm install -g \
         @anthropic-ai/claude-code \
         @openai/codex \
         @google/gemini-cli \
-        pi
+        @mariozechner/pi-coding-agent
 
 WORKDIR /app
 
