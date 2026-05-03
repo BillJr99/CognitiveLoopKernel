@@ -20,6 +20,11 @@ const RATE_LIMIT_PATTERNS: RegExp[] = [
   /capacity/i,
   /try again/i,
   /throttl/i,
+  /temporarily.*rate/i,
+  /rate.*upstream/i,
+  /upstream.*rate/i,
+  /please\s+retry/i,
+  /provider returned error/i,
 ];
 
 const MODEL_ERROR_PATTERNS: RegExp[] = [
@@ -70,8 +75,15 @@ export function classifyError(err: unknown): ErrorClass {
       ? `${err.message} ${(err as NodeJS.ErrnoException).code ?? ""}`
       : String(err);
 
-  if (RATE_LIMIT_PATTERNS.some((p) => p.test(msg))) return "rate_limit";
-  if (MODEL_ERROR_PATTERNS.some((p) => p.test(msg))) return "model_error";
+  // Some HTTP clients surface the status code as a property rather than
+  // embedding it in the message text; check both routes.
+  const httpStatus =
+    (err as { status?: unknown }).status ??
+    (err as { statusCode?: unknown }).statusCode ??
+    (err as { response?: { status?: unknown } }).response?.status;
+
+  if (httpStatus === 429 || RATE_LIMIT_PATTERNS.some((p) => p.test(msg))) return "rate_limit";
+  if (httpStatus === 404 || MODEL_ERROR_PATTERNS.some((p) => p.test(msg))) return "model_error";
   if (REDACTION_PATTERNS.some((p) => p.test(msg))) return "redaction";
   if (MAX_TURNS_PATTERNS.some((p) => p.test(msg))) return "max_turns";
   if (NETWORK_PATTERNS.some((p) => p.test(msg))) return "network";
