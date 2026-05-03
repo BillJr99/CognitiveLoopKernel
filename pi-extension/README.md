@@ -199,6 +199,44 @@ The `clk_*` tools are intentionally minimal mechanics. Resist the urge to
 encode policy in them — Pi extensions get the most leverage when the LLM
 makes the decisions and the extension just provides primitives + persistence.
 
+## Error handling and resilience
+
+The extension is designed to survive transient provider problems without ending
+the run. Errors are classified into four categories, each with a defined
+recovery path:
+
+| Category | Symptoms | Recovery |
+|----------|----------|----------|
+| **Rate limit** | HTTP 429, "too many requests", "quota exceeded" | Exponential backoff (2 s → 4 s → 8 s → 16 s) and retry, up to 4 attempts. If still failing, the chief tries a smaller / different model. |
+| **Model unavailable** | HTTP 404, "model not found", "not available on free tier" | No retry — the chief falls back to a built-in Pi agent (`worker`, `researcher`, `scout`, `oracle`) or omits `preferredModel` and lets Pi choose. |
+| **Privacy redaction** | `[REDACTED]` values, "privacy filter", "sensitive content blocked" | Tool params are checked for redaction markers before use; the tool returns a recovery hint asking the chief to retry without the sensitive field (or to write it to a file and pass the path). |
+| **Max turns exhausted** | "max turns reached", "turn limit", "turn cap", "no more turns" | The chief re-dispatches the identical `subagent` call immediately without asking for confirmation. If the task exhausts turns twice in a row the chief splits it into two narrower sequential subtasks. |
+| **Network / transient** | ECONNRESET, ETIMEDOUT, "socket hang up" | Same backoff-and-retry as rate limits. |
+
+### Where this is enforced
+
+- **`src/errors.ts`** — `classifyError` (now includes `max_turns`), `isRetryable`,
+  `looksRedacted`, `isMaxTurnsResult`, `withRetry` (exponential backoff helper),
+  and `recoveryHint` (human-readable guidance returned to the chief as tool output).
+- **`src/index.ts`** — `pi.sendUserMessage` (the call that hands off to the
+  chief) is wrapped with `withRetry`; abort-caused errors are distinguished
+  from real errors so the run lifecycle is handled correctly.
+- **`src/tools.ts`** — every `clk_*` tool `execute` function checks input
+  parameters for redaction before acting and returns a descriptive error result
+  (rather than throwing) when git operations fail, so the chief can decide how
+  to proceed.
+- **`src/prompts.ts`** — rule 8 (max-turns: re-dispatch immediately or split
+  the task) and rule 10 (other provider errors) in the chief's operator's manual
+  instruct it how to handle error results from `subagent` calls (which happen
+  inside Pi's runtime and cannot be intercepted in TypeScript).
+
+### Design principle
+
+A single failed subagent call or tool invocation must never end the run. The
+extension recovers what it can in TypeScript, then surfaces a recovery hint to
+the chief so it can adapt its plan. Use `/clk-abort` when you intentionally
+want to stop.
+
 ## Limitations / gotchas
 
 - **Subagent depth is capped.** The extension sets
@@ -233,6 +271,7 @@ pi-extension/
     state.ts           # .clk/state/* persistence + pi.appendEntry mirroring
     git.ts             # checkpoint / revert helpers
     abort.ts           # run-scoped AbortController + /clk-abort + shutdown bridge
+    errors.ts          # error classification, backoff retry, redaction detection
     types.ts           # shared types
 ```
 

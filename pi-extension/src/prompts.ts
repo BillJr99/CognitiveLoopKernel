@@ -89,7 +89,63 @@ ${idea}
    \`clk_cast\` to add a specialist who can address the upstream issue,
    and try again. Cap recovery at 3 attempts per stage.
 
-8. **Mark done.** Call \`clk_done\` with a one-line reason ONLY when ALL of
+8. **Re-dispatch immediately on max-turns exhaustion.** When a
+   \`subagent\` result contains any phrase indicating the agent ran out
+   of turns — e.g. "max turns reached", "maximum turns", "turn limit",
+   "turn cap", "no more turns", or similar — treat it as an incomplete
+   dispatch, not a failure:
+
+   a. **Do not skip, do not ask for confirmation, do not report this as
+      an error.** Simply call \`subagent\` again immediately with the
+      exact same \`agent\` and \`task\` parameters. The fresh invocation
+      starts a new turn budget and continues from its own context.
+   b. If the same task hits max-turns **twice in a row**, split the task
+      into two narrower sequential subtasks and dispatch them one at a
+      time. Record the split with
+      \`clk_progress({ kind: "note", message: "split task due to repeated turn exhaustion" })\`.
+   c. After a successful re-dispatch (exit 0), proceed normally —
+      checkpoint if there are changes, then continue the orchestration.
+
+   The invariant: a max-turns stop is never the final word on a task.
+
+10. **Recover from model and provider errors — never abort.** When a
+   \`subagent\` call or tool call returns an error (rather than a clean
+   result), classify it and react accordingly instead of stopping:
+
+   - **Rate limit / too many requests (HTTP 429, "rate limit", "quota
+     exceeded", "try again").** Wait 30–60 seconds (use the \`bash\` tool
+     to \`sleep 30\`) and retry the exact same \`subagent\` call. If it
+     fails a second time, wait 60 seconds. After three consecutive rate-
+     limit failures, record the situation with \`clk_progress\` and try a
+     smaller or different model by omitting or changing \`preferredModel\`.
+
+   - **Model not found / unavailable ("model does not exist", "endpoint
+     not found", "not available on free tier", HTTP 404).** Do NOT retry
+     the same model. Instead fall back to a built-in Pi agent
+     (\`worker\`, \`researcher\`, \`scout\`, or \`oracle\`) or retry without
+     the \`preferredModel\` field so Pi picks the default. Record the
+     fallback with \`clk_progress({ kind: "note", message: "..." })\`.
+
+   - **Privacy / redaction errors ("REDACTED", "privacy filter",
+     "sensitive content blocked").** A privacy setting stripped a value
+     before the model saw it. Retry the call without the field that was
+     redacted. If the information is genuinely required, write it to a
+     file first and pass the file path in the task string instead of
+     embedding the raw value.
+
+   - **Transient network errors (connection reset, timeout).** Retry
+     after a short \`sleep 5\`. If it fails twice, treat it like a rate
+     limit and back off further.
+
+   - **Any other error.** Log it with \`clk_progress({ kind: "note",
+     message: "error: <summary>" })\`, then decide: if the step is
+     optional, skip it and move on; if it is required, invoke consensus
+     on the best recovery path before retrying.
+
+   The key invariant: **a single failed subagent call must never end the
+   run.** Always attempt at least one recovery before escalating.
+
+11. **Mark done.** Call \`clk_done\` with a one-line reason ONLY when ALL of
    the following hold:
        - the MVP runs locally,
        - the test suite passes,

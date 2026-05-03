@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { setRoster, appendProgress, markDone } from "./state.js";
 import { checkpoint, revertTo } from "./git.js";
 import { activeSignal, mergeSignals, endRun } from "./abort.js";
+import { classifyError, looksRedacted, recoveryHint, withRetry } from "./errors.js";
 
 export function registerClkTools(pi: ExtensionAPI): void {
   pi.registerTool({
@@ -36,8 +37,23 @@ export function registerClkTools(pi: ExtensionAPI): void {
       ),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (looksRedacted(params.reason)) {
+        return {
+          content: [{ type: "text", text: `clk_cast skipped: the 'reason' field appears to have been redacted by a privacy filter. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
+      const validAgents = params.agents.filter(
+        (a) => !looksRedacted(a.name) && !looksRedacted(a.mission),
+      );
+      if (validAgents.length === 0) {
+        return {
+          content: [{ type: "text", text: `clk_cast skipped: all agent entries appear redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
       const roster = {
-        agents: params.agents,
+        agents: validAgents,
         castedAt: Date.now(),
         reason: params.reason,
       };
@@ -46,20 +62,21 @@ export function registerClkTools(pi: ExtensionAPI): void {
         ctx.cwd,
         {
           kind: "cast",
-          message: `cast ${params.agents.length} role(s): ${params.agents.map((a) => a.name).join(", ")} — ${params.reason}`,
+          message: `cast ${validAgents.length} role(s): ${validAgents.map((a) => a.name).join(", ")} — ${params.reason}`,
         },
         pi,
       );
       ctx.ui.setStatus(
         "clk-roster",
-        `roster: ${params.agents.map((a) => a.name).join(", ")}`,
+        `roster: ${validAgents.map((a) => a.name).join(", ")}`,
       );
+      const skipped = params.agents.length - validAgents.length;
       return {
         content: [
           {
             type: "text",
             text:
-              `Roster persisted (${params.agents.length} role(s)). ` +
+              `Roster persisted (${validAgents.length} role(s)${skipped > 0 ? `; ${skipped} skipped due to redaction` : ""}). ` +
               `Dispatch via the subagent tool, prefixing each task with the role's persona and mission.`,
           },
         ],
@@ -86,6 +103,12 @@ export function registerClkTools(pi: ExtensionAPI): void {
       message: Type.String(),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (looksRedacted(params.message)) {
+        return {
+          content: [{ type: "text", text: `clk_progress skipped: the 'message' field appears redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
       await appendProgress(ctx.cwd, { kind: params.kind, message: params.message }, pi);
       ctx.ui.setStatus("clk-last", `${params.kind}: ${params.message.slice(0, 80)}`);
       return { content: [{ type: "text", text: "logged" }], details: {} };
@@ -103,8 +126,23 @@ export function registerClkTools(pi: ExtensionAPI): void {
       message: Type.String({ description: "Commit message (CLK prefixes it with [clk])." }),
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
+      if (looksRedacted(params.message)) {
+        return {
+          content: [{ type: "text", text: `clk_checkpoint skipped: 'message' appears redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
       const sig = mergeSignals(signal, activeSignal());
-      const sha = await checkpoint(ctx.cwd, `[clk] ${params.message}`, sig);
+      let sha: string | null;
+      try {
+        sha = await withRetry(() => checkpoint(ctx.cwd, `[clk] ${params.message}`, sig), { signal: sig });
+      } catch (err) {
+        const cls = classifyError(err);
+        return {
+          content: [{ type: "text", text: `clk_checkpoint failed: ${(err as Error).message}. ${recoveryHint(cls)}` }],
+          details: { error: String(err) },
+        };
+      }
       if (sha) {
         await appendProgress(
           ctx.cwd,
@@ -137,8 +175,22 @@ export function registerClkTools(pi: ExtensionAPI): void {
       reason: Type.String(),
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
+      if (looksRedacted(params.sha)) {
+        return {
+          content: [{ type: "text", text: `clk_revert skipped: 'sha' appears redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
       const sig = mergeSignals(signal, activeSignal());
-      await revertTo(ctx.cwd, params.sha, sig);
+      try {
+        await withRetry(() => revertTo(ctx.cwd, params.sha, sig), { signal: sig });
+      } catch (err) {
+        const cls = classifyError(err);
+        return {
+          content: [{ type: "text", text: `clk_revert failed: ${(err as Error).message}. ${recoveryHint(cls)}` }],
+          details: { error: String(err) },
+        };
+      }
       await appendProgress(
         ctx.cwd,
         { kind: "revert", message: `${params.reason} → ${params.sha.slice(0, 8)}` },
