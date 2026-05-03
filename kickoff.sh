@@ -344,7 +344,6 @@ case "$CLK_PROVIDER" in
   pi)
     prompt_default CLK_PI_MODEL "pi model (e.g. openrouter/free, openrouter/auto, leave blank for pi default)" ""
     if [ -t 0 ] && command -v pi >/dev/null 2>&1; then
-      local open_pi_rt
       read -r -p "[kickoff] Open pi TUI to configure (login, profiles, etc.) before continuing? (y/N): " open_pi_rt
       if [ "${open_pi_rt,,}" = "y" ]; then
         echo "[kickoff] Opening pi — run 'pi login' or any config commands, then exit to return."
