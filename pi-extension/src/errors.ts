@@ -112,31 +112,53 @@ export function isMaxTurnsResult(text: string): boolean {
 }
 
 export interface RetryOptions {
+  /** Maximum attempts for non-rate-limit retryable errors (network blips etc.). Rate-limit
+   *  errors are retried indefinitely until the abort signal fires. */
   maxAttempts?: number;
   baseDelayMs?: number;
+  /** Hard ceiling on any single inter-retry delay. Prevents the exponential from
+   *  growing beyond a practical bound; defaults to 5 minutes. */
+  maxDelayMs?: number;
   signal?: AbortSignal;
   onRetry?: (err: unknown, attempt: number, delayMs: number) => void;
 }
 
 /**
- * Retry `fn` with exponential backoff (2 s → 4 s → 8 s → 16 s by default)
- * whenever a retryable error is thrown. Non-retryable errors propagate
- * immediately.
+ * Retry `fn` with exponential backoff whenever a retryable error is thrown.
+ *
+ * Rate-limit errors (429 / upstream throttling) are retried indefinitely —
+ * the delay grows exponentially up to `maxDelayMs` (default 5 min) and then
+ * stays there until the call succeeds or the abort signal fires.
+ *
+ * All other retryable errors (network blips) give up after `maxAttempts`
+ * (default 4).  Non-retryable errors propagate immediately.
  */
 export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}): Promise<T> {
-  const { maxAttempts = 4, baseDelayMs = 2000, signal, onRetry } = opts;
-  let lastErr: unknown;
+  const {
+    maxAttempts = 4,
+    baseDelayMs = 2000,
+    maxDelayMs = 5 * 60 * 1000,
+    signal,
+    onRetry,
+  } = opts;
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  let attempt = 0;
+
+  for (;;) {
     if (signal?.aborted) throw new Error("Aborted");
     try {
       return await fn();
     } catch (err) {
-      lastErr = err;
-      if (!isRetryable(err) || attempt === maxAttempts - 1) throw err;
+      if (!isRetryable(err)) throw err;
 
-      const delayMs = baseDelayMs * 2 ** attempt;
-      onRetry?.(err, attempt + 1, delayMs);
+      const isRateLimit = classifyError(err) === "rate_limit";
+
+      // Non-rate-limit retryable errors honour the maxAttempts cap.
+      if (!isRateLimit && attempt >= maxAttempts - 1) throw err;
+
+      const delayMs = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
+      attempt++;
+      onRetry?.(err, attempt, delayMs);
 
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, delayMs);
@@ -153,7 +175,6 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
       });
     }
   }
-  throw lastErr;
 }
 
 /**
