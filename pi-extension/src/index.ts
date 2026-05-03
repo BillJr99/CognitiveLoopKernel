@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -15,6 +16,15 @@ import { clkChiefPrimer } from "./prompts.js";
 import { registerClkTools } from "./tools.js";
 import { startRun, endRun, installAbortBridges } from "./abort.js";
 
+function piSubagentsInstalled(): boolean {
+  try {
+    createRequire(import.meta.url).resolve("pi-subagents");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export default async function (pi: ExtensionAPI): Promise<void> {
   // Allow consensus operations to nest one level deeper than pi-subagents'
   // default (parent → consensus group → judge). Setting it here as a process
@@ -28,6 +38,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   pi.on("session_start", async (_event, ctx) => {
     reset();
+    if (!piSubagentsInstalled()) {
+      ctx.ui.notify(
+        "CLK requires the pi-subagents extension, which provides the `subagent` tool. Install it with: pi install npm:pi-subagents",
+        "warning",
+      );
+    }
     await loadFromFiles(ctx.cwd);
     const s = getState();
     if (s.idea) {
