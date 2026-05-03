@@ -16,13 +16,11 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     && rm -rf /var/lib/apt/lists/*
 
 # Provider CLIs — installed globally so they're on PATH for all agents.
-# NOTE: pi.dev CLI is NOT included here — 'npm install -g pi' installs the
-# Debian pi-digits calculator, not the pi.dev terminal harness. Add the
-# correct pi.dev package name here once confirmed (e.g. @pi-dev/cli or similar).
 RUN npm install -g \
         @anthropic-ai/claude-code \
         @openai/codex \
-        @google/gemini-cli
+        @google/gemini-cli \
+        @mariozechner/pi-coding-agent
 
 WORKDIR /app
 
