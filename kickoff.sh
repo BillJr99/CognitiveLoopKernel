@@ -68,7 +68,7 @@ _clk_setup() {
   local provider max_iter proj_name run_install no_tui auth_mode
   local anthropic_key openai_key gemini_key google_key
   local ollama_ep ollama_model owui_ep owui_key owui_model
-  local pi_model pi_key
+  local pi_model pi_key pi_key_type
   local git_name git_email
 
   provider="$(_sv_read    "Provider (shell|claude|codex|gemini|pi|ollama|openwebui)" "${CLK_PROVIDER:-shell}")"
@@ -104,6 +104,7 @@ _clk_setup() {
   owui_model="${CLK_OPENWEBUI_MODEL:-}"
   pi_model="${CLK_PI_MODEL:-}"
   pi_key="${CLK_PI_API_KEY:-}"
+  pi_key_type="${CLK_PI_KEY_TYPE:-openrouter}"
 
   case "$provider" in
     ollama)
@@ -118,8 +119,13 @@ _clk_setup() {
     pi)
       printf '\n  Examples: openrouter/free  openrouter/auto  anthropic/claude-3-5-sonnet\n' >/dev/tty
       pi_model="$(_sv_read "pi model (leave blank for pi default)" "$pi_model")"
-      printf '  Tip: get a free key at openrouter.ai; leave blank if you already ran `pi login`\n' >/dev/tty
-      new="$(_sv_secret "pi / OpenRouter API key (leave blank to keep / skip)")"; [ -n "$new" ] && pi_key="$new"
+      printf '  Key type sets which env var receives your API key:\n' >/dev/tty
+      printf '    openrouter -> OPENROUTER_API_KEY\n' >/dev/tty
+      printf '    openai     -> OPENAI_API_KEY\n' >/dev/tty
+      printf '    anthropic  -> ANTHROPIC_API_KEY\n' >/dev/tty
+      pi_key_type="$(_sv_read "Key type (openrouter|openai|anthropic|google|gemini)" "$pi_key_type")"
+      printf '  Leave blank if you already ran `pi login` and have no separate key.\n' >/dev/tty
+      new="$(_sv_secret "API key for $pi_key_type (leave blank to keep / skip)")"; [ -n "$new" ] && pi_key="$new"
       ;;
   esac
 
@@ -162,6 +168,7 @@ CLK_OPENWEBUI_MODEL=$owui_model
 # Pi provider
 CLK_PI_MODEL=$pi_model
 CLK_PI_API_KEY=$pi_key
+CLK_PI_KEY_TYPE=$pi_key_type
 
 # Git identity for kickoff commits (overrides global git config inside the container)
 CLK_GIT_NAME=$git_name
@@ -217,7 +224,8 @@ Optional environment overrides (also accepted via .env in the script directory):
   CLK_OPENWEBUI_API_KEY   used if CLK_PROVIDER=openwebui        (bearer token)
   CLK_OPENWEBUI_MODEL     used if CLK_PROVIDER=openwebui        (prompted if unset)
   CLK_PI_MODEL            used if CLK_PROVIDER=pi               (e.g. openrouter/free)
-  CLK_PI_API_KEY          used if CLK_PROVIDER=pi               (OpenRouter / pi API key)
+  CLK_PI_KEY_TYPE         used if CLK_PROVIDER=pi               (openrouter|openai|anthropic|google|gemini)
+  CLK_PI_API_KEY          used if CLK_PROVIDER=pi               (key for the provider named in CLK_PI_KEY_TYPE)
   CLK_GIT_NAME          git user.name  for kickoff commits
   CLK_GIT_EMAIL         git user.email for kickoff commits
 USAGE
@@ -324,10 +332,11 @@ case "$CLK_PROVIDER" in
     fi
     ;;
   pi)
-    prompt_default CLK_PI_MODEL "pi model (e.g. openrouter/free, openrouter/auto, leave blank for pi default)" ""
+    prompt_default CLK_PI_MODEL    "pi model (e.g. openrouter/free, openrouter/auto, leave blank for pi default)" ""
+    prompt_default CLK_PI_KEY_TYPE "Key type — sets which env var receives your API key (openrouter|openai|anthropic|google|gemini)" "openrouter"
     if [ -z "${CLK_PI_API_KEY:-}" ] && [ -t 0 ]; then
       echo "  Tip: get a free key at openrouter.ai; leave blank if you already ran 'pi login'"
-      read -r -s -p "pi / OpenRouter API key (leave blank to skip): " CLK_PI_API_KEY
+      read -r -s -p "API key for ${CLK_PI_KEY_TYPE:-openrouter} (leave blank to skip): " CLK_PI_API_KEY
       echo
       export CLK_PI_API_KEY
     fi
@@ -510,6 +519,7 @@ CLK_OPENWEBUI_API_KEY="${CLK_OPENWEBUI_API_KEY:-}" \
 CLK_OPENWEBUI_MODEL="${CLK_OPENWEBUI_MODEL:-}" \
 CLK_PI_MODEL="${CLK_PI_MODEL:-}" \
 CLK_PI_API_KEY="${CLK_PI_API_KEY:-}" \
+CLK_PI_KEY_TYPE="${CLK_PI_KEY_TYPE:-openrouter}" \
 CLK_AUTH_MODE="${CLK_AUTH_MODE:-cli}" \
 python3 - <<'PY'
 import json, os
@@ -548,12 +558,14 @@ elif provider == "openwebui":
     provs["openwebui"]["model"]    = os.environ["CLK_OPENWEBUI_MODEL"]
 elif provider == "pi":
     provs.setdefault("pi", {"type": "pi", "command": "pi", "args": []})
-    pi_model = os.environ.get("CLK_PI_MODEL", "").strip()
-    pi_key   = os.environ.get("CLK_PI_API_KEY", "").strip()
+    pi_model    = os.environ.get("CLK_PI_MODEL", "").strip()
+    pi_key      = os.environ.get("CLK_PI_API_KEY", "").strip()
+    pi_key_type = os.environ.get("CLK_PI_KEY_TYPE", "openrouter").strip().lower()
     if pi_model:
         provs["pi"]["model"] = pi_model
     if pi_key:
-        provs["pi"]["api_key"] = pi_key
+        provs["pi"]["api_key"]  = pi_key
+        provs["pi"]["key_type"] = pi_key_type
 p.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 "$CLK" configure --set "default_provider=$CLK_PROVIDER" >/dev/null

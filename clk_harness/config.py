@@ -204,6 +204,7 @@ DEFAULT_PROVIDERS: Dict[str, Any] = {
             "args": [],
             "model": "",
             "api_key": "",
+            "key_type": "openrouter",
         },
         "ollama": {
             "type": "ollama",

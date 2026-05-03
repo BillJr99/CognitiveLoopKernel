@@ -14,6 +14,15 @@ from pathlib import Path
 
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens, run_streaming
 
+# Maps key_type names to the environment variable each provider reads.
+_KEY_TYPE_ENV: dict = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "openai":     "OPENAI_API_KEY",
+    "anthropic":  "ANTHROPIC_API_KEY",
+    "google":     "GOOGLE_API_KEY",
+    "gemini":     "GEMINI_API_KEY",
+}
+
 # Maps abstract capability names to pi CLI flags.
 _CAP_MAP: dict = {
     "no-tools":          ["--no-tools"],
@@ -75,8 +84,10 @@ class PiProvider(AgentProvider):
         extra_env: dict = {}
         api_key = (self.config.get("api_key") or "").strip()
         if api_key:
-            extra_env["PI_API_KEY"] = api_key
-            extra_env["OPENROUTER_API_KEY"] = api_key
+            key_type = (self.config.get("key_type") or "openrouter").strip().lower()
+            env_var = _KEY_TYPE_ENV.get(key_type)
+            if env_var:
+                extra_env[env_var] = api_key
 
         try:
             rc, stdout, stderr = run_streaming(
