@@ -1,4 +1,7 @@
 import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -17,13 +20,26 @@ import { registerClkTools } from "./tools.js";
 import { startRun, endRun, installAbortBridges, activeSignal } from "./abort.js";
 import { classifyError, recoveryHint, withRetry } from "./errors.js";
 
-function piSubagentsInstalled(): boolean {
+function piSubagentsInstalled(cwd?: string): boolean {
+  // 1. npm resolution — works when pi-subagents is in the same node_modules
+  //    tree (e.g. declared as a dependency and npm-installed).
   try {
     createRequire(import.meta.url).resolve("pi-subagents");
     return true;
-  } catch {
-    return false;
+  } catch { /* not in npm tree */ }
+
+  // 2. Pi's global extension directory — where `pi install npm:pi-subagents`
+  //    places the package (~/.pi/agent/extensions/pi-subagents/).
+  if (existsSync(join(homedir(), ".pi", "agent", "extensions", "pi-subagents"))) {
+    return true;
   }
+
+  // 3. Project-local Pi extension directory — .pi/extensions/pi-subagents/.
+  if (cwd && existsSync(join(cwd, ".pi", "extensions", "pi-subagents"))) {
+    return true;
+  }
+
+  return false;
 }
 
 export default async function (pi: ExtensionAPI): Promise<void> {
@@ -39,7 +55,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   pi.on("session_start", async (_event, ctx) => {
     reset();
-    if (!piSubagentsInstalled()) {
+    if (!piSubagentsInstalled(ctx.cwd)) {
       ctx.ui.notify(
         "CLK requires the pi-subagents extension, which provides the `subagent` tool. Install it with: pi install npm:pi-subagents",
         "warning",
