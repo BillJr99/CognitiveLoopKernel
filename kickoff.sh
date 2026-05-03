@@ -123,18 +123,20 @@ _clk_setup() {
         local open_pi
         open_pi="$(_sv_read "Open pi TUI to configure (login, profiles, etc.) before continuing? (y/N)" "N")"
         if [ "${open_pi,,}" = "y" ]; then
-          printf '[setup] Opening pi — run `pi login` or any config commands, then exit to return.\n' >/dev/tty
-          pi </dev/tty >/dev/tty 2>/dev/tty || true
-          printf '[setup] Returned from pi.\n' >/dev/tty
+          printf '[setup] Dropping into a shell — run pi commands (e.g. `pi login`), then type `exit` to return.\n' >/dev/tty
+          SHELL_PROMPT='[pi-setup]$ ' "${SHELL:-bash}" </dev/tty >/dev/tty 2>/dev/tty || true
+          printf '[setup] Returned from pi setup shell.\n' >/dev/tty
         fi
       fi
       printf '  Key type sets which env var receives your API key:\n' >/dev/tty
       printf '    openrouter -> OPENROUTER_API_KEY  (any name follows NAME_API_KEY convention)\n' >/dev/tty
       printf '    openai     -> OPENAI_API_KEY\n' >/dev/tty
       printf '    anthropic  -> ANTHROPIC_API_KEY\n' >/dev/tty
-      pi_key_type="$(_sv_read "Key type (openrouter|openai|anthropic|<any provider>)" "$pi_key_type")"
       printf '  Leave blank if pi login above already handled auth.\n' >/dev/tty
-      new="$(_sv_secret "API key for $pi_key_type (leave blank to keep / skip)")"; [ -n "$new" ] && pi_key="$new"
+      pi_key_type="$(_sv_read "Key type (openrouter|openai|anthropic|<any provider>, blank to skip)" "$pi_key_type")"
+      if [ -n "$pi_key_type" ]; then
+        new="$(_sv_secret "API key for $pi_key_type (leave blank to keep / skip)")"; [ -n "$new" ] && pi_key="$new"
+      fi
       ;;
   esac
 
@@ -346,15 +348,15 @@ case "$CLK_PROVIDER" in
     if [ -t 0 ] && command -v pi >/dev/null 2>&1; then
       read -r -p "[kickoff] Open pi TUI to configure (login, profiles, etc.) before continuing? (y/N): " open_pi_rt
       if [ "${open_pi_rt,,}" = "y" ]; then
-        echo "[kickoff] Opening pi — run 'pi login' or any config commands, then exit to return."
-        pi || true
-        echo "[kickoff] Returned from pi."
+        echo "[kickoff] Dropping into a shell — run pi commands (e.g. 'pi login'), then type 'exit' to return."
+        SHELL_PROMPT='[pi-setup]$ ' "${SHELL:-bash}" || true
+        echo "[kickoff] Returned from pi setup shell."
       fi
     fi
-    prompt_default CLK_PI_KEY_TYPE "Key type — sets which env var receives your API key (openrouter|openai|anthropic|<any provider>)" "openrouter"
-    if [ -z "${CLK_PI_API_KEY:-}" ] && [ -t 0 ]; then
+    prompt_default CLK_PI_KEY_TYPE "Key type — sets which env var receives your API key (openrouter|openai|anthropic|<any provider>, blank to skip)" ""
+    if [ -n "${CLK_PI_KEY_TYPE:-}" ] && [ -z "${CLK_PI_API_KEY:-}" ] && [ -t 0 ]; then
       echo "  Tip: get a free key at openrouter.ai; leave blank if pi login above already handled auth."
-      read -r -s -p "API key for ${CLK_PI_KEY_TYPE:-openrouter} (leave blank to skip): " CLK_PI_API_KEY
+      read -r -s -p "API key for ${CLK_PI_KEY_TYPE} (leave blank to skip): " CLK_PI_API_KEY
       echo
       export CLK_PI_API_KEY
     fi
@@ -578,10 +580,10 @@ elif provider == "pi":
     provs.setdefault("pi", {"type": "pi", "command": "pi", "args": []})
     pi_model    = os.environ.get("CLK_PI_MODEL", "").strip()
     pi_key      = os.environ.get("CLK_PI_API_KEY", "").strip()
-    pi_key_type = os.environ.get("CLK_PI_KEY_TYPE", "openrouter").strip().lower()
+    pi_key_type = os.environ.get("CLK_PI_KEY_TYPE", "").strip().lower()
     if pi_model:
         provs["pi"]["model"] = pi_model
-    if pi_key:
+    if pi_key_type and pi_key:
         provs["pi"]["api_key"]  = pi_key
         provs["pi"]["key_type"] = pi_key_type
 p.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
