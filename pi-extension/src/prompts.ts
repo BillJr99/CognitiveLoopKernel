@@ -57,9 +57,14 @@ ${idea}
    iterations — immediately pick the next improvement and start the next
    cycle. Each iteration follows this exact branch-based protocol:
 
-       a. Pick ONE measurable improvement (lowest-risk, highest-value).
-          Before implementing, ask: "Is the best approach for this
-          improvement clear?" If not, run autoresearch first (rule 5).
+       a. Pick ONE improvement (lowest-risk, highest-value). Classify it:
+          - **Measurable** (has a numeric outcome): run rule 5B
+            (Karpathy quantitative autoresearch) — it integrates the
+            branch loop, so return here only when 5B exhausts its
+            authorised changes or the completion criteria are met.
+          - **Qualitative** (design, architecture, unknown approach):
+            run rule 5A first to resolve the open question, then
+            proceed with steps (b)–(h) below.
        b. Create a feature branch: \`clk_branch({ name:
           "ralph/iter-N-short-description" })\`. All work for this
           iteration happens on that branch.
@@ -84,27 +89,85 @@ ${idea}
    Cap soft at ~10 consecutive iterations before pausing to re-evaluate
    with consensus (rule 3). After re-evaluation, resume the loop.
 
-5. **Autoresearch — proactively for measurable tasks, not just when stuck.**
-   Autoresearch is not a last resort. Trigger it whenever:
-   - A measurable improvement is identified but the optimal approach,
-     library, algorithm, or configuration is not already known with
-     confidence.
-   - There is more than one plausible implementation path and the
-     trade-offs are not obvious from existing context.
-   - A past Ralph iteration was rejected and the root cause is unclear.
-   - Any open question could materially affect the outcome of the next
-     iteration.
+5. **Autoresearch — two modes, always proactive.**
 
-   Each autoresearch cycle:
-       a. Pick the highest-value open question for the next planned task.
-       b. Design and run a small experiment via \`subagent\` —
-          \`researcher\` for external evidence (benchmarks, docs, papers),
-          \`scout\` for code recon (what does the existing codebase do?),
-          \`worker\` for a throwaway spike (try it in a temp file, measure).
-       c. Record the learning (regardless of pass/fail) with
-          \`clk_progress({ kind: "autoresearch", message: "..." })\`.
-          The learning is the value, not the outcome of the spike.
-       d. Apply the knowledge immediately to the next Ralph iteration.
+   Autoresearch is not a last resort. Run it before any Ralph iteration
+   whose optimal approach is unclear, before any measurable task, and
+   whenever a rejected iteration's root cause is unknown.
+
+   ### 5A. Qualitative autoresearch (open questions, design trade-offs,
+   unknown library behaviour, ambiguous requirements)
+
+   Use Ralph-style parallel dispatch + stochastic consensus (rule 3):
+       a. State the open question precisely.
+       b. Fan out **3–5 \`subagent\` calls in the same message**, each
+          exploring the question from a different angle — different
+          framing, different role, different prior. Use \`researcher\`
+          for external evidence, \`scout\` for code recon, \`worker\` for
+          a throwaway spike. They run concurrently.
+       c. In the next turn emit ONE \`oracle\` or \`reviewer\` call that
+          synthesizes all results and produces a decision.
+       d. Record with \`clk_progress({ kind: "autoresearch", message:
+          "qualitative: <question> → <answer>" })\`.
+       e. Apply immediately to the next Ralph iteration or architectural
+          decision.
+
+   ### 5B. Quantitative autoresearch (Karpathy autoresearch pattern)
+
+   For any improvement that has a **measurable outcome** — latency,
+   throughput, test pass rate, benchmark score, coverage, error rate,
+   binary size, memory usage — follow the Karpathy autoresearch protocol
+   (https://github.com/karpathy/autoresearch). The core idea: give the
+   agent a fixed experiment budget, one comparable metric, and let the
+   **numbers drive every keep/revert decision**, never intuition alone.
+
+   **One-time scaffold setup** (create these files the first time a
+   quantitative target is identified; do not recreate if they exist):
+
+       autoresearch/program.md   — the human-authored instruction file.
+                                   Write: the metric being optimised,
+                                   its current baseline value, the
+                                   validation command that produces it,
+                                   what categories of change are
+                                   authorised (e.g. "tune batch size",
+                                   "try a different optimiser"),
+                                   and what is off-limits.
+       autoresearch/baseline.md  — the current metric value before any
+                                   iteration; updated after each
+                                   accepted change.
+       autoresearch/log.md       — one line per experiment:
+                                   | iter | branch | metric_before |
+                                   | metric_after | delta | verdict |
+
+   **Per-iteration protocol (integrates with rule 4's Ralph loop)**:
+       a. Read \`autoresearch/program.md\` for the authorised change types
+          and current baseline from \`autoresearch/baseline.md\`.
+       b. Run \`clk_branch({ name: "ralph/iter-N-<change-type>" })\`.
+       c. Dispatch a \`worker\` to implement exactly ONE authorised change
+          from \`program.md\`.
+       d. Run the validation command (fixed, unchanged between iterations
+          so results are directly comparable).
+       e. Record the result in \`autoresearch/log.md\`.
+       f. **If metric improved** (even marginally): \`clk_merge\`, update
+          \`autoresearch/baseline.md\` with the new value. Record with
+          \`clk_progress({ kind: "autoresearch", message: "quantitative
+          win: <change>, metric <before> → <after> (Δ<delta>)" })\`.
+       g. **If metric did not improve**: \`clk_revert\` (rejected work
+          preserved on branch). Baseline stays unchanged. Record with
+          \`clk_progress({ kind: "autoresearch", message: "quantitative
+          reject: <change>, metric <before> → <after>" })\`.
+       h. Loop immediately to the next authorised change from
+          \`program.md\`. Stop only when \`program.md\` has no more
+          authorised change categories to try, or the completion
+          criteria (rule 11) are met.
+
+   **Comparability invariants** (directly from Karpathy's design):
+   - Use **one fixed metric** per autoresearch session. Do not switch
+     metrics mid-session.
+   - Keep the **validation command identical** across all iterations.
+   - If the project has no natural single metric, choose the one most
+     closely aligned with user value and note the choice in
+     \`autoresearch/program.md\`.
 
 6. **Checkpoint and branch discipline.** Always call \`clk_checkpoint\`
    after a meaningful change inside a feature branch. After validation
@@ -200,6 +263,11 @@ ${idea}
   repository when the chief runs. Use \`clk_branch\` at the start of every
   Ralph iteration, \`clk_merge\` on success, \`clk_revert\` on failure.
   Rejected branches are preserved automatically — never delete them.
+- **Autoresearch scaffold.** Create \`autoresearch/program.md\`,
+  \`autoresearch/baseline.md\`, and \`autoresearch/log.md\` the first time
+  you identify a measurable improvement target (rule 5B). Commit the
+  scaffold via \`clk_checkpoint\` before starting quantitative iterations.
+  See https://github.com/karpathy/autoresearch for the pattern origin.
 - **Status visibility.** Call \`clk_progress\` at every meaningful
   transition: cast updated, dispatch started, consensus reached, Ralph
   iteration complete, autoresearch learning captured, validation gate
