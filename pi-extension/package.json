@@ -1,0 +1,15 @@
+{
+  "name": "clk-pi-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cognitive Loop Kernel as a Pi extension: dynamic casting, stochastic consensus, Ralph + autoresearch behind a single /clk command.",
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
