@@ -14,30 +14,6 @@ from pathlib import Path
 
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens, run_streaming
 
-def _is_system_pi(path: str) -> bool:
-    """Return True if path points to the system pi calculator (not pi.dev).
-
-    On Debian/Ubuntu /usr/bin/pi computes digits of π and has nothing to do
-    with the pi.dev terminal harness. Exclude it so we don't falsely report
-    the pi.dev CLI as available.
-    """
-    import subprocess as _sp
-    # Known system calculator paths
-    if path in ("/usr/bin/pi", "/bin/pi"):
-        return True
-    # Heuristic: the system calculator accepts no flags and prints only digits.
-    # The pi.dev CLI should respond to --version or --help without just digits.
-    try:
-        out = _sp.run([path, "--version"], capture_output=True, text=True, timeout=3)
-        combined = (out.stdout + out.stderr).strip()
-        # If the only output is a short all-digit string it's the calculator.
-        if combined and combined.replace(".", "").isdigit() and len(combined) < 20:
-            return True
-    except Exception:
-        pass
-    return False
-
-
 # Explicit overrides for providers whose env var doesn't follow the
 # {NAME.upper()}_API_KEY convention.  Empty today — add entries here
 # only if a future provider breaks the pattern.
@@ -78,8 +54,7 @@ class PiProvider(AgentProvider):
 
     def _resolve_cmd(self, workdir: Path | None) -> str | None:
         configured = self.config.get("command") or "pi"
-        found = shutil.which(configured)
-        if found and not _is_system_pi(found):
+        if shutil.which(configured):
             return configured
         if workdir is not None:
             local = workdir / ".clk" / "tools" / "pi" / "bin" / "pi"
