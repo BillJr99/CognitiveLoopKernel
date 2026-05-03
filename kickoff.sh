@@ -123,9 +123,9 @@ _clk_setup() {
         local open_pi
         open_pi="$(_sv_read "Open pi TUI to configure (login, profiles, etc.) before continuing? (y/N)" "N")"
         if [ "${open_pi,,}" = "y" ]; then
-          printf '[setup] Opening pi — run `pi login` or any config commands, then exit to return.\n' >/dev/tty
-          pi </dev/tty >/dev/tty 2>/dev/tty || true
-          printf '[setup] Returned from pi.\n' >/dev/tty
+          printf '[setup] Dropping into a shell — run pi commands (e.g. `pi login`), then type `exit` to return.\n' >/dev/tty
+          SHELL_PROMPT='[pi-setup]$ ' "${SHELL:-bash}" </dev/tty >/dev/tty 2>/dev/tty || true
+          printf '[setup] Returned from pi setup shell.\n' >/dev/tty
         fi
       fi
       printf '  Key type sets which env var receives your API key:\n' >/dev/tty
@@ -346,9 +346,9 @@ case "$CLK_PROVIDER" in
     if [ -t 0 ] && command -v pi >/dev/null 2>&1; then
       read -r -p "[kickoff] Open pi TUI to configure (login, profiles, etc.) before continuing? (y/N): " open_pi_rt
       if [ "${open_pi_rt,,}" = "y" ]; then
-        echo "[kickoff] Opening pi — run 'pi login' or any config commands, then exit to return."
-        pi || true
-        echo "[kickoff] Returned from pi."
+        echo "[kickoff] Dropping into a shell — run pi commands (e.g. 'pi login'), then type 'exit' to return."
+        SHELL_PROMPT='[pi-setup]$ ' "${SHELL:-bash}" || true
+        echo "[kickoff] Returned from pi setup shell."
       fi
     fi
     prompt_default CLK_PI_KEY_TYPE "Key type — sets which env var receives your API key (openrouter|openai|anthropic|<any provider>)" "openrouter"
