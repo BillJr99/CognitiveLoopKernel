@@ -30,6 +30,7 @@ const MODEL_ERROR_PATTERNS: RegExp[] = [
   /endpoint.*(not found|unavailable)/i,
   /the model.*cannot be used/i,
   /free.*tier.*not.*support/i,
+  /no endpoint/i,
 ];
 
 const REDACTION_PATTERNS: RegExp[] = [
