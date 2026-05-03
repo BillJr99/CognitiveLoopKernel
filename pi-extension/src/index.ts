@@ -1,0 +1,110 @@
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+} from "@mariozechner/pi-coding-agent";
+import {
+  loadFromFiles,
+  reset,
+  getState,
+  setIdea,
+  appendProgress,
+  isDone,
+} from "./state.js";
+import { ensureRepo } from "./git.js";
+import { clkChiefPrimer } from "./prompts.js";
+import { registerClkTools } from "./tools.js";
+import { startRun, endRun, installAbortBridges } from "./abort.js";
+
+export default async function (pi: ExtensionAPI): Promise<void> {
+  // Allow consensus operations to nest one level deeper than pi-subagents'
+  // default (parent → consensus group → judge). Setting it here as a process
+  // env var means pi-subagents' child spawn picks it up automatically.
+  if (!process.env.PI_SUBAGENT_MAX_DEPTH) {
+    process.env.PI_SUBAGENT_MAX_DEPTH = "3";
+  }
+
+  installAbortBridges(pi);
+  registerClkTools(pi);
+
+  pi.on("session_start", async (_event, ctx) => {
+    reset();
+    await loadFromFiles(ctx.cwd);
+    const s = getState();
+    if (s.idea) {
+      ctx.ui.setStatus("clk-idea", `idea: ${s.idea.slice(0, 60)}`);
+    }
+    if (s.roster) {
+      ctx.ui.setStatus(
+        "clk-roster",
+        `roster: ${s.roster.agents.map((a) => a.name).join(", ")}`,
+      );
+    }
+    if (await isDone(ctx.cwd)) {
+      ctx.ui.setStatus("clk-done", `done: ${s.doneReason ?? "marked"}`);
+    }
+  });
+
+  pi.registerCommand("clk", {
+    description:
+      "Cognitive Loop Kernel: cast a team and drive an idea to a working " +
+      "system through dispatch + consensus + Ralph + autoresearch.",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const idea = (args ?? "").trim();
+      if (!idea) {
+        ctx.ui.notify(
+          "Usage: /clk <one-line idea>. Example: /clk a local-first journaling app that summarises my week",
+          "warning",
+        );
+        return;
+      }
+
+      let ctrl: AbortController;
+      try {
+        ctrl = startRun();
+      } catch (err) {
+        ctx.ui.notify(String((err as Error).message), "error");
+        return;
+      }
+
+      try {
+        await ensureRepo(ctx.cwd);
+        await setIdea(ctx.cwd, idea, pi);
+        await appendProgress(
+          ctx.cwd,
+          { kind: "note", message: `idea captured: ${idea}` },
+          pi,
+        );
+        ctx.ui.setStatus("clk-idea", `idea: ${idea.slice(0, 60)}`);
+        ctx.ui.setStatus("clk-run", "active");
+        ctx.ui.notify(
+          "CLK run started. The chief is taking over. Esc cancels the current turn; /clk-abort ends the run.",
+          "info",
+        );
+
+        // Don't stomp on an in-flight chief turn from a previous /clk.
+        await ctx.waitForIdle();
+        if (ctrl.signal.aborted) return;
+
+        // Hand off to the chief LLM. The primer establishes its standing
+        // rules; from here, the chief drives the orchestration through tool
+        // calls (clk_cast, subagent, clk_checkpoint, clk_revert, clk_done).
+        await pi.sendUserMessage(clkChiefPrimer(idea));
+      } catch (err) {
+        endRun(`error: ${(err as Error).message}`);
+        ctx.ui.setStatus("clk-run", "errored");
+        ctx.ui.notify(`/clk failed: ${(err as Error).message}`, "error");
+      }
+    },
+  });
+
+  // Tear down the run lifecycle when the chief signals completion. agent_end
+  // fires once per user prompt, but we only end on the turn that actually
+  // wrote done.md, which is also the turn that called endRun() inside
+  // clk_done — so this is mostly a safety net for the file-side check.
+  pi.on("agent_end", async (_event, ctx) => {
+    if (await isDone(ctx.cwd)) {
+      endRun("done.md observed");
+      ctx.ui.setStatus("clk-run", "done");
+    }
+  });
+}
