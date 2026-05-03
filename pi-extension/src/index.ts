@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type {
@@ -28,17 +28,43 @@ function piSubagentsInstalled(cwd?: string): boolean {
     return true;
   } catch { /* not in npm tree */ }
 
-  // 2. Pi's global extension directory — where `pi install npm:pi-subagents`
-  //    places the package. Pi registers it under the extension name "subagent"
-  //    (~/.pi/agent/extensions/subagent/), not the npm package name.
-  for (const dirName of ["subagent", "pi-subagents"]) {
-    if (existsSync(join(homedir(), ".pi", "agent", "extensions", dirName))) {
-      return true;
-    }
-    // 3. Project-local Pi extension directory.
-    if (cwd && existsSync(join(cwd, ".pi", "extensions", dirName))) {
-      return true;
-    }
+  // 2. Pi's settings.json — lists every extension Pi knows about regardless
+  //    of where it's stored on disk.
+  const settingsPaths = [
+    join(homedir(), ".pi", "agent", "settings.json"),
+    join(homedir(), ".pi", "settings.json"),
+  ];
+  for (const sp of settingsPaths) {
+    try {
+      const settings = JSON.parse(readFileSync(sp, "utf8")) as Record<string, unknown>;
+      const extensions = settings.extensions;
+      if (Array.isArray(extensions) && extensions.some(
+        (e: unknown) => typeof e === "string" && /pi-subagents|subagent/i.test(e),
+      )) return true;
+    } catch { /* file missing or malformed */ }
+  }
+
+  // 3. Scan Pi's extensions directory — any subdirectory whose name or whose
+  //    package.json "name" field matches pi-subagents.
+  const piExtDirs = [
+    join(homedir(), ".pi", "agent", "extensions"),
+    join(homedir(), ".pi", "extensions"),
+    ...(cwd ? [join(cwd, ".pi", "extensions")] : []),
+  ];
+  for (const extDir of piExtDirs) {
+    try {
+      for (const entry of readdirSync(extDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (/pi-subagents|subagent/i.test(entry.name)) return true;
+        // Also check the package.json inside the subdirectory.
+        try {
+          const pkg = JSON.parse(
+            readFileSync(join(extDir, entry.name, "package.json"), "utf8"),
+          ) as Record<string, unknown>;
+          if (typeof pkg.name === "string" && /pi-subagents/i.test(pkg.name)) return true;
+        } catch { /* no package.json */ }
+      }
+    } catch { /* directory missing */ }
   }
 
   return false;
