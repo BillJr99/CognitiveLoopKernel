@@ -1,11 +1,12 @@
 /**
  * Utilities for classifying and recovering from model-provider errors.
  *
- * Three failure categories we care about:
+ * Five failure categories we care about:
  *   rate_limit   — provider is throttling; backoff and retry.
  *   model_error  — endpoint doesn't exist or is unavailable; notify and skip.
  *   redaction    — privacy settings stripped a required value; retry without
  *                  the sensitive content.
+ *   max_turns    — child pi process hit its turn cap; re-dispatch immediately.
  *   network      — transient connectivity; backoff and retry.
  *   other        — anything else; propagate but don't abort the run.
  */
@@ -41,6 +42,15 @@ const REDACTION_PATTERNS: RegExp[] = [
   /privacy.?setting/i,
 ];
 
+const MAX_TURNS_PATTERNS: RegExp[] = [
+  /max(?:imum)?\s*turns?\s*(?:reached|exceeded|exhausted|hit|limit)/i,
+  /turn\s*(?:limit|cap|max)\s*(?:reached|exceeded|hit)/i,
+  /reached\s*(?:the\s*)?max(?:imum)?\s*(?:number\s*of\s*)?turns?/i,
+  /turn\s*(?:count|budget)\s*(?:exceeded|exhausted)/i,
+  /agent.*stopped.*turns?/i,
+  /no\s*more\s*turns?/i,
+];
+
 const NETWORK_PATTERNS: RegExp[] = [
   /ECONNRESET/,
   /ETIMEDOUT/,
@@ -51,7 +61,7 @@ const NETWORK_PATTERNS: RegExp[] = [
   /failed to fetch/i,
 ];
 
-export type ErrorClass = "rate_limit" | "model_error" | "redaction" | "network" | "other";
+export type ErrorClass = "rate_limit" | "model_error" | "redaction" | "max_turns" | "network" | "other";
 
 export function classifyError(err: unknown): ErrorClass {
   const msg =
@@ -62,6 +72,7 @@ export function classifyError(err: unknown): ErrorClass {
   if (RATE_LIMIT_PATTERNS.some((p) => p.test(msg))) return "rate_limit";
   if (MODEL_ERROR_PATTERNS.some((p) => p.test(msg))) return "model_error";
   if (REDACTION_PATTERNS.some((p) => p.test(msg))) return "redaction";
+  if (MAX_TURNS_PATTERNS.some((p) => p.test(msg))) return "max_turns";
   if (NETWORK_PATTERNS.some((p) => p.test(msg))) return "network";
   return "other";
 }
@@ -77,6 +88,14 @@ export function isRetryable(err: unknown): boolean {
  */
 export function looksRedacted(value: string): boolean {
   return REDACTION_PATTERNS.some((p) => p.test(value)) || value.trim() === "";
+}
+
+/**
+ * Returns true if text from a subagent tool result indicates the child pi
+ * process hit its max-turns limit.  Used to decide whether to re-dispatch.
+ */
+export function isMaxTurnsResult(text: string): boolean {
+  return MAX_TURNS_PATTERNS.some((p) => p.test(text));
 }
 
 export interface RetryOptions {
@@ -147,6 +166,14 @@ export function recoveryHint(cls: ErrorClass): string {
         "A privacy filter redacted part of the request. " +
         "Retry without including the sensitive field, or write the sensitive " +
         "data to a file first and reference the file path instead."
+      );
+    case "max_turns":
+      return (
+        "The subagent exhausted its turn budget before finishing. " +
+        "Re-dispatch the same agent with the identical task immediately — " +
+        "do not modify the task or ask for confirmation. " +
+        "If it exhausts turns again, split the task into two smaller subtasks " +
+        "and dispatch them sequentially."
       );
     case "network":
       return "A transient network error occurred. Retry after a short wait.";

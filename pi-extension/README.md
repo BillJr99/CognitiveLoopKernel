@@ -210,13 +210,14 @@ recovery path:
 | **Rate limit** | HTTP 429, "too many requests", "quota exceeded" | Exponential backoff (2 s → 4 s → 8 s → 16 s) and retry, up to 4 attempts. If still failing, the chief tries a smaller / different model. |
 | **Model unavailable** | HTTP 404, "model not found", "not available on free tier" | No retry — the chief falls back to a built-in Pi agent (`worker`, `researcher`, `scout`, `oracle`) or omits `preferredModel` and lets Pi choose. |
 | **Privacy redaction** | `[REDACTED]` values, "privacy filter", "sensitive content blocked" | Tool params are checked for redaction markers before use; the tool returns a recovery hint asking the chief to retry without the sensitive field (or to write it to a file and pass the path). |
+| **Max turns exhausted** | "max turns reached", "turn limit", "turn cap", "no more turns" | The chief re-dispatches the identical `subagent` call immediately without asking for confirmation. If the task exhausts turns twice in a row the chief splits it into two narrower sequential subtasks. |
 | **Network / transient** | ECONNRESET, ETIMEDOUT, "socket hang up" | Same backoff-and-retry as rate limits. |
 
 ### Where this is enforced
 
-- **`src/errors.ts`** — `classifyError`, `isRetryable`, `looksRedacted`,
-  `withRetry` (exponential backoff helper), and `recoveryHint` (human-readable
-  guidance returned to the chief as tool output).
+- **`src/errors.ts`** — `classifyError` (now includes `max_turns`), `isRetryable`,
+  `looksRedacted`, `isMaxTurnsResult`, `withRetry` (exponential backoff helper),
+  and `recoveryHint` (human-readable guidance returned to the chief as tool output).
 - **`src/index.ts`** — `pi.sendUserMessage` (the call that hands off to the
   chief) is wrapped with `withRetry`; abort-caused errors are distinguished
   from real errors so the run lifecycle is handled correctly.
@@ -224,9 +225,10 @@ recovery path:
   parameters for redaction before acting and returns a descriptive error result
   (rather than throwing) when git operations fail, so the chief can decide how
   to proceed.
-- **`src/prompts.ts`** — rule 8 in the chief's operator's manual instructs it
-  how to handle error results from `subagent` calls (which happen inside Pi's
-  runtime and cannot be intercepted in TypeScript).
+- **`src/prompts.ts`** — rule 8 (max-turns: re-dispatch immediately or split
+  the task) and rule 10 (other provider errors) in the chief's operator's manual
+  instruct it how to handle error results from `subagent` calls (which happen
+  inside Pi's runtime and cannot be intercepted in TypeScript).
 
 ### Design principle
 
