@@ -114,60 +114,112 @@ ${idea}
 
    ### 5B. Quantitative autoresearch (Karpathy autoresearch pattern)
 
-   For any improvement that has a **measurable outcome** — latency,
-   throughput, test pass rate, benchmark score, coverage, error rate,
-   binary size, memory usage — follow the Karpathy autoresearch protocol
-   (https://github.com/karpathy/autoresearch). The core idea: give the
-   agent a fixed experiment budget, one comparable metric, and let the
-   **numbers drive every keep/revert decision**, never intuition alone.
+   Reference: https://github.com/karpathy/autoresearch
 
-   **One-time scaffold setup** (create these files the first time a
-   quantitative target is identified; do not recreate if they exist):
+   For any improvement with a **measurable numeric outcome** — latency,
+   throughput, test-pass rate, benchmark score, coverage, error rate,
+   binary size, memory — dispatch a bounded autoresearch subagent session.
+   The core idea (from Karpathy): fixed experiment budget + one metric +
+   numbers drive every keep/discard decision, never intuition alone.
 
-       autoresearch/program.md   — the human-authored instruction file.
-                                   Write: the metric being optimised,
-                                   its current baseline value, the
-                                   validation command that produces it,
-                                   what categories of change are
-                                   authorised (e.g. "tune batch size",
-                                   "try a different optimiser"),
-                                   and what is off-limits.
-       autoresearch/baseline.md  — the current metric value before any
-                                   iteration; updated after each
-                                   accepted change.
-       autoresearch/log.md       — one line per experiment:
-                                   | iter | branch | metric_before |
-                                   | metric_after | delta | verdict |
+   **Step 1 — Scaffold setup** (once per measurable target; skip if files
+   already exist):
 
-   **Per-iteration protocol (integrates with rule 4's Ralph loop)**:
-       a. Read \`autoresearch/program.md\` for the authorised change types
-          and current baseline from \`autoresearch/baseline.md\`.
-       b. Run \`clk_branch({ name: "ralph/iter-N-<change-type>" })\`.
-       c. Dispatch a \`worker\` to implement exactly ONE authorised change
-          from \`program.md\`.
-       d. Run the validation command (fixed, unchanged between iterations
-          so results are directly comparable).
-       e. Record the result in \`autoresearch/log.md\`.
-       f. **If metric improved** (even marginally): \`clk_merge\`, update
-          \`autoresearch/baseline.md\` with the new value. Record with
-          \`clk_progress({ kind: "autoresearch", message: "quantitative
-          win: <change>, metric <before> → <after> (Δ<delta>)" })\`.
-       g. **If metric did not improve**: \`clk_revert\` (rejected work
-          preserved on branch). Baseline stays unchanged. Record with
-          \`clk_progress({ kind: "autoresearch", message: "quantitative
-          reject: <change>, metric <before> → <after>" })\`.
-       h. Loop immediately to the next authorised change from
-          \`program.md\`. Stop only when \`program.md\` has no more
-          authorised change categories to try, or the completion
-          criteria (rule 11) are met.
+       autoresearch/program.md   — YOU write this. Include:
+                                   • the single metric being optimised
+                                     and the direction (lower/higher is
+                                     better)
+                                   • the exact validation command that
+                                     produces it (must never change
+                                     between experiments)
+                                   • what categories of change are
+                                     authorised (e.g. "tune batch size",
+                                     "refactor hot path", "swap sort
+                                     algorithm")
+                                   • what is OFF-LIMITS (e.g. "do not
+                                     change the public API", "do not add
+                                     new dependencies")
+                                   • the simplicity criterion: "all else
+                                     equal, simpler is better — a tiny
+                                     gain that adds hacky complexity is
+                                     not worth keeping; equal or better
+                                     results with less code is always a
+                                     win"
+                                   • timeout: if a run exceeds 2× the
+                                     expected budget, kill it and treat
+                                     as a crash
+       autoresearch/results.tsv  — header row only (tab-separated, NOT
+                                   comma-separated — commas break
+                                   descriptions):
+                                   commit\tmetric\tstatus\tdescription
+                                   Do NOT git-commit this file; leave it
+                                   untracked so experiments accumulate
+                                   without polluting history.
 
-   **Comparability invariants** (directly from Karpathy's design):
-   - Use **one fixed metric** per autoresearch session. Do not switch
-     metrics mid-session.
-   - Keep the **validation command identical** across all iterations.
-   - If the project has no natural single metric, choose the one most
-     closely aligned with user value and note the choice in
-     \`autoresearch/program.md\`.
+   Commit the scaffold (minus results.tsv) via \`clk_checkpoint\` before
+   dispatching.
+
+   **Step 2 — Create the autoresearch branch** (chief only):
+
+       clk_branch({ name: "autoresearch/<tag>" })
+       // tag = short date or topic slug, e.g. "may3-latency"
+
+   **Step 3 — Dispatch the autoresearch subagent** (~20 rounds per call):
+
+   The chief dispatches a \`worker\` subagent whose entire task is to run
+   the Karpathy inner loop. The subagent uses raw git (not clk_* tools —
+   those are chief-only). Template for the task string:
+
+       [Role: autoresearch_worker]
+       Read autoresearch/program.md carefully before starting.
+
+       Run exactly 20 rounds of the following loop, then stop and report:
+
+       LOOP (20 rounds):
+         1. Read the current git state and results.tsv for context.
+         2. Pick ONE authorised change idea from program.md (or invent a
+            new idea in-scope). The first round must establish the
+            baseline by running the validation command with NO changes.
+         3. Edit the target file(s) with the change.
+         4. git commit -m "<short description>"
+         5. Run the validation command; redirect ALL output to run.log
+            (do NOT let it flood context): <cmd> > run.log 2>&1
+         6. Extract the metric: grep the key line from run.log.
+         7. If the run timed out (> 2× budget) or crashed and is not
+            trivially fixable: log status=crash, git reset --hard HEAD~1,
+            continue.
+         8. Apply the simplicity criterion from program.md when deciding.
+         9. If metric improved (or equal with simpler code): KEEP — leave
+            the commit. Append a keep row to results.tsv.
+        10. If metric did not improve: DISCARD — git reset --hard HEAD~1.
+            Append a discard row to results.tsv.
+
+       NEVER pause to ask for confirmation mid-loop.
+       After exactly 20 rounds, print a summary:
+         • best metric achieved vs baseline
+         • list of kept commits with their descriptions
+         • current contents of results.tsv
+
+   **Step 4 — Chief evaluates and decides** (after subagent returns):
+
+       a. Read the summary. If the metric improved overall:
+          \`clk_merge({ message: "autoresearch win: <best metric delta>" })\`
+          Record: \`clk_progress({ kind: "autoresearch", message:
+          "quantitative session done: <before> → <after> in 20 rounds" })\`
+       b. If no improvement:
+          \`clk_revert({ reason: "no metric gain after 20 rounds" })\`
+          (Rejected branch preserved for review.)
+       c. To continue experimenting, dispatch another subagent round
+          (step 3) with the same branch still checked out — or re-cast
+          \`program.md\` with new authorised change categories first.
+       d. Return to the Ralph loop (rule 4) once autoresearch is done.
+
+   **Comparability invariants** (from Karpathy's design):
+   - **One fixed metric** per session. Never switch metrics mid-session.
+   - **Identical validation command** across all rounds.
+   - The subagent never touches files marked read-only in \`program.md\`.
+   - \`results.tsv\` is intentionally NOT committed — it accumulates
+     across subagent dispatches and is human-readable at any time.
 
 6. **Checkpoint and branch discipline.** Always call \`clk_checkpoint\`
    after a meaningful change inside a feature branch. After validation
@@ -263,10 +315,12 @@ ${idea}
   repository when the chief runs. Use \`clk_branch\` at the start of every
   Ralph iteration, \`clk_merge\` on success, \`clk_revert\` on failure.
   Rejected branches are preserved automatically — never delete them.
-- **Autoresearch scaffold.** Create \`autoresearch/program.md\`,
-  \`autoresearch/baseline.md\`, and \`autoresearch/log.md\` the first time
-  you identify a measurable improvement target (rule 5B). Commit the
-  scaffold via \`clk_checkpoint\` before starting quantitative iterations.
+- **Autoresearch scaffold.** Create \`autoresearch/program.md\` and the
+  \`autoresearch/results.tsv\` header (untracked — do NOT commit it) the
+  first time you identify a measurable improvement target (rule 5B).
+  Commit \`program.md\` only via \`clk_checkpoint\`. Dispatch the inner
+  loop as a bounded ~20-round \`worker\` subagent; the chief evaluates the
+  summary and calls \`clk_merge\` or \`clk_revert\` after each dispatch.
   See https://github.com/karpathy/autoresearch for the pattern origin.
 - **Status visibility.** Call \`clk_progress\` at every meaningful
   transition: cast updated, dispatch started, consensus reached, Ralph
