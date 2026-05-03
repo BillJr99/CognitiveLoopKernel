@@ -68,6 +68,7 @@ _clk_setup() {
   local provider max_iter proj_name run_install no_tui auth_mode
   local anthropic_key openai_key gemini_key google_key
   local ollama_ep ollama_model owui_ep owui_key owui_model
+  local pi_model pi_key
   local git_name git_email
 
   provider="$(_sv_read    "Provider (shell|claude|codex|gemini|pi|ollama|openwebui)" "${CLK_PROVIDER:-shell}")"
@@ -101,6 +102,8 @@ _clk_setup() {
   owui_ep="${CLK_OPENWEBUI_ENDPOINT:-http://localhost:8080}"
   owui_key="${CLK_OPENWEBUI_API_KEY:-}"
   owui_model="${CLK_OPENWEBUI_MODEL:-}"
+  pi_model="${CLK_PI_MODEL:-}"
+  pi_key="${CLK_PI_API_KEY:-}"
 
   case "$provider" in
     ollama)
@@ -111,6 +114,12 @@ _clk_setup() {
       owui_ep="$(_sv_read    "OpenWebUI endpoint" "$owui_ep")"
       new="$(_sv_secret      "OpenWebUI API key")"; [ -n "$new" ] && owui_key="$new"
       owui_model="$(_sv_read "OpenWebUI model"    "$owui_model")"
+      ;;
+    pi)
+      printf '\n  Examples: openrouter/free  openrouter/auto  anthropic/claude-3-5-sonnet\n' >/dev/tty
+      pi_model="$(_sv_read "pi model (leave blank for pi default)" "$pi_model")"
+      printf '  Tip: get a free key at openrouter.ai; leave blank if you already ran `pi login`\n' >/dev/tty
+      new="$(_sv_secret "pi / OpenRouter API key (leave blank to keep / skip)")"; [ -n "$new" ] && pi_key="$new"
       ;;
   esac
 
@@ -149,6 +158,10 @@ CLK_OLLAMA_MODEL=$ollama_model
 CLK_OPENWEBUI_ENDPOINT=$owui_ep
 CLK_OPENWEBUI_API_KEY=$owui_key
 CLK_OPENWEBUI_MODEL=$owui_model
+
+# Pi provider
+CLK_PI_MODEL=$pi_model
+CLK_PI_API_KEY=$pi_key
 
 # Git identity for kickoff commits (overrides global git config inside the container)
 CLK_GIT_NAME=$git_name
@@ -203,6 +216,8 @@ Optional environment overrides (also accepted via .env in the script directory):
   CLK_OPENWEBUI_ENDPOINT  used if CLK_PROVIDER=openwebui        (no default; required)
   CLK_OPENWEBUI_API_KEY   used if CLK_PROVIDER=openwebui        (bearer token)
   CLK_OPENWEBUI_MODEL     used if CLK_PROVIDER=openwebui        (prompted if unset)
+  CLK_PI_MODEL            used if CLK_PROVIDER=pi               (e.g. openrouter/free)
+  CLK_PI_API_KEY          used if CLK_PROVIDER=pi               (OpenRouter / pi API key)
   CLK_GIT_NAME          git user.name  for kickoff commits
   CLK_GIT_EMAIL         git user.email for kickoff commits
 USAGE
@@ -308,7 +323,15 @@ case "$CLK_PROVIDER" in
       echo "[kickoff] gemini: using CLI auth (run 'gemini auth' or equivalent if needed)"
     fi
     ;;
-  pi)      ;;
+  pi)
+    prompt_default CLK_PI_MODEL "pi model (e.g. openrouter/free, openrouter/auto, leave blank for pi default)" ""
+    if [ -z "${CLK_PI_API_KEY:-}" ] && [ -t 0 ]; then
+      echo "  Tip: get a free key at openrouter.ai; leave blank if you already ran 'pi login'"
+      read -r -s -p "pi / OpenRouter API key (leave blank to skip): " CLK_PI_API_KEY
+      echo
+      export CLK_PI_API_KEY
+    fi
+    ;;
   ollama)
     prompt_default CLK_OLLAMA_ENDPOINT "Ollama endpoint" "http://localhost:11434"
     prompt_default CLK_OLLAMA_MODEL    "Ollama model"    "llama3.1"
@@ -485,6 +508,8 @@ CLK_OLLAMA_MODEL="${CLK_OLLAMA_MODEL:-llama3.1}" \
 CLK_OPENWEBUI_ENDPOINT="${CLK_OPENWEBUI_ENDPOINT:-http://localhost:8080}" \
 CLK_OPENWEBUI_API_KEY="${CLK_OPENWEBUI_API_KEY:-}" \
 CLK_OPENWEBUI_MODEL="${CLK_OPENWEBUI_MODEL:-}" \
+CLK_PI_MODEL="${CLK_PI_MODEL:-}" \
+CLK_PI_API_KEY="${CLK_PI_API_KEY:-}" \
 CLK_AUTH_MODE="${CLK_AUTH_MODE:-cli}" \
 python3 - <<'PY'
 import json, os
@@ -521,6 +546,14 @@ elif provider == "openwebui":
     provs["openwebui"]["endpoint"] = os.environ["CLK_OPENWEBUI_ENDPOINT"]
     provs["openwebui"]["api_key"]  = os.environ["CLK_OPENWEBUI_API_KEY"]
     provs["openwebui"]["model"]    = os.environ["CLK_OPENWEBUI_MODEL"]
+elif provider == "pi":
+    provs.setdefault("pi", {"type": "pi", "command": "pi", "args": []})
+    pi_model = os.environ.get("CLK_PI_MODEL", "").strip()
+    pi_key   = os.environ.get("CLK_PI_API_KEY", "").strip()
+    if pi_model:
+        provs["pi"]["model"] = pi_model
+    if pi_key:
+        provs["pi"]["api_key"] = pi_key
 p.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 "$CLK" configure --set "default_provider=$CLK_PROVIDER" >/dev/null

@@ -202,6 +202,8 @@ DEFAULT_PROVIDERS: Dict[str, Any] = {
             "description": "Pi terminal harness. Cloned to .clk/tools/pi if needed.",
             "command": "pi",
             "args": [],
+            "model": "",
+            "api_key": "",
         },
         "ollama": {
             "type": "ollama",

@@ -66,8 +66,18 @@ class PiProvider(AgentProvider):
         if not cmd_path:
             return AgentResponse(ok=False, error="pi CLI not found locally or on PATH")
         args = list(self.config.get("args") or ["--print"])
+        model = (self.config.get("model") or "").strip()
+        if model:
+            args = ["--model", model] + args
         cap_args = self.capabilities_to_args(req.capabilities or [])
         cmd = [cmd_path, *args, *cap_args]
+
+        extra_env: dict = {}
+        api_key = (self.config.get("api_key") or "").strip()
+        if api_key:
+            extra_env["PI_API_KEY"] = api_key
+            extra_env["OPENROUTER_API_KEY"] = api_key
+
         try:
             rc, stdout, stderr = run_streaming(
                 cmd,
@@ -76,6 +86,7 @@ class PiProvider(AgentProvider):
                 no_output_timeout_s=req.no_output_timeout_s,
                 cwd=req.workdir,
                 on_progress=req.on_progress,
+                extra_env=extra_env,
             )
         except Exception as exc:
             print(f"[providers.pi.invoke] failed: {exc}", file=sys.stderr)

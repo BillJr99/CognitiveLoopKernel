@@ -102,6 +102,7 @@ def run_streaming(
     no_output_timeout_s: int = 0,
     cwd: Optional[Path] = None,
     on_progress: Optional[ProgressFn] = None,
+    extra_env: Optional[Dict[str, str]] = None,
 ) -> Tuple[int, str, str]:
     """Run a subprocess and stream its stdout / stderr line-by-line via
     ``on_progress`` so callers (and the TUI) can see real-time activity.
@@ -155,6 +156,10 @@ def run_streaming(
         "command",
         json.dumps(command_meta, sort_keys=True),
     )
+    proc_env: Optional[Dict[str, str]] = None
+    if extra_env:
+        proc_env = {**os.environ, **extra_env}
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -163,6 +168,7 @@ def run_streaming(
             stderr=subprocess.PIPE,
             text=True,
             cwd=str(cwd) if cwd else None,
+            env=proc_env,
             bufsize=1,  # line-buffered
         )
     except FileNotFoundError as exc:
