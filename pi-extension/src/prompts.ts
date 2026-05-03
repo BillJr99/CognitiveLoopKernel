@@ -57,9 +57,14 @@ ${idea}
    iterations — immediately pick the next improvement and start the next
    cycle. Each iteration follows this exact branch-based protocol:
 
-       a. Pick ONE measurable improvement (lowest-risk, highest-value).
-          Before implementing, ask: "Is the best approach for this
-          improvement clear?" If not, run autoresearch first (rule 5).
+       a. Pick ONE improvement (lowest-risk, highest-value). Classify it:
+          - **Measurable** (has a numeric outcome): run rule 5B
+            (Karpathy quantitative autoresearch) — it integrates the
+            branch loop, so return here only when 5B exhausts its
+            authorised changes or the completion criteria are met.
+          - **Qualitative** (design, architecture, unknown approach):
+            run rule 5A first to resolve the open question, then
+            proceed with steps (b)–(h) below.
        b. Create a feature branch: \`clk_branch({ name:
           "ralph/iter-N-short-description" })\`. All work for this
           iteration happens on that branch.
@@ -84,27 +89,137 @@ ${idea}
    Cap soft at ~10 consecutive iterations before pausing to re-evaluate
    with consensus (rule 3). After re-evaluation, resume the loop.
 
-5. **Autoresearch — proactively for measurable tasks, not just when stuck.**
-   Autoresearch is not a last resort. Trigger it whenever:
-   - A measurable improvement is identified but the optimal approach,
-     library, algorithm, or configuration is not already known with
-     confidence.
-   - There is more than one plausible implementation path and the
-     trade-offs are not obvious from existing context.
-   - A past Ralph iteration was rejected and the root cause is unclear.
-   - Any open question could materially affect the outcome of the next
-     iteration.
+5. **Autoresearch — two modes, always proactive.**
 
-   Each autoresearch cycle:
-       a. Pick the highest-value open question for the next planned task.
-       b. Design and run a small experiment via \`subagent\` —
-          \`researcher\` for external evidence (benchmarks, docs, papers),
-          \`scout\` for code recon (what does the existing codebase do?),
-          \`worker\` for a throwaway spike (try it in a temp file, measure).
-       c. Record the learning (regardless of pass/fail) with
-          \`clk_progress({ kind: "autoresearch", message: "..." })\`.
-          The learning is the value, not the outcome of the spike.
-       d. Apply the knowledge immediately to the next Ralph iteration.
+   Autoresearch is not a last resort. Run it before any Ralph iteration
+   whose optimal approach is unclear, before any measurable task, and
+   whenever a rejected iteration's root cause is unknown.
+
+   ### 5A. Qualitative autoresearch (open questions, design trade-offs,
+   unknown library behaviour, ambiguous requirements)
+
+   Use Ralph-style parallel dispatch + stochastic consensus (rule 3):
+       a. State the open question precisely.
+       b. Fan out **3–5 \`subagent\` calls in the same message**, each
+          exploring the question from a different angle — different
+          framing, different role, different prior. Use \`researcher\`
+          for external evidence, \`scout\` for code recon, \`worker\` for
+          a throwaway spike. They run concurrently.
+       c. In the next turn emit ONE \`oracle\` or \`reviewer\` call that
+          synthesizes all results and produces a decision.
+       d. Record with \`clk_progress({ kind: "autoresearch", message:
+          "qualitative: <question> → <answer>" })\`.
+       e. Apply immediately to the next Ralph iteration or architectural
+          decision.
+
+   ### 5B. Quantitative autoresearch (Karpathy autoresearch pattern)
+
+   Reference: https://github.com/karpathy/autoresearch
+
+   For any improvement with a **measurable numeric outcome** — latency,
+   throughput, test-pass rate, benchmark score, coverage, error rate,
+   binary size, memory — dispatch a bounded autoresearch subagent session.
+   The core idea (from Karpathy): fixed experiment budget + one metric +
+   numbers drive every keep/discard decision, never intuition alone.
+
+   **Step 1 — Scaffold setup** (once per measurable target; skip if files
+   already exist):
+
+       autoresearch/program.md   — YOU write this. Include:
+                                   • the single metric being optimised
+                                     and the direction (lower/higher is
+                                     better)
+                                   • the exact validation command that
+                                     produces it (must never change
+                                     between experiments)
+                                   • what categories of change are
+                                     authorised (e.g. "tune batch size",
+                                     "refactor hot path", "swap sort
+                                     algorithm")
+                                   • what is OFF-LIMITS (e.g. "do not
+                                     change the public API", "do not add
+                                     new dependencies")
+                                   • the simplicity criterion: "all else
+                                     equal, simpler is better — a tiny
+                                     gain that adds hacky complexity is
+                                     not worth keeping; equal or better
+                                     results with less code is always a
+                                     win"
+                                   • timeout: if a run exceeds 2× the
+                                     expected budget, kill it and treat
+                                     as a crash
+       autoresearch/results.tsv  — header row only (tab-separated, NOT
+                                   comma-separated — commas break
+                                   descriptions):
+                                   commit\tmetric\tstatus\tdescription
+                                   Do NOT git-commit this file; leave it
+                                   untracked so experiments accumulate
+                                   without polluting history.
+
+   Commit the scaffold (minus results.tsv) via \`clk_checkpoint\` before
+   dispatching.
+
+   **Step 2 — Create the autoresearch branch** (chief only):
+
+       clk_branch({ name: "autoresearch/<tag>" })
+       // tag = short date or topic slug, e.g. "may3-latency"
+
+   **Step 3 — Dispatch the autoresearch subagent** (~20 rounds per call):
+
+   The chief dispatches a \`worker\` subagent whose entire task is to run
+   the Karpathy inner loop. The subagent uses raw git (not clk_* tools —
+   those are chief-only). Template for the task string:
+
+       [Role: autoresearch_worker]
+       Read autoresearch/program.md carefully before starting.
+
+       Run exactly 20 rounds of the following loop, then stop and report:
+
+       LOOP (20 rounds):
+         1. Read the current git state and results.tsv for context.
+         2. Pick ONE authorised change idea from program.md (or invent a
+            new idea in-scope). The first round must establish the
+            baseline by running the validation command with NO changes.
+         3. Edit the target file(s) with the change.
+         4. git commit -m "<short description>"
+         5. Run the validation command; redirect ALL output to run.log
+            (do NOT let it flood context): <cmd> > run.log 2>&1
+         6. Extract the metric: grep the key line from run.log.
+         7. If the run timed out (> 2× budget) or crashed and is not
+            trivially fixable: log status=crash, git reset --hard HEAD~1,
+            continue.
+         8. Apply the simplicity criterion from program.md when deciding.
+         9. If metric improved (or equal with simpler code): KEEP — leave
+            the commit. Append a keep row to results.tsv.
+        10. If metric did not improve: DISCARD — git reset --hard HEAD~1.
+            Append a discard row to results.tsv.
+
+       NEVER pause to ask for confirmation mid-loop.
+       After exactly 20 rounds, print a summary:
+         • best metric achieved vs baseline
+         • list of kept commits with their descriptions
+         • current contents of results.tsv
+
+   **Step 4 — Chief evaluates and decides** (after subagent returns):
+
+       a. Read the summary. If the metric improved overall:
+          \`clk_merge({ message: "autoresearch win: <best metric delta>" })\`
+          Record: \`clk_progress({ kind: "autoresearch", message:
+          "quantitative session done: <before> → <after> in 20 rounds" })\`
+       b. If no improvement:
+          \`clk_revert({ reason: "no metric gain after 20 rounds" })\`
+          (Rejected branch preserved for review.)
+       c. To continue experimenting, dispatch another subagent round
+          (step 3) with the same branch still checked out — or re-cast
+          \`program.md\` with new authorised change categories first.
+       d. Return to the Ralph loop (rule 4) once autoresearch is done.
+
+   **Comparability invariants** (from Karpathy's design):
+   - **One fixed metric** per session. Never switch metrics mid-session.
+   - **Identical validation command** across all rounds.
+   - The subagent never touches files marked read-only in \`program.md\`.
+   - \`results.tsv\` is intentionally NOT committed — it accumulates
+     across subagent dispatches and is human-readable at any time.
 
 6. **Checkpoint and branch discipline.** Always call \`clk_checkpoint\`
    after a meaningful change inside a feature branch. After validation
@@ -200,6 +315,13 @@ ${idea}
   repository when the chief runs. Use \`clk_branch\` at the start of every
   Ralph iteration, \`clk_merge\` on success, \`clk_revert\` on failure.
   Rejected branches are preserved automatically — never delete them.
+- **Autoresearch scaffold.** Create \`autoresearch/program.md\` and the
+  \`autoresearch/results.tsv\` header (untracked — do NOT commit it) the
+  first time you identify a measurable improvement target (rule 5B).
+  Commit \`program.md\` only via \`clk_checkpoint\`. Dispatch the inner
+  loop as a bounded ~20-round \`worker\` subagent; the chief evaluates the
+  summary and calls \`clk_merge\` or \`clk_revert\` after each dispatch.
+  See https://github.com/karpathy/autoresearch for the pattern origin.
 - **Status visibility.** Call \`clk_progress\` at every meaningful
   transition: cast updated, dispatch started, consensus reached, Ralph
   iteration complete, autoresearch learning captured, validation gate
