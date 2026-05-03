@@ -25,23 +25,41 @@ Filesystem
 - Your filesystem root is $project_root. Every PATH in an ACTION block
   is resolved relative to that root. Project source, docs, tests,
   configs — everything you build sits in this tree.
-- The ``.clk/`` subdirectory is HARNESS state (config, prompts, runs,
-  logs, harness sources). Do NOT write there with ACTION:write — the
-  harness rejects any PATH that resolves into ``.clk/``, EXCEPT for
-  ``.clk/blackboard/``. To share findings with other agents, use a
-  POST block (preferred) or write directly to ``blackboard/<id>.json``
-  (the harness routes it to ``.clk/blackboard/``).
+
+- SANDBOX RULE — never access .clk/ directly:
+  Do NOT read, list, stat, cat, open, or inspect any file or directory
+  under ``.clk/`` for any reason. This includes (but is not limited to):
+    .clk/config/      harness configuration and provider settings
+    .clk/harness/     harness source code
+    .clk/tools/       locally-installed CLI tools
+    .clk/venv/        Python virtual environment
+    .clk/logs/        session and run logs
+    .clk/runs/        per-dispatch prompt/response captures
+    .clk/state/       harness state files
+    .clk/backups/     pre-write safety copies
+  Everything you need from harness state is already injected into your
+  prompt context via $state_summary, $blackboard_digest, $current_roster,
+  $idea_title, $idea_statement, etc. You do not need to go looking.
+
+- Writing to .clk/ is also forbidden, EXCEPT via the POST protocol which
+  routes to ``.clk/blackboard/``. The harness rejects any ACTION PATH that
+  resolves into ``.clk/``.
+
+- To share findings with other agents: emit a POST block. The harness
+  writes it to ``.clk/blackboard/`` and delivers it to peers as
+  $blackboard_digest. Do not write to ``blackboard/`` via ACTION:write.
+
   Examples: PATH: src/foo.py          GOOD
             PATH: README.md           GOOD
-            PATH: blackboard/my.json  GOOD (shared scratchpad)
-            PATH: .clk/config/x.json WRONG (rejected; harness state)
-            PATH: ../escape           WRONG (rejected; outside root)
+            PATH: .clk/anything      WRONG — rejected and never needed
+            PATH: ../escape           WRONG — rejected; outside root
+
 - ``workspace/`` no longer exists as a special directory. Older prompts
   may mention it; if you emit ``PATH: workspace/foo``, the harness
   strips the prefix and writes to ``$project_root/foo``.
 
-Constraints: no sudo; prefer edits over overwrites; log decisions to
-.clk/state/decisions.md (the harness handles that path via POST).
+Constraints: no sudo; prefer edits over overwrites; record decisions
+in a DECISIONS.md file at the project root (ACTION:append or ACTION:edit).
 Emit ACTION blocks to actually change files / run commands - descriptions
 alone do nothing. Use PROPOSE_ROLE to mint specialists when needed.
 
@@ -282,9 +300,8 @@ A. Casting (own the team)
   agent. If the nearest existing agent can do the job cleanly, select that
   agent instead.
 - Each PROPOSE_ROLE block you emit takes effect immediately. The harness
-  logs every role you create to .clk/state/casting.log so we can analyze
-  what specializations the project needed - your job is to invent freely
-  and let the analysis sort it out.
+  records every role decision internally — your job is to invent freely
+  and let the analysis sort it out. Do not attempt to read the casting log.
 - Suggested dynamic roles to mint when they fit: researcher, analyst,
   product_manager, architect, operator, critic. They are not required.
 - Drop or merge dynamic roles that haven't earned their keep.
@@ -396,12 +413,13 @@ $blackboard_digest
 Your job
 - Synthesize current research into structured insight. Pull from the
   POST: finding entries above rather than starting from scratch.
-- Update or create `.clk/state/decisions.md` with any new decisions taken.
+- Record new decisions in ``DECISIONS.md`` at the project root
+  (ACTION:append or ACTION:edit). Do NOT write to .clk/.
 - Produce a one-page brief that answers: who is this for, what is the job-to-be-done, what does success look like?
 
 Output
 - Markdown brief.
-- A `Decisions` section listing only NEW decisions.
+- A `Decisions` section listing only NEW decisions (recorded in DECISIONS.md).
 - A POST: synthesis block summarising the brief headlines.
 - A `Validation` section: a shell command that proves the brief was updated.
 """ + _BLACKBOARD_PROTOCOL_BLOCK + _BASE_FOOTER,
@@ -415,14 +433,15 @@ State summary:
 $state_summary
 
 Your job
-- Maintain the PRD at `.clk/state/prd.json`.
+- Maintain the PRD at ``PRD.json`` in the project root.
 - Keep it valid JSON with keys: `vision`, `personas`, `jobs_to_be_done`, `mvp_features`, `out_of_scope`, `success_metrics`.
 - Prioritize the MVP feature list - smallest first.
+- Do NOT write to .clk/ — use the project root for all deliverables.
 
 Output
-- The full updated PRD JSON.
+- The full updated PRD JSON (ACTION:write PATH: PRD.json).
 - A short rationale for any changes made.
-- A `Validation` section: e.g. `python -m json.tool .clk/state/prd.json > /dev/null`.
+- A `Validation` section: e.g. `python -m json.tool PRD.json > /dev/null`.
 """ + _BASE_FOOTER,
 
     "architect.md": """You are the **Architect** agent.
@@ -557,9 +576,9 @@ Refinement mode (when a runnable candidate already exists):
 Research mode (Karpathy autoresearch — when the state has open questions):
 
 1. Survey before questioning
-   - List relevant files in $project_root and scan .clk/state/progress.md
-     for the last 3–5 completed experiments so you know what has already
-     been tried. Output this as a `Survey:` section.
+   - List relevant files in $project_root and scan ``PROGRESS.md`` at the
+     project root for the last 3–5 completed experiments so you know what
+     has already been tried. Output this as a `Survey:` section.
 
 2. One question per iteration
    - From the open questions, pick the single highest-value one not yet
@@ -578,9 +597,9 @@ Research mode (Karpathy autoresearch — when the state has open questions):
      ACTION:write / ACTION:edit for file changes).
 
 5. Record unconditionally
-   - Append the finding to .clk/state/progress.md regardless of outcome.
-     Negative results are valid science — they narrow the search space.
-     Use ACTION:append with this format:
+   - Append the finding to ``PROGRESS.md`` at the project root regardless
+     of outcome. Negative results are valid science — they narrow the
+     search space. Use ACTION:append PATH: PROGRESS.md with this format:
        ## Q: <question>
        Hypothesis: <hypothesis>
        Result: PASS | FAIL

@@ -14,6 +14,21 @@ from pathlib import Path
 
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens, run_streaming
 
+# Explicit overrides for providers whose env var doesn't follow the
+# {NAME.upper()}_API_KEY convention.  Empty today — add entries here
+# only if a future provider breaks the pattern.
+_KEY_TYPE_ENV_OVERRIDES: dict = {}
+
+
+def _env_var_for_key_type(key_type: str) -> str:
+    """Return the env var name for a given key_type.
+
+    Follows the convention ``{KEY_TYPE.upper()}_API_KEY`` unless an
+    explicit override is registered in ``_KEY_TYPE_ENV_OVERRIDES``.
+    Examples: openrouter -> OPENROUTER_API_KEY, mistral -> MISTRAL_API_KEY.
+    """
+    return _KEY_TYPE_ENV_OVERRIDES.get(key_type) or f"{key_type.upper()}_API_KEY"
+
 # Maps abstract capability names to pi CLI flags.
 _CAP_MAP: dict = {
     "no-tools":          ["--no-tools"],
@@ -66,8 +81,18 @@ class PiProvider(AgentProvider):
         if not cmd_path:
             return AgentResponse(ok=False, error="pi CLI not found locally or on PATH")
         args = list(self.config.get("args") or ["--print"])
+        model = (self.config.get("model") or "").strip()
+        if model:
+            args = ["--model", model] + args
         cap_args = self.capabilities_to_args(req.capabilities or [])
         cmd = [cmd_path, *args, *cap_args]
+
+        extra_env: dict = {}
+        api_key = (self.config.get("api_key") or "").strip()
+        if api_key:
+            key_type = (self.config.get("key_type") or "openrouter").strip().lower()
+            extra_env[_env_var_for_key_type(key_type)] = api_key
+
         try:
             rc, stdout, stderr = run_streaming(
                 cmd,
@@ -76,6 +101,7 @@ class PiProvider(AgentProvider):
                 no_output_timeout_s=req.no_output_timeout_s,
                 cwd=req.workdir,
                 on_progress=req.on_progress,
+                extra_env=extra_env,
             )
         except Exception as exc:
             print(f"[providers.pi.invoke] failed: {exc}", file=sys.stderr)
