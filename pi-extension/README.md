@@ -40,11 +40,20 @@ chief's prompt, not in TypeScript. To change CLK's behavior, edit
 
 - Pi installed and on `PATH` (`pi --version` works).
 - The [`pi-subagents`](https://github.com/nicobailon/pi-subagents) extension,
-  which provides the `subagent` tool the chief dispatches through:
+  which provides the `subagent` tool the chief dispatches through. It's
+  declared as an npm `dependency` of this extension and a `postinstall`
+  hook runs `pi install npm:pi-subagents` on your behalf, so installing
+  this extension via `pi install` registers it automatically. If you load
+  the extension via symlink or `pi -e` (Options A/B/C below) — neither of
+  which runs `npm install` — install it yourself:
 
   ```bash
   pi install npm:pi-subagents
   ```
+
+  On `session_start` the extension checks whether `pi-subagents` is
+  resolvable and, if not, emits a one-time warning notification with the
+  install command above.
 
 - Git on `PATH` (the extension auto-runs `git init` in the project root if
   there's no repo yet).
