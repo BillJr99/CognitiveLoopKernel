@@ -59,3 +59,54 @@ export async function checkpoint(
 export async function revertTo(cwd: string, sha: string, signal?: AbortSignal): Promise<void> {
   await git(cwd, ["reset", "--hard", sha], signal);
 }
+
+export async function currentBranch(cwd: string, signal?: AbortSignal): Promise<string> {
+  return await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"], signal);
+}
+
+export async function createAndCheckoutBranch(
+  cwd: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await git(cwd, ["checkout", "-b", name], signal);
+}
+
+export async function checkoutBranch(
+  cwd: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await git(cwd, ["checkout", name], signal);
+}
+
+export async function mergeBranch(
+  cwd: string,
+  branchName: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await git(cwd, ["merge", "--no-ff", branchName, "-m", `[clk] merge ${branchName}`], signal);
+}
+
+/**
+ * Commit any pending changes on the current branch (to preserve rejected work),
+ * then switch to the target branch without merging.
+ */
+export async function saveAndSwitch(
+  cwd: string,
+  commitMessage: string,
+  targetBranch: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await git(cwd, ["add", "-A"], signal);
+  let dirty = false;
+  try {
+    await git(cwd, ["diff", "--cached", "--quiet"], signal);
+  } catch {
+    dirty = true;
+  }
+  if (dirty) {
+    await git(cwd, ["commit", "-m", commitMessage], signal);
+  }
+  await git(cwd, ["checkout", targetBranch], signal);
+}

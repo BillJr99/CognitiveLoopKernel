@@ -77,6 +77,15 @@ export async function appendProgress(
   await writeFile(join(cwd, ROOT, "state", "progress.md"), line, { flag: "a", encoding: "utf8" });
 }
 
+export async function setHomeBranch(cwd: string, branch: string, pi: ExtensionAPI): Promise<void> {
+  memory.homeBranch = branch;
+  await persist(cwd, pi);
+}
+
+export function getHomeBranch(): string | undefined {
+  return memory.homeBranch;
+}
+
 export async function markDone(cwd: string, reason: string, pi: ExtensionAPI): Promise<void> {
   memory.doneReason = reason;
   await persist(cwd, pi);
