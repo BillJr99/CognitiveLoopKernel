@@ -14,7 +14,8 @@ import {
 import { ensureRepo } from "./git.js";
 import { clkChiefPrimer } from "./prompts.js";
 import { registerClkTools } from "./tools.js";
-import { startRun, endRun, installAbortBridges } from "./abort.js";
+import { startRun, endRun, installAbortBridges, activeSignal } from "./abort.js";
+import { classifyError, recoveryHint, withRetry } from "./errors.js";
 
 function piSubagentsInstalled(): boolean {
   try {
@@ -101,14 +102,34 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         await ctx.waitForIdle();
         if (ctrl.signal.aborted) return;
 
-        // Hand off to the chief LLM. The primer establishes its standing
-        // rules; from here, the chief drives the orchestration through tool
-        // calls (clk_cast, subagent, clk_checkpoint, clk_revert, clk_done).
-        await pi.sendUserMessage(clkChiefPrimer(idea));
+        // Hand off to the chief LLM. Wrap with retry so transient provider
+        // errors (rate limits, network blips) don't abort the run.
+        const sig = activeSignal();
+        await withRetry(
+          () => pi.sendUserMessage(clkChiefPrimer(idea)),
+          {
+            signal: sig,
+            maxAttempts: 4,
+            baseDelayMs: 2000,
+            onRetry: (err, attempt, delayMs) => {
+              const cls = classifyError(err);
+              ctx.ui.notify(
+                `CLK: provider error (${cls}) on attempt ${attempt} — retrying in ${delayMs / 1000}s. ${recoveryHint(cls)}`,
+                "warning",
+              );
+            },
+          },
+        );
       } catch (err) {
+        if ((err as Error)?.message === "Aborted" || (err as Error)?.message?.includes("Aborted")) {
+          // User cancelled — don't mark as errored, state is preserved for resume.
+          return;
+        }
+        const cls = classifyError(err);
+        const hint = recoveryHint(cls);
         endRun(`error: ${(err as Error).message}`);
         ctx.ui.setStatus("clk-run", "errored");
-        ctx.ui.notify(`/clk failed: ${(err as Error).message}`, "error");
+        ctx.ui.notify(`/clk failed (${cls}): ${(err as Error).message}. ${hint}`, "error");
       }
     },
   });

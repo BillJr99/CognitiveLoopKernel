@@ -89,7 +89,44 @@ ${idea}
    \`clk_cast\` to add a specialist who can address the upstream issue,
    and try again. Cap recovery at 3 attempts per stage.
 
-8. **Mark done.** Call \`clk_done\` with a one-line reason ONLY when ALL of
+8. **Recover from model and provider errors — never abort.** When a
+   \`subagent\` call or tool call returns an error (rather than a clean
+   result), classify it and react accordingly instead of stopping:
+
+   - **Rate limit / too many requests (HTTP 429, "rate limit", "quota
+     exceeded", "try again").** Wait 30–60 seconds (use the \`bash\` tool
+     to \`sleep 30\`) and retry the exact same \`subagent\` call. If it
+     fails a second time, wait 60 seconds. After three consecutive rate-
+     limit failures, record the situation with \`clk_progress\` and try a
+     smaller or different model by omitting or changing \`preferredModel\`.
+
+   - **Model not found / unavailable ("model does not exist", "endpoint
+     not found", "not available on free tier", HTTP 404).** Do NOT retry
+     the same model. Instead fall back to a built-in Pi agent
+     (\`worker\`, \`researcher\`, \`scout\`, or \`oracle\`) or retry without
+     the \`preferredModel\` field so Pi picks the default. Record the
+     fallback with \`clk_progress({ kind: "note", message: "..." })\`.
+
+   - **Privacy / redaction errors ("REDACTED", "privacy filter",
+     "sensitive content blocked").** A privacy setting stripped a value
+     before the model saw it. Retry the call without the field that was
+     redacted. If the information is genuinely required, write it to a
+     file first and pass the file path in the task string instead of
+     embedding the raw value.
+
+   - **Transient network errors (connection reset, timeout).** Retry
+     after a short \`sleep 5\`. If it fails twice, treat it like a rate
+     limit and back off further.
+
+   - **Any other error.** Log it with \`clk_progress({ kind: "note",
+     message: "error: <summary>" })\`, then decide: if the step is
+     optional, skip it and move on; if it is required, invoke consensus
+     on the best recovery path before retrying.
+
+   The key invariant: **a single failed subagent call must never end the
+   run.** Always attempt at least one recovery before escalating.
+
+9. **Mark done.** Call \`clk_done\` with a one-line reason ONLY when ALL of
    the following hold:
        - the MVP runs locally,
        - the test suite passes,
