@@ -1,8 +1,16 @@
 import { Type } from "typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { setRoster, appendProgress, markDone } from "./state.js";
-import { checkpoint, revertTo } from "./git.js";
+import { setRoster, appendProgress, markDone, setHomeBranch, getHomeBranch } from "./state.js";
+import {
+  checkpoint,
+  revertTo,
+  currentBranch,
+  createAndCheckoutBranch,
+  checkoutBranch,
+  mergeBranch,
+  saveAndSwitch,
+} from "./git.js";
 import { activeSignal, mergeSignals, endRun } from "./abort.js";
 import { classifyError, looksRedacted, recoveryHint, withRetry } from "./errors.js";
 
@@ -98,6 +106,8 @@ export function registerClkTools(pi: ExtensionAPI): void {
         "consensus",
         "ralph",
         "autoresearch",
+        "branch",
+        "merge",
         "note",
       ] as const),
       message: Type.String(),
@@ -167,23 +177,35 @@ export function registerClkTools(pi: ExtensionAPI): void {
     name: "clk_revert",
     label: "CLK Revert",
     description:
-      "Hard-reset the working tree to a previous SHA. Use this when validation regresses " +
-      "after a dispatch — the harness never silently keeps broken work.",
-    promptSnippet: "Hard-revert to a SHA returned by an earlier clk_checkpoint.",
+      "Abandon the current feature branch after a failed Ralph iteration. Commits any " +
+      "uncommitted work to the current branch (preserving it for review), then switches back " +
+      "to the home branch without merging. The rejected branch is kept intact — never deleted.",
+    promptSnippet: "Abandon current feature branch and return to home branch; rejected work is preserved on its branch.",
     parameters: Type.Object({
-      sha: Type.String(),
-      reason: Type.String(),
+      reason: Type.String({ description: "Why this iteration was rejected." }),
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
-      if (looksRedacted(params.sha)) {
+      if (looksRedacted(params.reason)) {
         return {
-          content: [{ type: "text", text: `clk_revert skipped: 'sha' appears redacted. ${recoveryHint("redaction")}` }],
+          content: [{ type: "text", text: `clk_revert skipped: 'reason' appears redacted. ${recoveryHint("redaction")}` }],
           details: {},
         };
       }
       const sig = mergeSignals(signal, activeSignal());
+      const home = getHomeBranch();
+      if (!home) {
+        return {
+          content: [{ type: "text", text: "clk_revert: no home branch recorded — call clk_branch first to create a feature branch." }],
+          details: {},
+        };
+      }
+      let abandonedBranch: string;
       try {
-        await withRetry(() => revertTo(ctx.cwd, params.sha, sig), { signal: sig });
+        abandonedBranch = await currentBranch(ctx.cwd, sig);
+        await withRetry(
+          () => saveAndSwitch(ctx.cwd, `[clk] rejected: ${params.reason}`, home, sig),
+          { signal: sig },
+        );
       } catch (err) {
         const cls = classifyError(err);
         return {
@@ -193,13 +215,127 @@ export function registerClkTools(pi: ExtensionAPI): void {
       }
       await appendProgress(
         ctx.cwd,
-        { kind: "revert", message: `${params.reason} → ${params.sha.slice(0, 8)}` },
+        { kind: "revert", message: `rejected branch preserved: ${abandonedBranch} — ${params.reason}` },
         pi,
       );
-      ctx.ui.setStatus("clk-head", `HEAD: ${params.sha.slice(0, 8)} (reverted)`);
+      ctx.ui.setStatus("clk-head", `back on ${home} (${abandonedBranch} preserved)`);
       return {
-        content: [{ type: "text", text: `reverted to ${params.sha}` }],
-        details: {},
+        content: [{ type: "text", text: `switched back to ${home}; rejected work preserved on branch ${abandonedBranch}` }],
+        details: { home, abandonedBranch },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "clk_branch",
+    label: "CLK Branch",
+    description:
+      "Create a new feature branch for a Ralph iteration and switch to it. The current " +
+      "(home) branch is recorded automatically. Call this at the start of every Ralph " +
+      "iteration before dispatching work.",
+    promptSnippet: "Create and switch to a feature branch for the current Ralph iteration.",
+    parameters: Type.Object({
+      name: Type.String({
+        description:
+          "Branch name, e.g. 'ralph/iter-3-optimize-db-queries'. Use lowercase kebab-case.",
+      }),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      if (looksRedacted(params.name)) {
+        return {
+          content: [{ type: "text", text: `clk_branch skipped: 'name' appears redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
+      const sig = mergeSignals(signal, activeSignal());
+      let home = getHomeBranch();
+      try {
+        if (!home) {
+          home = await currentBranch(ctx.cwd, sig);
+          await setHomeBranch(ctx.cwd, home, pi);
+        }
+        await withRetry(
+          () => createAndCheckoutBranch(ctx.cwd, params.name, sig),
+          { signal: sig },
+        );
+      } catch (err) {
+        const cls = classifyError(err);
+        return {
+          content: [{ type: "text", text: `clk_branch failed: ${(err as Error).message}. ${recoveryHint(cls)}` }],
+          details: { error: String(err) },
+        };
+      }
+      await appendProgress(
+        ctx.cwd,
+        { kind: "branch", message: `created feature branch ${params.name} (home: ${home})` },
+        pi,
+      );
+      ctx.ui.setStatus("clk-branch", `branch: ${params.name}`);
+      return {
+        content: [{ type: "text", text: `switched to new branch ${params.name} (home: ${home})` }],
+        details: { branch: params.name, home },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "clk_merge",
+    label: "CLK Merge",
+    description:
+      "Merge the current feature branch into the home branch after a successful Ralph " +
+      "iteration. Commits any pending changes first, then merges and switches back to home.",
+    promptSnippet: "Merge accepted feature branch into home branch; call after validation passes.",
+    parameters: Type.Object({
+      message: Type.String({ description: "Commit message describing the accepted improvement." }),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      if (looksRedacted(params.message)) {
+        return {
+          content: [{ type: "text", text: `clk_merge skipped: 'message' appears redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
+      const sig = mergeSignals(signal, activeSignal());
+      const home = getHomeBranch();
+      if (!home) {
+        return {
+          content: [{ type: "text", text: "clk_merge: no home branch recorded — call clk_branch first." }],
+          details: {},
+        };
+      }
+      let featureBranch: string;
+      let sha: string | null;
+      try {
+        featureBranch = await currentBranch(ctx.cwd, sig);
+        if (featureBranch === home) {
+          return {
+            content: [{ type: "text", text: `clk_merge: already on home branch ${home}; nothing to merge.` }],
+            details: {},
+          };
+        }
+        sha = await withRetry(
+          () => checkpoint(ctx.cwd, `[clk] ${params.message}`, sig),
+          { signal: sig },
+        );
+        await withRetry(() => checkoutBranch(ctx.cwd, home, sig), { signal: sig });
+        await withRetry(() => mergeBranch(ctx.cwd, featureBranch, sig), { signal: sig });
+      } catch (err) {
+        const cls = classifyError(err);
+        return {
+          content: [{ type: "text", text: `clk_merge failed: ${(err as Error).message}. ${recoveryHint(cls)}` }],
+          details: { error: String(err) },
+        };
+      }
+      await appendProgress(
+        ctx.cwd,
+        { kind: "merge", message: `merged ${featureBranch} → ${home}: ${params.message}` },
+        pi,
+      );
+      ctx.ui.setStatus("clk-branch", `merged → ${home}`);
+      if (sha) ctx.ui.setStatus("clk-head", `HEAD: ${sha.slice(0, 8)}`);
+      return {
+        content: [{ type: "text", text: `merged ${featureBranch} into ${home}` }],
+        details: { featureBranch, home, sha },
       };
     },
   });

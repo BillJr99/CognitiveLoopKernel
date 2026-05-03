@@ -16,6 +16,8 @@ export type ProgressKind =
   | "dispatch"
   | "checkpoint"
   | "revert"
+  | "branch"
+  | "merge"
   | "consensus"
   | "ralph"
   | "autoresearch"
@@ -34,4 +36,5 @@ export type ClkState = {
   progress: ProgressEntry[];
   doneReason?: string;
   startedAt?: number;
+  homeBranch?: string;
 };
