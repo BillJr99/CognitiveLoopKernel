@@ -41,13 +41,13 @@ Filesystem
   prompt context via $state_summary, $blackboard_digest, $current_roster,
   $idea_title, $idea_statement, etc. You do not need to go looking.
 
-- Writing to .clk/ is also forbidden, EXCEPT via the POST protocol which
-  routes to ``.clk/blackboard/``. The harness rejects any ACTION PATH that
-  resolves into ``.clk/``.
+- Writing to .clk/ is forbidden with two exceptions: ACTION:write may
+  target ``blackboard/<id>.json`` (routed to ``.clk/blackboard/``);
+  edit/append/delete on blackboard paths are still rejected.
 
-- To share findings with other agents: emit a POST block. The harness
-  writes it to ``.clk/blackboard/`` and delivers it to peers as
-  $blackboard_digest. Do not write to ``blackboard/`` via ACTION:write.
+- To share findings with other agents: emit a POST block (preferred) or
+  use ACTION:write PATH: blackboard/<id>.json. The harness delivers posts
+  to peers as $blackboard_digest.
 
   Examples: PATH: src/foo.py          GOOD
             PATH: README.md           GOOD
@@ -113,9 +113,11 @@ Blackboard protocol (shared scratchpad workers post to and read from):
   END_POST
 
 The blackboard lives at .clk/blackboard/ as JSON files written by the
-harness. You CANNOT write there with ACTION:write — emit POST blocks
-instead. Posts are immutable; revise by writing a new POST that lists
-the old id in CONSUMES.
+harness. Prefer POST blocks; the harness stamps metadata automatically.
+You may also write directly via ACTION:write with path
+blackboard/<id>.json — the harness routes it to .clk/blackboard/.
+Posts are immutable: edit/append/delete on blackboard paths are rejected;
+revise by writing a new POST that lists the old id in CONSUMES.
 
 You receive a $$blackboard_digest in your prompt context, filtered by
 your stage's declared `inputs` (see PROPOSE_WORKFLOW). If a stage

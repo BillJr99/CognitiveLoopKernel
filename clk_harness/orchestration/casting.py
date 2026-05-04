@@ -70,9 +70,12 @@ from ..utils.logging_utils import log, log_exception
 #   * chief  - decomposition, casting, workflow authoring
 #   * ralph  - iterative refinement loop driver
 #   * qa     - output validation (must appear at least once in every workflow)
-# All other agents (engineer, analyst, researcher, etc.) are dynamic roles
-# that the chief creates per project. The chief prompt instructs the chief
-# to always include ralph and qa in every engineering workflow.
+# The chief creates other dynamic roles (analyst, researcher, etc.) per
+# project and is instructed to always include ralph and qa. Some names
+# (e.g. "engineer") are reserved as similarity anchors in _SEED_ROLE_ANCHORS
+# rather than baseline agents — they prevent near-duplicate variants like
+# "engineering" from being registered, but are themselves proposable as
+# dynamic roles.
 BASELINE_AGENTS: Tuple[str, ...] = (
     "chief",
     "ralph",
@@ -431,7 +434,7 @@ def _similar_existing_name(name: str, agents: Dict[str, Any]) -> Optional[str]:
     normalized = _normalize_name(name)
     # Always include seed anchors so the check fires even when agents.json
     # was manually trimmed to baseline-only and the seed role is absent.
-    all_names = set(agents.keys()) | _SEED_ROLE_ANCHORS | set(BASELINE_AGENTS)
+    all_names = set(agents.keys()) | _SEED_ROLE_ANCHORS | _RESERVED_NAMES
     for existing in sorted(all_names):
         ex_key = _name_key(existing)
         if not key or not ex_key:

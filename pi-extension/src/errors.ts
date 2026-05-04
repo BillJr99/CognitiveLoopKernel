@@ -23,8 +23,8 @@ const RATE_LIMIT_PATTERNS: RegExp[] = [
   /temporarily.*rate/i,
   /rate.*upstream/i,
   /upstream.*rate/i,
-  /please\s+retry/i,
-  /provider returned error/i,
+  /please\s+retry.*rate/i,
+  /provider returned.*rate.?limit/i,
 ];
 
 const MODEL_ERROR_PATTERNS: RegExp[] = [
@@ -35,7 +35,7 @@ const MODEL_ERROR_PATTERNS: RegExp[] = [
   /endpoint.*(not found|unavailable)/i,
   /the model.*cannot be used/i,
   /free.*tier.*not.*support/i,
-  /no endpoint/i,
+  /no endpoint\s+for\b/i,
 ];
 
 const REDACTION_PATTERNS: RegExp[] = [
@@ -142,7 +142,10 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
     onRetry,
   } = opts;
 
-  let attempt = 0;
+  // Track rate-limit and network retries with separate counters so that
+  // many rate-limit retries don't silently exhaust the network-blip budget.
+  let rateLimitAttempt = 0;
+  let networkAttempt = 0;
 
   for (;;) {
     if (signal?.aborted) throw new Error("Aborted");
@@ -153,12 +156,13 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
 
       const isRateLimit = classifyError(err) === "rate_limit";
 
-      // Non-rate-limit retryable errors honour the maxAttempts cap.
-      if (!isRateLimit && attempt >= maxAttempts - 1) throw err;
+      // Non-rate-limit retryable errors (network blips) honour maxAttempts.
+      if (!isRateLimit && networkAttempt >= maxAttempts - 1) throw err;
 
+      const attempt = isRateLimit ? rateLimitAttempt : networkAttempt;
       const delayMs = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
-      attempt++;
-      onRetry?.(err, attempt, delayMs);
+      if (isRateLimit) rateLimitAttempt++; else networkAttempt++;
+      onRetry?.(err, attempt + 1, delayMs);
 
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, delayMs);

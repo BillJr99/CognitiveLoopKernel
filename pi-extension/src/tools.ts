@@ -4,7 +4,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { setRoster, appendProgress, markDone, setHomeBranch, getHomeBranch } from "./state.js";
 import {
   checkpoint,
-  revertTo,
+  head,
+  abortMerge,
   currentBranch,
   createAndCheckoutBranch,
   checkoutBranch,
@@ -202,6 +203,12 @@ export function registerClkTools(pi: ExtensionAPI): void {
       let abandonedBranch: string;
       try {
         abandonedBranch = await currentBranch(ctx.cwd, sig);
+        if (abandonedBranch === home) {
+          return {
+            content: [{ type: "text", text: `clk_revert: already on home branch '${home}'; no feature branch to revert. Call clk_branch first.` }],
+            details: {},
+          };
+        }
         await withRetry(
           () => saveAndSwitch(ctx.cwd, `[clk] rejected: ${params.reason}`, home, sig),
           { signal: sig },
@@ -318,7 +325,19 @@ export function registerClkTools(pi: ExtensionAPI): void {
           { signal: sig },
         );
         await withRetry(() => checkoutBranch(ctx.cwd, home, sig), { signal: sig });
-        await withRetry(() => mergeBranch(ctx.cwd, featureBranch, sig), { signal: sig });
+        try {
+          await withRetry(() => mergeBranch(ctx.cwd, featureBranch, sig), { signal: sig });
+        } catch (mergeErr) {
+          // Merge failed (e.g. conflict): abort and return to feature branch so the
+          // repo is left in a clean, known state rather than mid-merge on home.
+          try { await abortMerge(ctx.cwd, sig); } catch { /* best-effort */ }
+          try { await checkoutBranch(ctx.cwd, featureBranch, sig); } catch { /* best-effort */ }
+          const cls = classifyError(mergeErr);
+          return {
+            content: [{ type: "text", text: `clk_merge failed during merge: ${(mergeErr as Error).message}. Repo returned to feature branch ${featureBranch}. ${recoveryHint(cls)}` }],
+            details: { error: String(mergeErr) },
+          };
+        }
       } catch (err) {
         const cls = classifyError(err);
         return {
@@ -326,16 +345,18 @@ export function registerClkTools(pi: ExtensionAPI): void {
           details: { error: String(err) },
         };
       }
+      // Use post-merge HEAD so the displayed SHA reflects the merge commit.
+      const mergeHead = await head(ctx.cwd, sig);
       await appendProgress(
         ctx.cwd,
         { kind: "merge", message: `merged ${featureBranch} → ${home}: ${params.message}` },
         pi,
       );
       ctx.ui.setStatus("clk-branch", `merged → ${home}`);
-      if (sha) ctx.ui.setStatus("clk-head", `HEAD: ${sha.slice(0, 8)}`);
+      if (mergeHead) ctx.ui.setStatus("clk-head", `HEAD: ${mergeHead.slice(0, 8)}`);
       return {
         content: [{ type: "text", text: `merged ${featureBranch} into ${home}` }],
-        details: { featureBranch, home, sha },
+        details: { featureBranch, home, mergeHead },
       };
     },
   });

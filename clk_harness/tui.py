@@ -1526,11 +1526,13 @@ class TuiApp:
         # full ``HH:MM:SS [LEVEL] ...`` prefix; continuation rows are
         # indented so the eye can group them with their parent entry.
         inner_w = max(10, width - 2)
-        cont_indent = "           " + " " * 7  # ts(8) + space + [LEVEL ](7) area
         flat: List[Tuple[int, str]] = []  # (level_attr, text)
         for line in lines:
             attr = self._log_attr(line.level)
             head = f"{line.ts} [{line.level}] {line.text}"
+            # Derive the continuation indent from the actual prefix length so
+            # wrapped lines align regardless of level-name width (INFO vs DEBUG).
+            cont_indent = " " * (len(line.ts) + len(line.level) + 4)  # 4 = " [" + "] "
             wrapped = _word_wrap(head, inner_w)
             for k, row in enumerate(wrapped):
                 flat.append((attr, row if k == 0 else cont_indent + row.lstrip()))

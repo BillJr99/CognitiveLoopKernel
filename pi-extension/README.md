@@ -14,7 +14,7 @@ Ralph refinement, and Karpathy-style autoresearch — into Pi behind a single
 You type:
 
 ```text
-/clk a local-first journaling app that summarises my week
+/clk a local-first journaling app that summarizes my week
 ```
 
 The extension:
@@ -27,10 +27,14 @@ The extension:
    on high-stakes decisions, run Ralph refinement after MVP, autoresearch
    on open questions, checkpoint after every win, revert on regression,
    call `clk_done` when every completion criterion is met.
-3. Provides the chief with five small tools — `clk_cast`, `clk_progress`,
-   `clk_checkpoint`, `clk_revert`, `clk_done` — that handle persistence and
-   git mechanics. Everything else (dispatch, fan-out, judging, refinement
-   loops) is the chief driving the standard Pi/pi-subagents tools.
+3. Provides the chief with seven small tools — `clk_cast`, `clk_progress`,
+   `clk_checkpoint`, `clk_branch`, `clk_revert`, `clk_merge`, `clk_done` —
+   that handle persistence and git mechanics. `clk_branch` opens a per-
+   iteration feature branch before each Ralph pass, `clk_merge` folds it into
+   the home branch on success, and `clk_revert` discards the branch without
+   merging when the iteration is rejected. Everything else (dispatch, fan-out,
+   judging, refinement loops) is the chief driving the standard
+   Pi/pi-subagents tools.
 
 The extension itself is intentionally thin: orchestration policy lives in the
 chief's prompt, not in TypeScript. To change CLK's behavior, edit
@@ -118,7 +122,7 @@ continue. Use `/clk-abort` when you want to end the whole run.
 A typical first transcript looks like:
 
 ```text
-> /clk a local-first journaling app that summarises my week
+> /clk a local-first journaling app that summarizes my week
 [notification] CLK run started. The chief is taking over.
 [chief] (calls clk_cast with engineer, ux_writer, summarizer, qa)
 [chief] (calls subagent: scout to understand existing layout)
@@ -207,7 +211,7 @@ recovery path:
 
 | Category | Symptoms | Recovery |
 |----------|----------|----------|
-| **Rate limit** | HTTP 429, "too many requests", "quota exceeded" | Exponential backoff (2 s → 4 s → 8 s → 16 s) and retry, up to 4 attempts. If still failing, the chief tries a smaller / different model. |
+| **Rate limit** | HTTP 429, "too many requests", "quota exceeded" | Exponential backoff, retried indefinitely (delay capped at 5 minutes) until the run is aborted. The chief is also instructed to try a smaller / different model if the limit persists. |
 | **Model unavailable** | HTTP 404, "model not found", "not available on free tier" | No retry — the chief falls back to a built-in Pi agent (`worker`, `researcher`, `scout`, `oracle`) or omits `preferredModel` and lets Pi choose. |
 | **Privacy redaction** | `[REDACTED]` values, "privacy filter", "sensitive content blocked" | Tool params are checked for redaction markers before use; the tool returns a recovery hint asking the chief to retry without the sensitive field (or to write it to a file and pass the path). |
 | **Max turns exhausted** | "max turns reached", "turn limit", "turn cap", "no more turns" | The chief re-dispatches the identical `subagent` call immediately without asking for confirmation. If the task exhausts turns twice in a row the chief splits it into two narrower sequential subtasks. |
@@ -267,9 +271,11 @@ pi-extension/
   src/
     index.ts           # entry: factory, /clk + /clk-abort, session_start replay
     prompts.ts         # the chief's operator's manual (the policy)
-    tools.ts           # clk_cast, clk_progress, clk_checkpoint, clk_revert, clk_done
+    tools.ts           # clk_cast, clk_progress, clk_checkpoint,
+                       # clk_branch, clk_revert, clk_merge, clk_done
     state.ts           # .clk/state/* persistence + pi.appendEntry mirroring
-    git.ts             # checkpoint / revert helpers
+                       # (tracks idea, roster, progress, homeBranch)
+    git.ts             # checkpoint, revertTo, head, abortMerge helpers
     abort.ts           # run-scoped AbortController + /clk-abort + shutdown bridge
     errors.ts          # error classification, backoff retry, redaction detection
     types.ts           # shared types

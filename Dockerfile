@@ -24,9 +24,12 @@ RUN npm install -g \
 
 WORKDIR /app
 
-# Install Python dependencies before copying sources so this layer is cached.
+# Install Python dependencies declared in pyproject.toml before copying
+# sources so this layer is cached when only code changes.
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir pyyaml
+RUN mkdir -p clk_harness && touch clk_harness/__init__.py \
+ && pip install --no-cache-dir "." \
+ && rm -rf clk_harness
 
 # Copy harness sources.
 COPY clk_harness/ ./clk_harness/

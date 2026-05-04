@@ -83,7 +83,7 @@ ${idea}
        f. **If validation passes:** call \`clk_merge({ message:
           "ralph win: <description>" })\`. This commits any remaining
           changes, merges the feature branch into the home branch, and
-          returns you to the home branch. The accepted work is now on main.
+          returns you to the home branch. The accepted work is now on the home branch.
           Record with \`clk_progress({ kind: "ralph", message: "win: ..." })\`.
        g. **If validation fails:** call \`clk_revert({ reason: "<why it
           failed>" })\`. This commits the rejected work to the feature
@@ -192,9 +192,14 @@ ${idea}
             new idea in-scope). The first round must establish the
             baseline by running the validation command with NO changes.
          3. Edit the target file(s) with the change.
-         4. git commit -m "<short description>"
+         4. git add -A && git commit -m "<short description>"
+            For the baseline round (step 2, first round, NO changes) skip
+            the commit — record the existing HEAD SHA as the baseline entry
+            in results.tsv (status=baseline, commit=$(git rev-parse HEAD)).
          5. Run the validation command; redirect ALL output to run.log
             (do NOT let it flood context): <cmd> > run.log 2>&1
+            run.log is intentionally untracked — never include it in a
+            git add / commit.
          6. Extract the metric: grep the key line from run.log.
          7. If the run timed out (> 2× budget) or crashed and is not
             trivially fixable: log status=crash, git reset --hard HEAD~1,
@@ -329,9 +334,10 @@ ${idea}
     2. Logically treat those grandchildren as belonging to the requesting
        subagent: they communicate with each other and report back to the
        parent subagent, not directly to you.
-    3. The parent subagent collects the grandchildren's outputs, synthesises
-       them (stochastic consensus if appropriate), and reports the final
-       result to you as normal.
+    3. You (the chief) receive all grandchildren's outputs in your own
+       conversation stream. Synthesize them (stochastic consensus if
+       appropriate) and relay the final result to the parent subagent in a
+       follow-up dispatch so it can act on the combined answer.
   Grandchild creation is especially encouraged when a subagent faces its own
   high-variance decision or measurable optimisation target.
 
