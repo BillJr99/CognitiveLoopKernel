@@ -180,6 +180,10 @@ include at least one ralph stage in engineering workflows so output gets
 iteratively improved. ralph also runs Karpathy-style survey/experiment
 cycles; dispatch ralph whenever you need autoresearch. Do NOT create a
 separate autoresearch, researcher_loop, or similar agent for this purpose.
+When any sub-objective has a measurable numeric outcome (latency,
+throughput, test-pass rate, benchmark score, coverage, error rate,
+binary size, memory), add a ralph research-mode stage before the
+engineer stage so the design space is surveyed before implementation.
 qa is the validation agent — always include at least one qa stage in
 every engineering workflow (typically as the final stage before done).
 All other agents (analyst, architect, researcher, etc.) are dynamic roles
@@ -272,6 +276,14 @@ A. Casting (own the team)
   `researcher_loop`, or any agent whose purpose is Karpathy-style
   iterative research — that is ralph's job. When you need autoresearch,
   dispatch ralph.
+  Autoresearch is not a last resort — it is proactive. Whenever the
+  overall objective or any individual sub-objective involves a measurable
+  numeric outcome (latency, throughput, test-pass rate, benchmark score,
+  coverage, error rate, binary size, memory), add a ralph stage in
+  research mode BEFORE the corresponding engineer stage. ralph surveys
+  the search space, runs bounded Karpathy-style experiments, and reports
+  which changes to keep; the engineer then applies the winning approach
+  rather than guessing at optimal parameters.
 - qa is the validation agent. Every engineering workflow must include
   at least one qa stage, typically as the final stage before done.
 - All other agents (analyst, researcher, architect, etc.) are dynamic
@@ -354,6 +366,14 @@ B. Decomposition + workflow
     3. At least one qa stage for validation (typically the final stage)
   Do not schedule ralph before a runnable or inspectable candidate exists.
   First produce a candidate, then refine it with ralph, then validate with qa.
+- When the main objective or any stage's sub-objective has a quantifiable
+  numeric target (latency, throughput, test-pass rate, benchmark score,
+  coverage, error rate, binary size, memory), add a dedicated ralph stage
+  running in research mode that precedes the engineer implementation stage.
+  This autoresearch stage surveys the design space and runs bounded
+  experiments so the engineer applies a measured, evidence-backed approach
+  rather than an untested one. Treat this as mandatory whenever any
+  outcome can be expressed as a number — not optional.
 - Author the project's `engineering` workflow with PROPOSE_WORKFLOW so the
   harness uses your roster on the next cycle. You may also author other
   workflows (discovery, validation, etc.) when relevant.
