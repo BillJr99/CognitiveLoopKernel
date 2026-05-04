@@ -15,6 +15,8 @@ const RATE_LIMIT_PATTERNS: RegExp[] = [
   /rate.?limit/i,
   /too many requests/i,
   /\b429\b/,
+  // OpenRouter returns 404 when no endpoints are temporarily available
+  /\b404\b/,
   /quota.?exceeded/i,
   /resource.?exhausted/i,
   /capacity/i,
@@ -31,7 +33,6 @@ const MODEL_ERROR_PATTERNS: RegExp[] = [
   /model.*(not found|unavailable|does not exist|is not available)/i,
   /no such model/i,
   /invalid.?model/i,
-  /\b404\b/,
   /endpoint.*(not found|unavailable)/i,
   /the model.*cannot be used/i,
   /free.*tier.*not.*support/i,
@@ -82,8 +83,8 @@ export function classifyError(err: unknown): ErrorClass {
     (err as { statusCode?: unknown }).statusCode ??
     (err as { response?: { status?: unknown } }).response?.status;
 
-  if (httpStatus === 429 || RATE_LIMIT_PATTERNS.some((p) => p.test(msg))) return "rate_limit";
-  if (httpStatus === 404 || MODEL_ERROR_PATTERNS.some((p) => p.test(msg))) return "model_error";
+  if (httpStatus === 429 || httpStatus === 404 || RATE_LIMIT_PATTERNS.some((p) => p.test(msg))) return "rate_limit";
+  if (MODEL_ERROR_PATTERNS.some((p) => p.test(msg))) return "model_error";
   if (REDACTION_PATTERNS.some((p) => p.test(msg))) return "redaction";
   if (MAX_TURNS_PATTERNS.some((p) => p.test(msg))) return "max_turns";
   if (NETWORK_PATTERNS.some((p) => p.test(msg))) return "network";

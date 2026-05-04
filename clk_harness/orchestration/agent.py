@@ -401,6 +401,9 @@ class AgentRunner:
             "connection reset",
             "temporarily unavailable",
             "try again",
+            # HTTP 429 rate-limiting and HTTP 404 (OpenRouter: no endpoints temporarily available)
+            "http 429",
+            "http 404",
         ]
         non_retryable = [
             "api key",
