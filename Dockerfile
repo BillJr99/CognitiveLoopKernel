@@ -27,9 +27,9 @@ WORKDIR /app
 # Install Python dependencies declared in pyproject.toml before copying
 # sources so this layer is cached when only code changes.
 COPY pyproject.toml ./
-RUN mkdir -p clk_harness && touch clk_harness/__init__.py \
+RUN mkdir -p clk_harness && touch clk_harness/__init__.py README.md \
  && pip install --no-cache-dir "." \
- && rm -rf clk_harness
+ && rm -rf clk_harness README.md
 
 # Copy harness sources.
 COPY clk_harness/ ./clk_harness/
