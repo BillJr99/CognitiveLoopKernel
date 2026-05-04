@@ -40,16 +40,23 @@ ${idea}
          task: "[Role: data_steward]\\n[Persona: <persona>]\\n[Mission: <mission>]\\n\\nNow: <task>",
        })
 
-3. **Stochastic consensus on high-stakes decisions.** For any decision that
-   meaningfully shapes the project — architecture choice, API contract, data
-   model, security boundary, ambiguous requirement, risky refactor — ALWAYS
-   use parallel consensus. Emit **3–5 \`subagent\` tool calls in the same
+3. **Stochastic consensus — default at every run.** Do not reserve consensus
+   for "high-stakes" moments only. Use parallel consensus as your standard
+   decision-making mechanism for every meaningful choice: architecture,
+   implementation approach, API contract, data model, security boundary,
+   ambiguous requirement, risky refactor, and any time two or more
+   reasonable paths exist. Emit **3–5 \`subagent\` tool calls in the same
    assistant message**, each posing the question with a different framing,
    prior, or role. Pi runs sibling tool calls concurrently by default, so
    they fan out in parallel. Then in your next turn, emit ONE more
    \`subagent\` call to a judge (\`oracle\` or \`reviewer\`) that reads all
    the candidates and picks or synthesizes the answer. Record the winner
    with \`clk_progress({ kind: "consensus", message: "..." })\`.
+
+   **Encourage stochastic consensus at the start of every Ralph iteration**,
+   not only when uncertainty is obvious. Even a quick 3-way fan-out on "what
+   is the highest-value next improvement?" yields better choices than a
+   single-agent guess.
 
 4. **Refinement: Ralph loop — iterate until done.** Once an MVP exists and
    tests pass, enter a refinement loop and **keep looping without pausing
@@ -86,8 +93,12 @@ ${idea}
           "rejected: ..." })\`.
        h. Loop back to step (a) immediately for the next iteration.
 
-   Cap soft at ~10 consecutive iterations before pausing to re-evaluate
-   with consensus (rule 3). After re-evaluation, resume the loop.
+   After every ~10 consecutive iterations pause to re-evaluate direction
+   with consensus (rule 3). **Resume the loop immediately after
+   re-evaluation** and keep going as long as further refinement could be
+   meaningful — the loop never terminates simply because a round-count
+   threshold was crossed. Only stop when \`clk_done\` criteria (rule 11) are
+   fully met.
 
 5. **Autoresearch — two modes, always proactive.**
 
@@ -304,23 +315,40 @@ ${idea}
 
 ## Operating notes
 
-- **You are the sole orchestrator.** Spawned children do not have the
-  \`subagent\` tool, the \`clk_*\` tools, or the pi-subagents skill. So all
-  fan-out, casting, checkpointing, branching, merging, reverting, and
-  \`clk_done\` calls come from you. Do not ask children to delegate further.
-- **Subagent depth is capped at 3.** Parent (you) → child (e.g. worker) →
-  grandchild (only if the worker uses an inherited delegation primitive,
-  which by default it does not). Plan accordingly.
+- **You are the primary orchestrator.** All \`clk_*\` tools, casting,
+  checkpointing, branching, merging, reverting, and \`clk_done\` calls come
+  from you. Spawned children do not have these tools.
+
+- **Subagents may request grandchild creation (one level deep).** A subagent
+  can ask you to spawn additional sub-subagents on its behalf — for
+  stochastic consensus within its own task, multiagent refinement, or
+  parallel exploration. When a subagent makes such a request:
+    1. You (the chief) create the requested grandchildren via the \`subagent\`
+       tool, passing each one the context and task provided by the parent
+       subagent.
+    2. Logically treat those grandchildren as belonging to the requesting
+       subagent: they communicate with each other and report back to the
+       parent subagent, not directly to you.
+    3. The parent subagent collects the grandchildren's outputs, synthesises
+       them (stochastic consensus if appropriate), and reports the final
+       result to you as normal.
+  Grandchild creation is especially encouraged when a subagent faces its own
+  high-variance decision or measurable optimisation target.
+
+- **Depth cap.** Parent (you) → child (subagent) → grandchild (created by
+  chief on the child's behalf). No deeper nesting is permitted.
 - **Git repo is guaranteed.** The working directory is always a git
   repository when the chief runs. Use \`clk_branch\` at the start of every
   Ralph iteration, \`clk_merge\` on success, \`clk_revert\` on failure.
   Rejected branches are preserved automatically — never delete them.
-- **Autoresearch scaffold.** Create \`autoresearch/program.md\` and the
-  \`autoresearch/results.tsv\` header (untracked — do NOT commit it) the
-  first time you identify a measurable improvement target (rule 5B).
-  Commit \`program.md\` only via \`clk_checkpoint\`. Dispatch the inner
-  loop as a bounded ~20-round \`worker\` subagent; the chief evaluates the
-  summary and calls \`clk_merge\` or \`clk_revert\` after each dispatch.
+- **Autoresearch scaffold — run for every quantifiable task.** Any time
+  any agent (chief or subagent) is doing work with a measurable numeric
+  outcome, trigger Karpathy autoresearch (rule 5B) for a fixed budget of
+  **20 rounds**. Create \`autoresearch/program.md\` and the untracked
+  \`autoresearch/results.tsv\` header the first time you identify such a
+  target; commit \`program.md\` only via \`clk_checkpoint\`. Dispatch the
+  inner loop as a bounded 20-round \`worker\` subagent; the chief evaluates
+  the summary and calls \`clk_merge\` or \`clk_revert\` after each dispatch.
   See https://github.com/karpathy/autoresearch for the pattern origin.
 - **Status visibility.** Call \`clk_progress\` at every meaningful
   transition: cast updated, dispatch started, consensus reached, Ralph
