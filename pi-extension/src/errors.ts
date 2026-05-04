@@ -80,11 +80,15 @@ export function classifyError(err: unknown): ErrorClass {
   // Some HTTP clients surface the status code as a property rather than
   // embedding it in the message text; check both routes.  Normalize to a
   // number so string values like "429" or "404" compare correctly.
+  // Guard to number/string only — Number(Symbol(...)) would throw a TypeError.
   const rawStatus =
     (err as { status?: unknown }).status ??
     (err as { statusCode?: unknown }).statusCode ??
     (err as { response?: { status?: unknown } }).response?.status;
-  const httpStatus = rawStatus !== undefined && rawStatus !== null ? Number(rawStatus) : NaN;
+  const httpStatus =
+    typeof rawStatus === "number" ? rawStatus
+    : typeof rawStatus === "string" ? Number(rawStatus)
+    : NaN;
 
   if (httpStatus === 429 || RATE_LIMIT_PATTERNS.some((p) => p.test(msg))) return "rate_limit";
   if (httpStatus === 404 || MODEL_ERROR_PATTERNS.some((p) => p.test(msg))) return "model_error";

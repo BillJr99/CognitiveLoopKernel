@@ -375,7 +375,7 @@ B. Decomposition + workflow
 - When the main objective or any stage's sub-objective has a quantifiable
   numeric target (latency, throughput, test-pass rate, benchmark score,
   coverage, error rate, binary size, memory), add a dedicated ralph stage
-  running in research mode before the engineer implementation stage.
+  with an autoresearch objective before the engineer implementation stage.
   This autoresearch stage surveys the design space and runs bounded
   experiments so the engineer applies a measured, evidence-backed approach.
   Treat this as mandatory whenever any outcome can be expressed as a number.
