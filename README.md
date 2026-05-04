@@ -52,8 +52,24 @@ launches the TUI dashboard. The source tree is never modified.
 # Optional: copy .env.example to .env to set defaults non-interactively.
 ./kickoff.sh "A local-first journaling app that summarizes my week"
 
+# First time? Run the setup wizard to create your .env:
+./kickoff.sh --setup
+
 # Or omit the prompt and type your idea into the TUI:
 ./kickoff.sh
+```
+
+`kickoff.sh` reads all settings from `.env` (and optional CLI overrides) and
+requires no interactive prompts during a normal run. If required config is
+missing it prints exactly what's needed and offers to run `--setup` for you.
+
+```bash
+# CLI overrides (override any .env value for a single run)
+./kickoff.sh --provider claude --max-iterations 10 "My idea"
+./kickoff.sh --no-tui "My idea"
+
+# Re-run setup at any time to update your .env:
+./kickoff.sh --setup
 ```
 
 The TUI shows live agent cards (idle / working / done / failed), a
@@ -271,6 +287,54 @@ docker run --rm \
   -e CLK_AUTH_MODE=apikey \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   clk "A local-first journaling app that summarizes my week"
+```
+
+## Pi extension
+
+A native [pi.dev](https://pi.dev) extension that brings the full CLK
+orchestration model — dynamic casting, stochastic consensus, Ralph
+refinement, and Karpathy-style autoresearch — into Pi behind a single
+`/clk` command. No Python harness required at runtime.
+
+See [`pi-extension/README.md`](pi-extension/README.md) for full
+documentation including tool reference, state layout, error handling,
+and customization notes. Quick summary:
+
+**Requirements:** Pi on `PATH`; `pi-subagents` extension; Git on `PATH`.
+
+**Install:**
+
+| Option | Command | When to use |
+|--------|---------|-------------|
+| Quick test | `pi -e /path/to/CognitiveLoopKernel/pi-extension/src/index.ts` | Try it out; reloads on `/reload` |
+| Project-local | `mkdir -p .pi/extensions && ln -s /path/to/CognitiveLoopKernel/pi-extension .pi/extensions/clk` | Version-controlled per project |
+| Global | `mkdir -p ~/.pi/agent/extensions && ln -s /path/to/CognitiveLoopKernel/pi-extension ~/.pi/agent/extensions/clk` | Available in every Pi session |
+
+If you installed via symlink or `-e`, also install `pi-subagents`
+manually (the `postinstall` hook only runs with `pi install`):
+
+```bash
+pi install npm:pi-subagents
+```
+
+**Usage:**
+
+| Command | Effect |
+|---------|--------|
+| `/clk <idea>` | Capture the idea and hand off to the chief. Resumes if state exists. |
+| `/clk-abort` | End the active run. State is preserved; resume with `/clk` later. |
+
+A typical session:
+
+```text
+> /clk a local-first journaling app that summarizes my week
+[CLK run started. The chief is taking over.]
+[chief casts engineer, ux_writer, summarizer, qa]
+[chief fans out to 3 parallel architecture subagents → judge synthesizes]
+[chief dispatches worker to implement MVP]
+[chief calls clk_checkpoint: "MVP: capture + persist entries"]
+[chief opens feature branch with clk_branch, runs Ralph iteration ...]
+[chief calls clk_done: "MVP runs; tests pass; README + deploy plan present"]
 ```
 
 ## Layout
