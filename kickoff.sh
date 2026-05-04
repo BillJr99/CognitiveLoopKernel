@@ -120,7 +120,7 @@ _clk_setup() {
       ;;
     openwebui)
       owui_ep="$(_sv_read "OpenWebUI endpoint" "$owui_ep")"
-      new="$(_sv_secret   "OpenWebUI API key")"; [ -n "$new" ] && owui_key="$new"
+      new="$(_sv_secret   "OpenWebUI API key (optional — leave blank for unauthenticated instances)")"; [ -n "$new" ] && owui_key="$new"
       # Try to fetch the live model list so the user can pick by number.
       local models_text=""
       if [ -n "$owui_ep" ]; then
@@ -325,8 +325,9 @@ Providers:
   gemini     Google Gemini CLI     (CLK_AUTH_MODE=cli, default) or API key
   pi         Pi coding agent       (CLK_PI_MODEL, CLK_PI_KEY_TYPE, CLK_PI_API_KEY)
   ollama     Local Ollama          (CLK_OLLAMA_ENDPOINT, CLK_OLLAMA_MODEL)
-  openwebui  OpenWebUI             (CLK_OPENWEBUI_ENDPOINT, CLK_OPENWEBUI_API_KEY,
-                                    CLK_OPENWEBUI_MODEL)
+  openwebui  OpenWebUI             (CLK_OPENWEBUI_ENDPOINT, CLK_OPENWEBUI_MODEL;
+                                    CLK_OPENWEBUI_API_KEY is optional — only needed
+                                    for authenticated instances)
 
 Run --setup to configure interactively; values are saved to .env and used as
 defaults in future runs.  If required config is missing on a normal run,
@@ -336,22 +337,23 @@ Environment variables (accepted directly or via .env):
   CLK_PROVIDER, CLK_MAX_ITERATIONS, CLK_PROJECT_NAME, CLK_RUN_INSTALL,
   CLK_NO_TUI, CLK_AUTH_MODE, ANTHROPIC_API_KEY, OPENAI_API_KEY,
   GEMINI_API_KEY, GOOGLE_API_KEY, CLK_OLLAMA_ENDPOINT, CLK_OLLAMA_MODEL,
-  CLK_OPENWEBUI_ENDPOINT, CLK_OPENWEBUI_API_KEY, CLK_OPENWEBUI_MODEL,
+  CLK_OPENWEBUI_ENDPOINT, CLK_OPENWEBUI_MODEL,
+  CLK_OPENWEBUI_API_KEY (optional — only for authenticated OpenWebUI instances),
   CLK_PI_MODEL, CLK_PI_KEY_TYPE, CLK_PI_API_KEY, CLK_GIT_NAME, CLK_GIT_EMAIL
 USAGE
       exit 0
       ;;
     --provider=*)       _OVR_PROVIDER="${1#*=}";  shift ;;
     --provider)
-      [ $# -lt 2 ] && { printf '[kickoff] --provider requires a value\n' >&2; exit 2; }
+      [[ $# -lt 2 || "$2" == -* ]] && { printf '[kickoff] --provider requires a value\n' >&2; exit 2; }
       _OVR_PROVIDER="$2"; shift 2 ;;
     --max-iterations=*) _OVR_MAX_ITER="${1#*=}";   shift ;;
     --max-iterations)
-      [ $# -lt 2 ] && { printf '[kickoff] --max-iterations requires a value\n' >&2; exit 2; }
+      [[ $# -lt 2 || "$2" == -* ]] && { printf '[kickoff] --max-iterations requires a value\n' >&2; exit 2; }
       _OVR_MAX_ITER="$2"; shift 2 ;;
     --project-name=*)   _OVR_PROJ_NAME="${1#*=}";  shift ;;
     --project-name)
-      [ $# -lt 2 ] && { printf '[kickoff] --project-name requires a value\n' >&2; exit 2; }
+      [[ $# -lt 2 || "$2" == -* ]] && { printf '[kickoff] --project-name requires a value\n' >&2; exit 2; }
       _OVR_PROJ_NAME="$2"; shift 2 ;;
     --no-tui)           _OVR_NO_TUI="true";         shift ;;
     --tui)              _OVR_NO_TUI="false";         shift ;;
@@ -413,10 +415,13 @@ if [ -n "$_MISSING" ]; then
   printf '\n' >&2
 
   _do_setup=false
-  if [ -e /dev/tty ]; then
+  # Test whether /dev/tty is actually openable (it exists but may not be
+  # accessible in CI or non-interactive Docker containers).
+  if { exec 3<>/dev/tty; } 2>/dev/null; then
     printf '[kickoff] Run  %s --setup  to configure, or answer below.\n' \
            "'$(basename "$0")'" >&2
-    IFS= read -r -p "[kickoff] Run --setup now? [y/N]: " _ans </dev/tty
+    IFS= read -r -p "[kickoff] Run --setup now? [y/N]: " _ans <&3
+    exec 3>&-
     [ "${_ans,,}" = "y" ] && _do_setup=true
   else
     printf '[kickoff] Re-run with  %s --setup  to configure interactively.\n' \
