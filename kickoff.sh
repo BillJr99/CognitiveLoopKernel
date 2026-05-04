@@ -33,21 +33,22 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 # ===========================================================================
 _clk_setup() {
   { exec 3</dev/tty; } 2>/dev/null || exec 3<&0
+  { exec 4>/dev/tty; } 2>/dev/null || exec 4>&2
 
   _sv_read() {
     local prompt="$1" default="$2" v
-    printf '%s [%s]: ' "$prompt" "$default" >/dev/tty
+    printf '%s [%s]: ' "$prompt" "$default" >&4
     IFS= read -r v <&3
     printf '%s' "${v:-$default}"
   }
 
   _sv_secret() {
     local prompt="$1" v
-    printf '%s (leave blank to keep): ' "$prompt" >/dev/tty
+    printf '%s (leave blank to keep): ' "$prompt" >&4
     stty -echo </dev/tty 2>/dev/null || true
     IFS= read -r v <&3
     stty echo  </dev/tty 2>/dev/null || true
-    printf '\n' >/dev/tty
+    printf '\n' >&4
     printf '%s' "$v"
   }
 
@@ -60,12 +61,12 @@ _clk_setup() {
   fi
   if [ -s "$env_file" ]; then
     set -a; . "$env_file"; set +a
-    printf '[setup] loaded existing values from %s\n' "$env_file" >/dev/tty
+    printf '[setup] loaded existing values from %s\n' "$env_file" >&4
   else
-    printf '[setup] %s is empty or missing — using .env.example defaults\n' "$env_file" >/dev/tty
+    printf '[setup] %s is empty or missing — using .env.example defaults\n' "$env_file" >&4
   fi
 
-  printf '\n=== CLK Setup Wizard ===\nPress Enter to keep the value shown in [brackets].\n\n' >/dev/tty
+  printf '\n=== CLK Setup Wizard ===\nPress Enter to keep the value shown in [brackets].\n\n' >&4
 
   local provider max_iter proj_name run_install no_tui auth_mode
   local anthropic_key openai_key gemini_key google_key
@@ -116,7 +117,7 @@ _clk_setup() {
       ;;
     openwebui)
       owui_ep="$(_sv_read "OpenWebUI endpoint" "$owui_ep")"
-      printf '  (API key is only needed for authenticated OpenWebUI instances.)\n' >/dev/tty
+      printf '  (API key is only needed for authenticated OpenWebUI instances.)\n' >&4
       new="$(_sv_secret   "OpenWebUI API key")"; [ -n "$new" ] && owui_key="$new"
       # Try to fetch the live model list so the user can pick by number.
       local models_text=""
@@ -138,13 +139,13 @@ PY
 )" || true
       fi
       if [ -n "$models_text" ]; then
-        printf '[setup] available models on %s:\n' "$owui_ep" >/dev/tty
+        printf '[setup] available models on %s:\n' "$owui_ep" >&4
         local n=0 m
         while IFS= read -r m; do
           n=$((n+1))
-          printf '  %2d) %s\n' "$n" "$m" >/dev/tty
+          printf '  %2d) %s\n' "$n" "$m" >&4
         done <<< "$models_text"
-        printf 'Pick a number, or type a model name [%s]: ' "$owui_model" >/dev/tty
+        printf 'Pick a number, or type a model name [%s]: ' "$owui_model" >&4
         local pick=""
         IFS= read -r pick <&3
         if [[ "${pick:-}" =~ ^[0-9]+$ ]]; then
@@ -154,25 +155,25 @@ PY
         fi
         # empty pick → keep current owui_model
       else
-        [ -n "$owui_ep" ] && printf '[setup] could not fetch model list (offline/unauth?)\n' >/dev/tty
+        [ -n "$owui_ep" ] && printf '[setup] could not fetch model list (offline/unauth?)\n' >&4
         owui_model="$(_sv_read "OpenWebUI model name" "${owui_model:-llama3.1}")"
       fi
       ;;
     pi)
-      printf '\n  Examples: openrouter/free  openrouter/auto  anthropic/claude-3-5-sonnet\n' >/dev/tty
+      printf '\n  Examples: openrouter/free  openrouter/auto  anthropic/claude-3-5-sonnet\n' >&4
       pi_model="$(_sv_read "pi model (leave blank for pi default)" "$pi_model")"
       if command -v pi >/dev/null 2>&1; then
         local open_pi
         open_pi="$(_sv_read "Open a shell to run pi commands (e.g. pi login)? (y/N)" "N")"
         if [ "${open_pi,,}" = "y" ]; then
-          printf '[setup] Dropping into a shell — run pi commands, then type exit to return.\n' >/dev/tty
-          PS1='[pi-setup]$ ' "${SHELL:-bash}" -i </dev/tty >/dev/tty 2>/dev/tty || true
-          printf '[setup] Returned from pi setup shell.\n' >/dev/tty
+          printf '[setup] Dropping into a shell — run pi commands, then type exit to return.\n' >&4
+          PS1='[pi-setup]$ ' "${SHELL:-bash}" -i </dev/tty >&4 2>&4 || true
+          printf '[setup] Returned from pi setup shell.\n' >&4
         fi
       fi
-      printf '  Key type maps which env var receives your API key:\n' >/dev/tty
-      printf '    openrouter → OPENROUTER_API_KEY   openai → OPENAI_API_KEY\n' >/dev/tty
-      printf '  Leave blank if pi login above already handled auth.\n' >/dev/tty
+      printf '  Key type maps which env var receives your API key:\n' >&4
+      printf '    openrouter → OPENROUTER_API_KEY   openai → OPENAI_API_KEY\n' >&4
+      printf '  Leave blank if pi login above already handled auth.\n' >&4
       pi_key_type="$(_sv_read "Key type (openrouter|openai|anthropic|<provider>, blank to skip)" "$pi_key_type")"
       if [ -n "$pi_key_type" ]; then
         new="$(_sv_secret "API key for $pi_key_type (leave blank to keep / skip)")"; [ -n "$new" ] && pi_key="$new"
@@ -180,17 +181,17 @@ PY
       ;;
   esac
 
-  printf '\n--- Git identity (used in kickoff commits) ---\n' >/dev/tty
+  printf '\n--- Git identity (used in kickoff commits) ---\n' >&4
   local cur_name cur_email
   cur_name="$(git config --global user.name  2>/dev/null || true)"
   cur_email="$(git config --global user.email 2>/dev/null || true)"
-  printf '  Current global git name:  %s\n' "${cur_name:-<not set>}"  >/dev/tty
-  printf '  Current global git email: %s\n' "${cur_email:-<not set>}" >/dev/tty
+  printf '  Current global git name:  %s\n' "${cur_name:-<not set>}"  >&4
+  printf '  Current global git email: %s\n' "${cur_email:-<not set>}" >&4
 
   git_name="$(_sv_read  "Git user.name  (blank = keep current)" "${CLK_GIT_NAME:-}")"
   git_email="$(_sv_read "Git user.email (blank = keep current)" "${CLK_GIT_EMAIL:-}")"
 
-  exec 3<&- 2>/dev/null || true
+  exec 3<&- 4>&- 2>/dev/null || true
 
   cat > "$env_file" <<ENV
 # Generated by kickoff.sh --setup on $(date)
@@ -226,7 +227,7 @@ CLK_GIT_NAME=$git_name
 CLK_GIT_EMAIL=$git_email
 ENV
 
-  printf '\n[setup] saved %s\n' "$env_file" >/dev/tty
+  printf '\n[setup] saved %s\n' "$env_file" >&4
 }
 
 # ===========================================================================
