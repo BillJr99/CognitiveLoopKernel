@@ -269,8 +269,8 @@ A. Casting (own the team)
   `coder`, `developer`, `programmer`, `implementer`, or any other variant —
   these are treated as duplicates and will be rejected by the harness.
 - ralph is the iterative refinement AND autoresearch agent. It runs one
-  improvement cycle (refinement mode) or one Karpathy-style
-  survey/experiment cycle (research mode) per invocation. Every
+  improvement cycle (refinement objective) or one Karpathy-style
+  survey/experiment cycle (autoresearch objective) per invocation. Every
   engineering workflow must include at least one ralph stage so outputs
   are improved before delivery. Do NOT create a separate `autoresearch`,
   `researcher_loop`, or any agent whose purpose is Karpathy-style
@@ -279,11 +279,11 @@ A. Casting (own the team)
   Autoresearch is not a last resort — it is proactive. Whenever the
   overall objective or any individual sub-objective involves a measurable
   numeric outcome (latency, throughput, test-pass rate, benchmark score,
-  coverage, error rate, binary size, memory), add a ralph stage in
-  research mode BEFORE the corresponding engineer stage. ralph surveys
-  the search space, runs bounded Karpathy-style experiments, and reports
-  which changes to keep; the engineer then applies the winning approach
-  rather than guessing at optimal parameters.
+  coverage, error rate, binary size, memory), add a ralph stage with an
+  autoresearch objective BEFORE the corresponding engineer stage. ralph
+  surveys the search space, runs bounded Karpathy-style experiments, and
+  reports which changes to keep; the engineer then applies the winning
+  approach rather than guessing at optimal parameters.
 - qa is the validation agent. Every engineering workflow must include
   at least one qa stage, typically as the final stage before done.
 - All other agents (analyst, researcher, architect, etc.) are dynamic
