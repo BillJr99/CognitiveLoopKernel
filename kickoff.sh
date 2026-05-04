@@ -1,29 +1,36 @@
 #!/usr/bin/env bash
-# CLK kickoff.
+# CLK kickoff — driven entirely by .env and optional --arg overrides.
 #
 # Usage:
-#   ./kickoff.sh "your idea or problem statement"
+#   ./kickoff.sh [OPTIONS] ["idea or problem statement"]
 #
-# Behavior:
-#   1. Loads `.env` from the script's directory (if present). Vars already
-#      in your shell environment win over .env, and .env wins over prompts.
-#   2. Prompts for anything still missing: provider, max iterations, project
-#      name, loop mode, and any provider-specific API keys / endpoints.
-#   3. Creates `kickoff-YYYYMMDD-HHMMSS/` in the *current working directory*,
-#      copies the harness sources into it, gives it its own git repo, and
-#      runs init -> idea -> plan -> run -> loop entirely inside that dir.
-#   4. The source directory is never modified. Deleting the kickoff directory
-#      returns the project to its pre-kickoff state and you can rerun freely.
+# Options:
+#   --setup                  Interactive wizard to write or update .env
+#   --provider <p>           Override CLK_PROVIDER
+#   --max-iterations <n>     Override CLK_MAX_ITERATIONS
+#   --project-name <name>    Override CLK_PROJECT_NAME
+#   --no-tui                 Set CLK_NO_TUI=true (non-interactive pipeline)
+#   --tui                    Set CLK_NO_TUI=false (TUI dashboard, the default)
+#   --run-install            Set CLK_RUN_INSTALL=true
+#   -h, --help               Show this help
+#
+# Configuration (highest-to-lowest precedence):
+#   --arg overrides  →  shell environment vars  →  .env file  →  built-in defaults
+#
+# Normal runs ask no questions. If required configuration is missing, kickoff
+# prints exactly what is needed and offers to launch --setup.  Run --setup at
+# any time to create or update .env; existing values become the default answer
+# to every question so you can press Enter to keep them.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
-# ---------------------------------------------------------------------------
-# Setup wizard — run with --setup to create / update .env interactively.
+# ===========================================================================
+# Setup wizard — invoked by --setup or offered when config is incomplete.
 # Reads from /dev/tty so it works inside `docker run -it` even when stdin
-# is not the terminal (e.g. piped).
-# ---------------------------------------------------------------------------
+# is not a terminal.
+# ===========================================================================
 _clk_setup() {
   if [ -e /dev/tty ]; then
     exec 3</dev/tty
@@ -51,8 +58,7 @@ _clk_setup() {
   local env_file="$SCRIPT_DIR/.env"
 
   # Seed defaults from .env.example first, then let an existing .env override.
-  # The wizard always rewrites .env at the end; press Enter at each prompt to
-  # keep the value shown in [brackets].
+  # The wizard always rewrites .env at the end; press Enter to keep a value.
   if [ -f "$SCRIPT_DIR/.env.example" ]; then
     set -a; . "$SCRIPT_DIR/.env.example"; set +a
   fi
@@ -69,13 +75,13 @@ _clk_setup() {
   local anthropic_key openai_key gemini_key google_key
   local ollama_ep ollama_model owui_ep owui_key owui_model
   local pi_model pi_key pi_key_type
-  local git_name git_email
+  local git_name git_email new
 
   provider="$(_sv_read    "Provider (shell|claude|codex|gemini|pi|ollama|openwebui)" "${CLK_PROVIDER:-shell}")"
-  max_iter="$(_sv_read    "Max loop iterations"                                        "${CLK_MAX_ITERATIONS:-10}")"
-  proj_name="$(_sv_read   "Project name"                                               "${CLK_PROJECT_NAME:-clk-app}")"
-  run_install="$(_sv_read "Run install_local.sh (true|false)"                         "${CLK_RUN_INSTALL:-false}")"
-  no_tui="$(_sv_read      "Skip TUI / non-interactive (true|false)"                   "${CLK_NO_TUI:-false}")"
+  max_iter="$(_sv_read    "Max loop iterations"                                       "${CLK_MAX_ITERATIONS:-10}")"
+  proj_name="$(_sv_read   "Project name"                                              "${CLK_PROJECT_NAME:-clk-app}")"
+  run_install="$(_sv_read "Run install_local.sh (true|false)"                        "${CLK_RUN_INSTALL:-false}")"
+  no_tui="$(_sv_read      "Skip TUI / non-interactive (true|false)"                  "${CLK_NO_TUI:-false}")"
 
   auth_mode="${CLK_AUTH_MODE:-cli}"
   case "$provider" in
@@ -104,7 +110,8 @@ _clk_setup() {
   owui_model="${CLK_OPENWEBUI_MODEL:-}"
   pi_model="${CLK_PI_MODEL:-}"
   pi_key="${CLK_PI_API_KEY:-}"
-  pi_key_type="${CLK_PI_KEY_TYPE:-openrouter}"
+  # No default for key type so the user can leave it blank to skip API key auth.
+  pi_key_type="${CLK_PI_KEY_TYPE:-}"
 
   case "$provider" in
     ollama)
@@ -112,28 +119,64 @@ _clk_setup() {
       ollama_model="$(_sv_read "Ollama model"    "$ollama_model")"
       ;;
     openwebui)
-      owui_ep="$(_sv_read    "OpenWebUI endpoint" "$owui_ep")"
-      new="$(_sv_secret      "OpenWebUI API key")"; [ -n "$new" ] && owui_key="$new"
-      owui_model="$(_sv_read "OpenWebUI model"    "$owui_model")"
+      owui_ep="$(_sv_read "OpenWebUI endpoint" "$owui_ep")"
+      new="$(_sv_secret   "OpenWebUI API key")"; [ -n "$new" ] && owui_key="$new"
+      # Try to fetch the live model list so the user can pick by number.
+      local models_text=""
+      if [ -n "$owui_ep" ]; then
+        models_text="$(CLK_OPENWEBUI_ENDPOINT="$owui_ep" \
+                       CLK_OPENWEBUI_API_KEY="$owui_key" \
+                       PYTHONPATH="$SCRIPT_DIR" \
+                       python3 - 2>/dev/null <<'PY'
+import os, sys
+sys.path.insert(0, os.environ.get("PYTHONPATH",""))
+try:
+    from clk_harness.providers.openwebui import list_models
+    models = list_models(os.environ["CLK_OPENWEBUI_ENDPOINT"],
+                         os.environ.get("CLK_OPENWEBUI_API_KEY",""))
+except Exception:
+    models = []
+print("\n".join(models))
+PY
+)" || true
+      fi
+      if [ -n "$models_text" ]; then
+        printf '[setup] available models on %s:\n' "$owui_ep" >/dev/tty
+        local n=0 m
+        while IFS= read -r m; do
+          n=$((n+1))
+          printf '  %2d) %s\n' "$n" "$m" >/dev/tty
+        done <<< "$models_text"
+        printf 'Pick a number, or type a model name [%s]: ' "$owui_model" >/dev/tty
+        local pick=""
+        IFS= read -r pick <&3
+        if [[ "${pick:-}" =~ ^[0-9]+$ ]]; then
+          owui_model="$(echo "$models_text" | sed -n "${pick}p")"
+        elif [ -n "${pick:-}" ]; then
+          owui_model="$pick"
+        fi
+        # empty pick → keep current owui_model
+      else
+        [ -n "$owui_ep" ] && printf '[setup] could not fetch model list (offline/unauth?)\n' >/dev/tty
+        owui_model="$(_sv_read "OpenWebUI model name" "${owui_model:-llama3.1}")"
+      fi
       ;;
     pi)
       printf '\n  Examples: openrouter/free  openrouter/auto  anthropic/claude-3-5-sonnet\n' >/dev/tty
       pi_model="$(_sv_read "pi model (leave blank for pi default)" "$pi_model")"
       if command -v pi >/dev/null 2>&1; then
         local open_pi
-        open_pi="$(_sv_read "Open pi TUI to configure (login, profiles, etc.) before continuing? (y/N)" "N")"
+        open_pi="$(_sv_read "Open a shell to run pi commands (e.g. pi login)? (y/N)" "N")"
         if [ "${open_pi,,}" = "y" ]; then
-          printf '[setup] Dropping into a shell — run pi commands (e.g. `pi login`), then type `exit` to return.\n' >/dev/tty
+          printf '[setup] Dropping into a shell — run pi commands, then type exit to return.\n' >/dev/tty
           PS1='[pi-setup]$ ' "${SHELL:-bash}" -i </dev/tty >/dev/tty 2>/dev/tty || true
           printf '[setup] Returned from pi setup shell.\n' >/dev/tty
         fi
       fi
-      printf '  Key type sets which env var receives your API key:\n' >/dev/tty
-      printf '    openrouter -> OPENROUTER_API_KEY  (any name follows NAME_API_KEY convention)\n' >/dev/tty
-      printf '    openai     -> OPENAI_API_KEY\n' >/dev/tty
-      printf '    anthropic  -> ANTHROPIC_API_KEY\n' >/dev/tty
+      printf '  Key type maps which env var receives your API key:\n' >/dev/tty
+      printf '    openrouter → OPENROUTER_API_KEY   openai → OPENAI_API_KEY\n' >/dev/tty
       printf '  Leave blank if pi login above already handled auth.\n' >/dev/tty
-      pi_key_type="$(_sv_read "Key type (openrouter|openai|anthropic|<any provider>, blank to skip)" "$pi_key_type")"
+      pi_key_type="$(_sv_read "Key type (openrouter|openai|anthropic|<provider>, blank to skip)" "$pi_key_type")"
       if [ -n "$pi_key_type" ]; then
         new="$(_sv_secret "API key for $pi_key_type (leave blank to keep / skip)")"; [ -n "$new" ] && pi_key="$new"
       fi
@@ -181,73 +224,152 @@ CLK_PI_MODEL=$pi_model
 CLK_PI_API_KEY=$pi_key
 CLK_PI_KEY_TYPE=$pi_key_type
 
-# Git identity for kickoff commits (overrides global git config inside the container)
+# Git identity for kickoff commits (overrides global git config inside containers)
 CLK_GIT_NAME=$git_name
 CLK_GIT_EMAIL=$git_email
 ENV
 
   printf '\n[setup] saved %s\n' "$env_file" >/dev/tty
-  printf '[setup] run %s to start a new session\n' "'$(basename "$0")'" >/dev/tty
 }
 
-# ---------------------------------------------------------------------------
-# 1. Parse args
-# ---------------------------------------------------------------------------
-# The idea/prompt argument is optional. When omitted, the TUI opens with an
-# empty input field and the user types their idea directly into the
-# dashboard. When provided, the TUI displays it and dispatches the
-# engineering workflow before handing control to the user for follow-ups.
-if [ "${1:-}" = "--setup" ]; then
-  _clk_setup
-  exit 0
-fi
+# ===========================================================================
+# Apply built-in defaults for every var that has one.
+# Call this after loading .env and applying --arg overrides.
+# ===========================================================================
+_apply_defaults() {
+  CLK_PROVIDER="${CLK_PROVIDER:-shell}"
+  CLK_MAX_ITERATIONS="${CLK_MAX_ITERATIONS:-10}"
+  CLK_PROJECT_NAME="${CLK_PROJECT_NAME:-clk-app}"
+  CLK_RUN_INSTALL="${CLK_RUN_INSTALL:-false}"
+  CLK_NO_TUI="${CLK_NO_TUI:-false}"
+  CLK_AUTH_MODE="${CLK_AUTH_MODE:-cli}"
+  CLK_OLLAMA_ENDPOINT="${CLK_OLLAMA_ENDPOINT:-http://localhost:11434}"
+  CLK_OLLAMA_MODEL="${CLK_OLLAMA_MODEL:-llama3.1}"
+}
 
-if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  cat <<USAGE
-usage: $(basename "$0") [--setup] ["<idea or problem statement>"]
+# ===========================================================================
+# Validate resolved config.  Prints one line per problem; silent when OK.
+# ===========================================================================
+_clk_missing() {
+  case "$CLK_PROVIDER" in
+    shell) ;;
+    claude)
+      if [ "${CLK_AUTH_MODE}" = "apikey" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+        echo "ANTHROPIC_API_KEY is unset — required when CLK_PROVIDER=claude and CLK_AUTH_MODE=apikey (or set CLK_AUTH_MODE=cli to use 'claude login')"
+      fi ;;
+    codex)
+      if [ "${CLK_AUTH_MODE}" = "apikey" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+        echo "OPENAI_API_KEY is unset — required when CLK_PROVIDER=codex and CLK_AUTH_MODE=apikey (or set CLK_AUTH_MODE=cli)"
+      fi ;;
+    gemini)
+      if [ "${CLK_AUTH_MODE}" = "apikey" ] && [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${GOOGLE_API_KEY:-}" ]; then
+        echo "GEMINI_API_KEY (or GOOGLE_API_KEY) is unset — required when CLK_PROVIDER=gemini and CLK_AUTH_MODE=apikey"
+      fi ;;
+    pi) ;;   # Nothing strictly required; pi login handles auth
+    ollama) ;; # Has built-in defaults
+    openwebui)
+      [ -z "${CLK_OPENWEBUI_ENDPOINT:-}" ] && \
+        echo "CLK_OPENWEBUI_ENDPOINT is unset — required for CLK_PROVIDER=openwebui"
+      [ -z "${CLK_OPENWEBUI_API_KEY:-}" ] && \
+        echo "CLK_OPENWEBUI_API_KEY is unset — required for CLK_PROVIDER=openwebui"
+      [ -z "${CLK_OPENWEBUI_MODEL:-}" ] && \
+        echo "CLK_OPENWEBUI_MODEL is unset — required for CLK_PROVIDER=openwebui (use --setup to pick from a live model list)"
+      ;;
+    *)
+      echo "CLK_PROVIDER='$CLK_PROVIDER' is not recognised (valid: shell|claude|codex|gemini|pi|ollama|openwebui)"
+      ;;
+  esac
 
-  --setup   Interactive wizard: copies .env.example → .env (if absent), then
-            prompts for every setting and saves the result to .env. Run this
-            first inside a Docker container before starting a session.
+  if ! [[ "$CLK_MAX_ITERATIONS" =~ ^[0-9]+$ ]]; then
+    echo "CLK_MAX_ITERATIONS must be a positive integer (got '$CLK_MAX_ITERATIONS')"
+  fi
 
-If no argument is given, the TUI opens with an empty input field.
+  if [ "${CLK_NO_TUI:-false}" = "true" ] && [ -z "${IDEA:-}" ]; then
+    echo "An idea argument is required when CLK_NO_TUI=true — pass it as the first positional argument"
+  fi
+}
 
-Optional environment overrides (also accepted via .env in the script directory):
-  CLK_PROVIDER          shell | claude | codex | gemini | pi | ollama | openwebui
-                                                               (default: shell)
-  CLK_MAX_ITERATIONS    integer                                (default: 10)
-  CLK_PROJECT_NAME      project name shown in commits          (default: clk-app)
-  CLK_RUN_INSTALL       true | false - run scripts/install_local.sh first (default: false)
-  CLK_NO_TUI            true | false - skip the TUI and run the legacy
-                        init/idea/plan/run/loop pipeline (default: false)
-  CLK_AUTH_MODE         cli | apikey                            (default: cli)
-                        cli    = trust the provider CLI's own auth (e.g. you
-                                 already ran 'claude login') and don't prompt
-                                 for an API key
-                        apikey = prompt for / require the API key env var
-  ANTHROPIC_API_KEY     used if CLK_PROVIDER=claude  AND CLK_AUTH_MODE=apikey
-  OPENAI_API_KEY        used if CLK_PROVIDER=codex   AND CLK_AUTH_MODE=apikey
-  GEMINI_API_KEY        used if CLK_PROVIDER=gemini  AND CLK_AUTH_MODE=apikey
-                        (GOOGLE_API_KEY is also accepted for gemini)
-  CLK_OLLAMA_ENDPOINT   used if CLK_PROVIDER=ollama            (default: http://localhost:11434)
-  CLK_OLLAMA_MODEL      used if CLK_PROVIDER=ollama            (default: llama3.1)
-  CLK_OPENWEBUI_ENDPOINT  used if CLK_PROVIDER=openwebui        (no default; required)
-  CLK_OPENWEBUI_API_KEY   used if CLK_PROVIDER=openwebui        (bearer token)
-  CLK_OPENWEBUI_MODEL     used if CLK_PROVIDER=openwebui        (prompted if unset)
-  CLK_PI_MODEL            used if CLK_PROVIDER=pi               (e.g. openrouter/free)
-  CLK_PI_KEY_TYPE         used if CLK_PROVIDER=pi               (any provider name, e.g. openrouter, openai,
-                                                               anthropic, mistral — sets NAME_API_KEY)
-  CLK_PI_API_KEY          used if CLK_PROVIDER=pi               (key for the provider named in CLK_PI_KEY_TYPE)
-  CLK_GIT_NAME          git user.name  for kickoff commits
-  CLK_GIT_EMAIL         git user.email for kickoff commits
+# ===========================================================================
+# 1. Parse arguments
+# ===========================================================================
+SETUP_MODE=false
+_OVR_PROVIDER=""
+_OVR_MAX_ITER=""
+_OVR_PROJ_NAME=""
+_OVR_NO_TUI=""
+_OVR_RUN_INSTALL=""
+IDEA=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --setup) SETUP_MODE=true; shift ;;
+    -h|--help)
+      cat <<USAGE
+usage: $(basename "$0") [OPTIONS] ["<idea or problem statement>"]
+
+Options:
+  --setup                  Interactive wizard to write or update .env
+  --provider <p>           Override CLK_PROVIDER
+  --max-iterations <n>     Override CLK_MAX_ITERATIONS
+  --project-name <name>    Override CLK_PROJECT_NAME
+  --no-tui                 Set CLK_NO_TUI=true  (non-interactive pipeline)
+  --tui                    Set CLK_NO_TUI=false (TUI dashboard, the default)
+  --run-install            Set CLK_RUN_INSTALL=true
+  -h, --help               Show this help
+
+Configuration (highest-to-lowest precedence):
+  --arg overrides  →  shell env vars  →  .env file  →  built-in defaults
+
+Providers:
+  shell      No AI — harness scaffolding only
+  claude     Anthropic Claude CLI  (CLK_AUTH_MODE=cli, default) or API key
+  codex      OpenAI Codex CLI      (CLK_AUTH_MODE=cli, default) or API key
+  gemini     Google Gemini CLI     (CLK_AUTH_MODE=cli, default) or API key
+  pi         Pi coding agent       (CLK_PI_MODEL, CLK_PI_KEY_TYPE, CLK_PI_API_KEY)
+  ollama     Local Ollama          (CLK_OLLAMA_ENDPOINT, CLK_OLLAMA_MODEL)
+  openwebui  OpenWebUI             (CLK_OPENWEBUI_ENDPOINT, CLK_OPENWEBUI_API_KEY,
+                                    CLK_OPENWEBUI_MODEL)
+
+Run --setup to configure interactively; values are saved to .env and used as
+defaults in future runs.  If required config is missing on a normal run,
+kickoff prints what is needed and offers to run --setup immediately.
+
+Environment variables (accepted directly or via .env):
+  CLK_PROVIDER, CLK_MAX_ITERATIONS, CLK_PROJECT_NAME, CLK_RUN_INSTALL,
+  CLK_NO_TUI, CLK_AUTH_MODE, ANTHROPIC_API_KEY, OPENAI_API_KEY,
+  GEMINI_API_KEY, GOOGLE_API_KEY, CLK_OLLAMA_ENDPOINT, CLK_OLLAMA_MODEL,
+  CLK_OPENWEBUI_ENDPOINT, CLK_OPENWEBUI_API_KEY, CLK_OPENWEBUI_MODEL,
+  CLK_PI_MODEL, CLK_PI_KEY_TYPE, CLK_PI_API_KEY, CLK_GIT_NAME, CLK_GIT_EMAIL
 USAGE
+      exit 0
+      ;;
+    --provider=*)       _OVR_PROVIDER="${1#*=}";  shift ;;
+    --provider)         _OVR_PROVIDER="$2";        shift 2 ;;
+    --max-iterations=*) _OVR_MAX_ITER="${1#*=}";   shift ;;
+    --max-iterations)   _OVR_MAX_ITER="$2";         shift 2 ;;
+    --project-name=*)   _OVR_PROJ_NAME="${1#*=}";  shift ;;
+    --project-name)     _OVR_PROJ_NAME="$2";        shift 2 ;;
+    --no-tui)           _OVR_NO_TUI="true";         shift ;;
+    --tui)              _OVR_NO_TUI="false";         shift ;;
+    --run-install)      _OVR_RUN_INSTALL="true";    shift ;;
+    --)                 shift; [ $# -gt 0 ] && { IDEA="$1"; shift; }; break ;;
+    -*)
+      printf '[kickoff] unknown option: %s\n' "$1" >&2
+      printf 'Run  %s --help  for usage.\n' "'$(basename "$0")'" >&2
+      exit 2 ;;
+    *) IDEA="$1"; shift ;;
+  esac
+done
+
+if $SETUP_MODE; then
+  _clk_setup
+  printf '[setup] run  %s  to start a new session\n' "'$(basename "$0")'" >/dev/tty
   exit 0
 fi
-IDEA="${1:-}"
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # 2. Load .env (export every assigned var so subprocesses inherit it)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 if [ -f "$SCRIPT_DIR/.env" ]; then
   echo "[kickoff] loading $SCRIPT_DIR/.env"
   set -a
@@ -264,168 +386,63 @@ if [ -n "${CLK_GIT_EMAIL:-}" ]; then
   git config --global user.email "$CLK_GIT_EMAIL" 2>/dev/null || true
 fi
 
-# ---------------------------------------------------------------------------
-# 3. Prompt helpers (ask only if unset/empty AND we have a TTY)
-# ---------------------------------------------------------------------------
-prompt_default() {
-  local name="$1" label="$2" default="$3"
-  local current="${!name:-}"
-  if [ -n "$current" ]; then return; fi
+# ===========================================================================
+# 3. Apply --arg overrides, then fill in built-in defaults
+# ===========================================================================
+[ -n "$_OVR_PROVIDER" ]    && CLK_PROVIDER="$_OVR_PROVIDER"
+[ -n "$_OVR_MAX_ITER" ]    && CLK_MAX_ITERATIONS="$_OVR_MAX_ITER"
+[ -n "$_OVR_PROJ_NAME" ]   && CLK_PROJECT_NAME="$_OVR_PROJ_NAME"
+[ -n "$_OVR_NO_TUI" ]      && CLK_NO_TUI="$_OVR_NO_TUI"
+[ -n "$_OVR_RUN_INSTALL" ] && CLK_RUN_INSTALL="$_OVR_RUN_INSTALL"
+
+_apply_defaults
+
+# ===========================================================================
+# 4. Validate; if anything is missing, offer --setup then retry or exit
+# ===========================================================================
+_MISSING="$(_clk_missing)"
+if [ -n "$_MISSING" ]; then
+  printf '[kickoff] Cannot start — missing or invalid configuration:\n\n' >&2
+  while IFS= read -r _line; do
+    printf '  • %s\n' "$_line" >&2
+  done <<< "$_MISSING"
+  printf '\n' >&2
+
+  _do_setup=false
   if [ -t 0 ]; then
-    local v
-    read -r -p "$label [$default]: " v
-    printf -v "$name" '%s' "${v:-$default}"
+    printf '[kickoff] Run  %s --setup  to configure, or answer below.\n' \
+           "'$(basename "$0")'" >&2
+    IFS= read -r -p "[kickoff] Run --setup now? [y/N]: " _ans
+    [ "${_ans,,}" = "y" ] && _do_setup=true
   else
-    printf -v "$name" '%s' "$default"
+    printf '[kickoff] Re-run with  %s --setup  to configure interactively.\n' \
+           "'$(basename "$0")'" >&2
   fi
-  export "$name"
-}
 
-prompt_secret() {
-  local name="$1" label="$2"
-  local current="${!name:-}"
-  if [ -n "$current" ]; then return; fi
-  if [ -t 0 ]; then
-    local v
-    read -r -s -p "$label: " v
-    echo
-    printf -v "$name" '%s' "$v"
-  else
-    printf -v "$name" '%s' ""
-  fi
-  export "$name"
-}
-
-# ---------------------------------------------------------------------------
-# 4. Resolve settings
-# ---------------------------------------------------------------------------
-prompt_default CLK_PROVIDER       "Provider (shell|claude|codex|gemini|pi|ollama|openwebui)" "shell"
-prompt_default CLK_MAX_ITERATIONS "Max loop iterations"                          "10"
-prompt_default CLK_PROJECT_NAME   "Project name"                                 "clk-app"
-prompt_default CLK_RUN_INSTALL    "Run scripts/install_local.sh? (true|false)"   "false"
-
-# How CLI-based providers authenticate. Default 'cli' = trust whatever the
-# tool already has (e.g. 'claude login'). 'apikey' = pass an API key via
-# the standard env var. We only ask when the chosen provider is one of
-# the CLI-driven ones.
-case "$CLK_PROVIDER" in
-  claude|codex|gemini)
-    prompt_default CLK_AUTH_MODE "Auth mode (cli=use the CLI's existing auth, apikey=set an API key)" "cli"
-    case "$CLK_AUTH_MODE" in
-      cli|apikey) ;;
-      *) echo "[kickoff] invalid CLK_AUTH_MODE='$CLK_AUTH_MODE' (use cli or apikey)" >&2; exit 2 ;;
-    esac
-    ;;
-esac
-
-case "$CLK_PROVIDER" in
-  shell)   ;;
-  claude)
-    if [ "${CLK_AUTH_MODE:-cli}" = "apikey" ]; then
-      prompt_secret ANTHROPIC_API_KEY "ANTHROPIC_API_KEY"
-    else
-      echo "[kickoff] claude: using CLI auth (run 'claude login' if you haven't)"
-    fi
-    ;;
-  codex)
-    if [ "${CLK_AUTH_MODE:-cli}" = "apikey" ]; then
-      prompt_secret OPENAI_API_KEY "OPENAI_API_KEY"
-    else
-      echo "[kickoff] codex: using CLI auth (run 'codex login' if you haven't)"
-    fi
-    ;;
-  gemini)
-    if [ "${CLK_AUTH_MODE:-cli}" = "apikey" ]; then
-      if [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${GOOGLE_API_KEY:-}" ]; then
-        prompt_secret GEMINI_API_KEY "GEMINI_API_KEY (or set GOOGLE_API_KEY)"
-      fi
-    else
-      echo "[kickoff] gemini: using CLI auth (run 'gemini auth' or equivalent if needed)"
-    fi
-    ;;
-  pi)
-    prompt_default CLK_PI_MODEL "pi model (e.g. openrouter/free, openrouter/auto, leave blank for pi default)" ""
-    if [ -t 0 ] && command -v pi >/dev/null 2>&1; then
-      read -r -p "[kickoff] Open pi TUI to configure (login, profiles, etc.) before continuing? (y/N): " open_pi_rt
-      if [ "${open_pi_rt,,}" = "y" ]; then
-        echo "[kickoff] Dropping into a shell — run pi commands (e.g. 'pi login'), then type 'exit' to return."
-        PS1='[pi-setup]$ ' "${SHELL:-bash}" -i || true
-        echo "[kickoff] Returned from pi setup shell."
-      fi
-    fi
-    prompt_default CLK_PI_KEY_TYPE "Key type — sets which env var receives your API key (openrouter|openai|anthropic|<any provider>, blank to skip)" ""
-    if [ -n "${CLK_PI_KEY_TYPE:-}" ] && [ -z "${CLK_PI_API_KEY:-}" ] && [ -t 0 ]; then
-      echo "  Tip: get a free key at openrouter.ai; leave blank if pi login above already handled auth."
-      read -r -s -p "API key for ${CLK_PI_KEY_TYPE} (leave blank to skip): " CLK_PI_API_KEY
-      echo
-      export CLK_PI_API_KEY
-    fi
-    ;;
-  ollama)
-    prompt_default CLK_OLLAMA_ENDPOINT "Ollama endpoint" "http://localhost:11434"
-    prompt_default CLK_OLLAMA_MODEL    "Ollama model"    "llama3.1"
-    ;;
-  openwebui)
-    prompt_default CLK_OPENWEBUI_ENDPOINT "OpenWebUI endpoint (e.g. https://chat.example.com)" "http://localhost:8080"
-    prompt_secret  CLK_OPENWEBUI_API_KEY  "OpenWebUI API key (Bearer token)"
-    if [ -z "${CLK_OPENWEBUI_MODEL:-}" ]; then
-      # Try fetching the model list; let the user pick by index. Fall
-      # back to free-form entry if the host is unreachable / unauth'd.
-      MODELS_TEXT="$(CLK_OPENWEBUI_ENDPOINT="$CLK_OPENWEBUI_ENDPOINT" \
-                     CLK_OPENWEBUI_API_KEY="$CLK_OPENWEBUI_API_KEY" \
-                     PYTHONPATH="$SCRIPT_DIR" python3 - <<'PY'
-import os, sys
-sys.path.insert(0, os.environ.get("PYTHONPATH",""))
-try:
-    from clk_harness.providers.openwebui import list_models
-    models = list_models(os.environ["CLK_OPENWEBUI_ENDPOINT"], os.environ.get("CLK_OPENWEBUI_API_KEY",""))
-except Exception:
-    models = []
-print("\n".join(models))
-PY
-)"
-      if [ -n "$MODELS_TEXT" ]; then
-        echo "[kickoff] available models on $CLK_OPENWEBUI_ENDPOINT:"
-        n=0
-        while IFS= read -r m; do
-          n=$((n+1))
-          printf "  %2d) %s\n" "$n" "$m"
-        done <<< "$MODELS_TEXT"
-        if [ -t 0 ]; then
-          read -r -p "Pick a number, or type a model name: " pick
-          if [[ "$pick" =~ ^[0-9]+$ ]]; then
-            CLK_OPENWEBUI_MODEL="$(echo "$MODELS_TEXT" | sed -n "${pick}p")"
-          else
-            CLK_OPENWEBUI_MODEL="$pick"
-          fi
-        else
-          CLK_OPENWEBUI_MODEL="$(echo "$MODELS_TEXT" | head -n1)"
-        fi
-      else
-        echo "[kickoff] could not fetch model list from $CLK_OPENWEBUI_ENDPOINT (offline/unauth?)"
-        prompt_default CLK_OPENWEBUI_MODEL "OpenWebUI model name (type it)" "llama3.1"
-      fi
-      export CLK_OPENWEBUI_MODEL
-    fi
-    if [ -z "${CLK_OPENWEBUI_MODEL:-}" ]; then
-      echo "[kickoff] CLK_OPENWEBUI_MODEL is required for openwebui" >&2
+  if $_do_setup; then
+    _clk_setup
+    # Reload .env and re-apply overrides + defaults.
+    [ -f "$SCRIPT_DIR/.env" ] && { set -a; . "$SCRIPT_DIR/.env"; set +a; }
+    [ -n "$_OVR_PROVIDER" ]    && CLK_PROVIDER="$_OVR_PROVIDER"
+    [ -n "$_OVR_MAX_ITER" ]    && CLK_MAX_ITERATIONS="$_OVR_MAX_ITER"
+    [ -n "$_OVR_PROJ_NAME" ]   && CLK_PROJECT_NAME="$_OVR_PROJ_NAME"
+    [ -n "$_OVR_NO_TUI" ]      && CLK_NO_TUI="$_OVR_NO_TUI"
+    [ -n "$_OVR_RUN_INSTALL" ] && CLK_RUN_INSTALL="$_OVR_RUN_INSTALL"
+    _apply_defaults
+    _MISSING="$(_clk_missing)"
+    if [ -n "$_MISSING" ]; then
+      printf '[kickoff] Still missing after setup — cannot continue:\n\n' >&2
+      while IFS= read -r _line; do printf '  • %s\n' "$_line" >&2; done <<< "$_MISSING"
       exit 2
     fi
-    ;;
-  *)
-    echo "[kickoff] unknown provider: $CLK_PROVIDER" >&2
+  else
     exit 2
-    ;;
-esac
-
-if ! [[ "$CLK_MAX_ITERATIONS" =~ ^[0-9]+$ ]]; then
-  echo "[kickoff] CLK_MAX_ITERATIONS must be an integer (got '$CLK_MAX_ITERATIONS')" >&2
-  exit 2
+  fi
 fi
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # 5. Create kickoff directory under workspace/; never touch the source tree
-# ---------------------------------------------------------------------------
+# ===========================================================================
 TS="$(date +%Y%m%d-%H%M%S)"
 WORKSPACE_DIR="$(pwd)/workspace"
 KICKOFF_DIR="$WORKSPACE_DIR/kickoff-$TS"
@@ -489,9 +506,9 @@ cat > "$KICKOFF_DIR/KICKOFF.md" <<MANIFEST
 This directory is fully self-contained. Delete it to reset.
 MANIFEST
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # 6. Run the harness inside the kickoff directory
-# ---------------------------------------------------------------------------
+# ===========================================================================
 cd "$KICKOFF_DIR"
 
 # Anchor the project root here so find_project_root() returns this dir even
@@ -534,12 +551,12 @@ echo "[kickoff] activating provider: $CLK_PROVIDER"
 CLK_PROVIDER="$CLK_PROVIDER" \
 CLK_OLLAMA_ENDPOINT="${CLK_OLLAMA_ENDPOINT:-http://localhost:11434}" \
 CLK_OLLAMA_MODEL="${CLK_OLLAMA_MODEL:-llama3.1}" \
-CLK_OPENWEBUI_ENDPOINT="${CLK_OPENWEBUI_ENDPOINT:-http://localhost:8080}" \
+CLK_OPENWEBUI_ENDPOINT="${CLK_OPENWEBUI_ENDPOINT:-}" \
 CLK_OPENWEBUI_API_KEY="${CLK_OPENWEBUI_API_KEY:-}" \
 CLK_OPENWEBUI_MODEL="${CLK_OPENWEBUI_MODEL:-}" \
 CLK_PI_MODEL="${CLK_PI_MODEL:-}" \
 CLK_PI_API_KEY="${CLK_PI_API_KEY:-}" \
-CLK_PI_KEY_TYPE="${CLK_PI_KEY_TYPE:-openrouter}" \
+CLK_PI_KEY_TYPE="${CLK_PI_KEY_TYPE:-}" \
 CLK_AUTH_MODE="${CLK_AUTH_MODE:-cli}" \
 python3 - <<'PY'
 import json, os
@@ -552,8 +569,8 @@ provs = data.setdefault("providers", {})
 auth_mode = os.environ.get("CLK_AUTH_MODE", "cli")
 # For CLI-driven providers, mode=cli (default) spawns the CLI subprocess.
 # mode=api makes the provider call the upstream HTTP API directly with no
-# subprocess at all - which is exactly what the user expects when they
-# choose "apikey" auth: the API key alone, no local CLI dependency.
+# subprocess — which is exactly what the user expects when they choose
+# "apikey" auth: the API key alone, no local CLI dependency.
 for cli_provider in ("claude", "codex", "gemini"):
     provs.setdefault(cli_provider, {"type": cli_provider})
     provs[cli_provider]["mode"] = "api" if auth_mode == "apikey" else "cli"
@@ -583,19 +600,16 @@ elif provider == "pi":
     pi_key_type = os.environ.get("CLK_PI_KEY_TYPE", "").strip().lower()
     if pi_model:
         provs["pi"]["model"] = pi_model
-    if pi_key_type and pi_key:
-        provs["pi"]["api_key"]  = pi_key
+    if pi_key:
+        provs["pi"]["api_key"] = pi_key
+    if pi_key_type:
         provs["pi"]["key_type"] = pi_key_type
 p.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 "$CLK" configure --set "default_provider=$CLK_PROVIDER" >/dev/null
 
 if [ "${CLK_NO_TUI:-false}" = "true" ]; then
-  # Legacy non-interactive pipeline. Useful for CI / smoke tests.
-  if [ -z "$IDEA" ]; then
-    echo "[kickoff] CLK_NO_TUI=true requires an idea argument" >&2
-    exit 2
-  fi
+  # Non-interactive pipeline. Useful for CI / smoke tests and Docker without -it.
   echo "[kickoff] clk idea"
   "$CLK" idea "$IDEA" --title "$CLK_PROJECT_NAME"
   echo "[kickoff] clk plan"
