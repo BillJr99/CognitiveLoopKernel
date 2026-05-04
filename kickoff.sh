@@ -270,8 +270,6 @@ _clk_missing() {
     openwebui)
       [ -z "${CLK_OPENWEBUI_ENDPOINT:-}" ] && \
         echo "CLK_OPENWEBUI_ENDPOINT is unset — required for CLK_PROVIDER=openwebui"
-      [ -z "${CLK_OPENWEBUI_API_KEY:-}" ] && \
-        echo "CLK_OPENWEBUI_API_KEY is unset — required for CLK_PROVIDER=openwebui"
       [ -z "${CLK_OPENWEBUI_MODEL:-}" ] && \
         echo "CLK_OPENWEBUI_MODEL is unset — required for CLK_PROVIDER=openwebui (use --setup to pick from a live model list)"
       ;;
@@ -344,11 +342,17 @@ USAGE
       exit 0
       ;;
     --provider=*)       _OVR_PROVIDER="${1#*=}";  shift ;;
-    --provider)         _OVR_PROVIDER="$2";        shift 2 ;;
+    --provider)
+      [ $# -lt 2 ] && { printf '[kickoff] --provider requires a value\n' >&2; exit 2; }
+      _OVR_PROVIDER="$2"; shift 2 ;;
     --max-iterations=*) _OVR_MAX_ITER="${1#*=}";   shift ;;
-    --max-iterations)   _OVR_MAX_ITER="$2";         shift 2 ;;
+    --max-iterations)
+      [ $# -lt 2 ] && { printf '[kickoff] --max-iterations requires a value\n' >&2; exit 2; }
+      _OVR_MAX_ITER="$2"; shift 2 ;;
     --project-name=*)   _OVR_PROJ_NAME="${1#*=}";  shift ;;
-    --project-name)     _OVR_PROJ_NAME="$2";        shift 2 ;;
+    --project-name)
+      [ $# -lt 2 ] && { printf '[kickoff] --project-name requires a value\n' >&2; exit 2; }
+      _OVR_PROJ_NAME="$2"; shift 2 ;;
     --no-tui)           _OVR_NO_TUI="true";         shift ;;
     --tui)              _OVR_NO_TUI="false";         shift ;;
     --run-install)      _OVR_RUN_INSTALL="true";    shift ;;
@@ -409,10 +413,10 @@ if [ -n "$_MISSING" ]; then
   printf '\n' >&2
 
   _do_setup=false
-  if [ -t 0 ]; then
+  if [ -e /dev/tty ]; then
     printf '[kickoff] Run  %s --setup  to configure, or answer below.\n' \
            "'$(basename "$0")'" >&2
-    IFS= read -r -p "[kickoff] Run --setup now? [y/N]: " _ans
+    IFS= read -r -p "[kickoff] Run --setup now? [y/N]: " _ans </dev/tty
     [ "${_ans,,}" = "y" ] && _do_setup=true
   else
     printf '[kickoff] Re-run with  %s --setup  to configure interactively.\n' \

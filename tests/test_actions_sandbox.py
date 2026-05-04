@@ -37,9 +37,14 @@ def test_resolve_safe_rejects_dot_clk_writes(paths: Paths) -> None:
 
 def test_resolve_safe_allows_blackboard_writes(paths: Paths) -> None:
     """Blackboard is an explicit exception: agents may write there directly."""
-    target = actions._resolve_safe(paths.root, ".clk/blackboard/my-post.json")
+    target = actions._resolve_safe(paths.root, ".clk/blackboard/my-post.json", allow_blackboard=True)
     assert target is not None
     assert target == (paths.root / ".clk" / "blackboard" / "my-post.json").resolve()
+
+
+def test_resolve_safe_rejects_blackboard_without_flag(paths: Paths) -> None:
+    """Without allow_blackboard, blackboard paths are rejected like any .clk/ path."""
+    assert actions._resolve_safe(paths.root, ".clk/blackboard/my-post.json") is None
 
 
 def test_normalize_rel_rewrites_bare_blackboard_prefix(paths: Paths) -> None:
@@ -50,7 +55,7 @@ def test_normalize_rel_rewrites_bare_blackboard_prefix(paths: Paths) -> None:
 
 def test_resolve_safe_routes_bare_blackboard_to_clk(paths: Paths) -> None:
     """``blackboard/x`` resolves into ``.clk/blackboard/x``, not project root."""
-    target = actions._resolve_safe(paths.root, "blackboard/my-post.json")
+    target = actions._resolve_safe(paths.root, "blackboard/my-post.json", allow_blackboard=True)
     assert target is not None
     assert target == (paths.root / ".clk" / "blackboard" / "my-post.json").resolve()
 
