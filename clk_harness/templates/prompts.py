@@ -364,16 +364,21 @@ B. Decomposition + workflow
     1. At least one substantive work stage (engineer, researcher, etc.)
     2. At least one ralph stage for iterative refinement of the output
     3. At least one qa stage for validation (typically the final stage)
-  Do not schedule ralph before a runnable or inspectable candidate exists.
-  First produce a candidate, then refine it with ralph, then validate with qa.
+  ralph has two distinct modes — the scheduling rule differs for each:
+    • Refinement mode: requires an existing candidate. Do NOT schedule
+      ralph-refinement before the engineer stage produces something
+      runnable or inspectable. Order: engineer → ralph (refinement) → qa.
+    • Research mode (Karpathy autoresearch): surveys the design space and
+      runs bounded experiments. This mode does NOT require a prior
+      candidate and SHOULD precede the engineer stage when numeric targets
+      are involved. Order: ralph (research) → engineer → ralph (refinement) → qa.
 - When the main objective or any stage's sub-objective has a quantifiable
   numeric target (latency, throughput, test-pass rate, benchmark score,
   coverage, error rate, binary size, memory), add a dedicated ralph stage
-  running in research mode that precedes the engineer implementation stage.
+  running in research mode before the engineer implementation stage.
   This autoresearch stage surveys the design space and runs bounded
-  experiments so the engineer applies a measured, evidence-backed approach
-  rather than an untested one. Treat this as mandatory whenever any
-  outcome can be expressed as a number — not optional.
+  experiments so the engineer applies a measured, evidence-backed approach.
+  Treat this as mandatory whenever any outcome can be expressed as a number.
 - Author the project's `engineering` workflow with PROPOSE_WORKFLOW so the
   harness uses your roster on the next cycle. You may also author other
   workflows (discovery, validation, etc.) when relevant.

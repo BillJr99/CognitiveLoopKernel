@@ -32,11 +32,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 # is not a terminal.
 # ===========================================================================
 _clk_setup() {
-  if [ -e /dev/tty ]; then
-    exec 3</dev/tty
-  else
-    exec 3<&0
-  fi
+  { exec 3</dev/tty; } 2>/dev/null || exec 3<&0
 
   _sv_read() {
     local prompt="$1" default="$2" v
@@ -120,7 +116,8 @@ _clk_setup() {
       ;;
     openwebui)
       owui_ep="$(_sv_read "OpenWebUI endpoint" "$owui_ep")"
-      new="$(_sv_secret   "OpenWebUI API key (optional — leave blank for unauthenticated instances)")"; [ -n "$new" ] && owui_key="$new"
+      printf '  (API key is only needed for authenticated OpenWebUI instances.)\n' >/dev/tty
+      new="$(_sv_secret   "OpenWebUI API key")"; [ -n "$new" ] && owui_key="$new"
       # Try to fetch the live model list so the user can pick by number.
       local models_text=""
       if [ -n "$owui_ep" ]; then
