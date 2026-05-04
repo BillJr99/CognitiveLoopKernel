@@ -62,8 +62,11 @@ def blackboard_dir(paths: Paths) -> Path:
     """Directory all blackboard posts live in.
 
     Lives under ``.clk/`` so it is part of harness state, not the
-    product. Agents cannot write here directly via ACTION:write —
-    they POST and the harness routes the file in.
+    product. Agents may write JSON files here via ``ACTION: write``
+    with path ``blackboard/<id>.json`` (the harness rewrites it); POST
+    blocks are preferred because the harness stamps metadata
+    automatically.  Edit, append, and delete are rejected by the
+    sandbox to preserve post immutability.
     """
     return paths.blackboard
 

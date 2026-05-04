@@ -45,7 +45,7 @@ committed automatically.
 ## Quick start
 
 The fastest path is the kickoff script, which copies the harness into a
-fresh `kickoff-<timestamp>/` directory, gives it its own git repo, and
+fresh `workspace/kickoff-<timestamp>/` directory, gives it its own git repo, and
 launches the TUI dashboard. The source tree is never modified.
 
 ```bash
@@ -195,7 +195,7 @@ docker volume create clk-workspace
 
 docker run --rm -it \
   -v clk-workspace:/app/workspace \
-  clk "A local-first journaling app that summarises my week"
+  clk "A local-first journaling app that summarizes my week"
 ```
 
 **Host directory** — kickoffs written directly to a directory on your machine:
@@ -203,7 +203,7 @@ docker run --rm -it \
 ```bash
 docker run --rm -it \
   -v /path/to/my/projects:/app/workspace \
-  clk "A local-first journaling app that summarises my week"
+  clk "A local-first journaling app that summarizes my week"
 ```
 
 **Anonymous volume** — Docker allocates a temporary volume that is
@@ -212,14 +212,14 @@ automatically removed when the container exits (`--rm` handles cleanup):
 ```bash
 docker run --rm -it \
   -v /app/workspace \
-  clk "A local-first journaling app that summarises my week"
+  clk "A local-first journaling app that summarizes my week"
 ```
 
-**Ephemeral** — no volume at all; kickoffs exist only inside the container's
-writable layer and are lost when it exits:
+**Ephemeral** — no explicit volume mount; Docker creates an anonymous volume
+for `/app/workspace` (declared in the image) and removes it with `--rm`:
 
 ```bash
-docker run --rm -it clk "A local-first journaling app that summarises my week"
+docker run --rm -it clk "A local-first journaling app that summarizes my week"
 ```
 
 ### Provider and authentication
@@ -232,7 +232,7 @@ docker run --rm -it \
   -e CLK_PROVIDER=claude \
   -e CLK_AUTH_MODE=apikey \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  clk "A local-first journaling app that summarises my week"
+  clk "A local-first journaling app that summarizes my week"
 ```
 
 For the `pi` provider with an OpenRouter key:
@@ -244,7 +244,7 @@ docker run --rm -it \
   -e CLK_PI_MODEL=openrouter/free \
   -e CLK_PI_KEY_TYPE=openrouter \
   -e CLK_PI_API_KEY=sk-or-... \
-  clk "A local-first journaling app that summarises my week"
+  clk "A local-first journaling app that summarizes my week"
 ```
 
 For `ollama` or `openwebui` running on the host, use `host.docker.internal`
@@ -255,7 +255,7 @@ docker run --rm -it \
   -v clk-workspace:/app/workspace \
   -e CLK_PROVIDER=ollama \
   -e CLK_OLLAMA_ENDPOINT=http://host.docker.internal:11434 \
-  clk "A local-first journaling app that summarises my week"
+  clk "A local-first journaling app that summarizes my week"
 ```
 
 ### Non-interactive / CI mode
@@ -270,7 +270,7 @@ docker run --rm \
   -e CLK_PROVIDER=claude \
   -e CLK_AUTH_MODE=apikey \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  clk "A local-first journaling app that summarises my week"
+  clk "A local-first journaling app that summarizes my week"
 ```
 
 ## Layout
@@ -446,7 +446,7 @@ The kickoff dir lays the agents' work out as a normal project tree
 with all harness machinery folded under `.clk/`:
 
 ```
-kickoff-<ts>/
+workspace/kickoff-<ts>/
   src/, tests/, README.md ...   # the project the agents are building
                                 # (agents write directly to project root)
   scripts/clk                   # convenience launcher shim

@@ -250,10 +250,9 @@ def _normalize_rel(root: Path, rel: str) -> str:
     return rel
 
 
-def _resolve_safe(root: Path, rel: str) -> Optional[Path]:
+def _resolve_safe(root: Path, rel: str, *, allow_blackboard: bool = False) -> Optional[Path]:
     """Resolve ``rel`` relative to the project ``root``, refusing escapes
-    and refusing any path that targets the harness (``.clk/``) tree,
-    with one exception: ``.clk/blackboard/`` may be written directly.
+    and refusing any path that targets the harness (``.clk/``) tree.
 
     Returns the resolved Path on success, or ``None`` when the path is
     rejected. The two failure modes:
@@ -262,12 +261,11 @@ def _resolve_safe(root: Path, rel: str) -> Optional[Path]:
         absolute paths).
       * The path resolves into ``.clk/`` — that subtree is reserved
         for the harness (config, runs, prompts, harness sources).
-        Exception: ``.clk/blackboard/`` is the shared cross-agent
-        scratchpad; agents are allowed to write there directly (or via
-        the short alias ``blackboard/`` which ``_normalize_rel`` maps
-        here).  POST blocks remain the preferred interface because the
-        harness stamps metadata automatically, but direct writes are
-        accepted for flexibility.
+        Exception: when ``allow_blackboard=True``, ``ACTION: write``
+        may target ``.clk/blackboard/`` directly (short alias
+        ``blackboard/`` is also accepted via ``_normalize_rel``).
+        Edit, append, and delete are never permitted on blackboard
+        paths to preserve post immutability.
     """
     rel = _normalize_rel(root, rel)
     if not rel:
@@ -283,8 +281,8 @@ def _resolve_safe(root: Path, rel: str) -> Optional[Path]:
         return None
     parts = relative.parts
     if parts and parts[0] == ".clk":
-        # Allow writes into the blackboard subtree only.
-        if len(parts) >= 2 and parts[1] == "blackboard":
+        # Allow writes (not edits/appends/deletes) into the blackboard subtree.
+        if allow_blackboard and len(parts) >= 2 and parts[1] == "blackboard":
             return candidate
         return None
     return candidate
@@ -320,8 +318,11 @@ def apply_actions(
     File-mutating actions resolve paths under ``paths.root`` (the
     project root, which is also ``paths.workspace`` under the current
     layout). The ``.clk/`` subtree is reserved for the harness and is
-    rejected by ``_resolve_safe``. ``run`` commands execute with cwd
-    set to the project root.
+    rejected by ``_resolve_safe``, except that ``ACTION: write`` may
+    target ``.clk/blackboard/`` directly (``blackboard/`` short alias
+    is also accepted). Edit, append, and delete are always rejected for
+    ``.clk/``, including blackboard, to preserve post immutability.
+    ``run`` commands execute with cwd set to the project root.
 
     Returns an ``ActionResult`` that callers should merge into the
     ``files_written`` reported on the AgentRun, so the TUI's per-card
@@ -447,7 +448,7 @@ def _rel(paths: Paths, target: Path) -> str:
 
 
 def _do_write(paths: Paths, action: Action, result: ActionResult, backup_root: Path) -> None:
-    target = _resolve_safe(paths.workspace, action.path)
+    target = _resolve_safe(paths.workspace, action.path, allow_blackboard=True)
     if target is None:
         result.skipped.append(f"write {action.path}: path_outside_workspace")
         return

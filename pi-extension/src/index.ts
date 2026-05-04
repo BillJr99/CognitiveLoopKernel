@@ -29,19 +29,7 @@ function piSubagentsInstalled(cwd?: string): boolean {
     return true;
   } catch { /* not in npm tree */ }
 
-  // 2. Global npm — `pi install npm:pi-subagents` delegates to npm install -g,
-  //    so the package lands in the global node_modules root.
-  try {
-    const globalRoot = execSync("npm root -g", { timeout: 5000 }).toString().trim();
-    if (existsSync(join(globalRoot, "pi-subagents"))) return true;
-    // Also try require.resolve so it works even if the entry point needs resolution.
-    try {
-      createRequire(import.meta.url).resolve("pi-subagents", { paths: [globalRoot] });
-      return true;
-    } catch { /* not there */ }
-  } catch { /* npm not on PATH or timed out */ }
-
-  // 3. Pi's settings.json — lists every extension Pi knows about regardless
+  // 2. Pi's settings.json — lists every extension Pi knows about regardless
   //    of where it's stored on disk.
   const settingsPaths = [
     join(homedir(), ".pi", "agent", "settings.json"),
@@ -52,7 +40,7 @@ function piSubagentsInstalled(cwd?: string): boolean {
       const settings = JSON.parse(readFileSync(sp, "utf8")) as Record<string, unknown>;
       const extensions = settings.extensions;
       if (Array.isArray(extensions) && extensions.some(
-        (e: unknown) => typeof e === "string" && /pi-subagents|subagent/i.test(e),
+        (e: unknown) => typeof e === "string" && /\bpi-subagents\b/i.test(e),
       )) return true;
     } catch { /* file missing or malformed */ }
   }
@@ -68,7 +56,7 @@ function piSubagentsInstalled(cwd?: string): boolean {
     try {
       for (const entry of readdirSync(extDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
-        if (/pi-subagents|subagent/i.test(entry.name)) return true;
+        if (/^pi-subagents$/i.test(entry.name)) return true;
         // Also check the package.json inside the subdirectory.
         try {
           const pkg = JSON.parse(
@@ -79,6 +67,18 @@ function piSubagentsInstalled(cwd?: string): boolean {
       }
     } catch { /* directory missing */ }
   }
+
+  // 4. Global npm — `pi install npm:pi-subagents` delegates to npm install -g.
+  //    This check is last because execSync blocks the event loop; try fast
+  //    filesystem checks first.
+  try {
+    const globalRoot = execSync("npm root -g", { timeout: 5000 }).toString().trim();
+    if (existsSync(join(globalRoot, "pi-subagents"))) return true;
+    try {
+      createRequire(import.meta.url).resolve("pi-subagents", { paths: [globalRoot] });
+      return true;
+    } catch { /* not there */ }
+  } catch { /* npm not on PATH or timed out */ }
 
   return false;
 }

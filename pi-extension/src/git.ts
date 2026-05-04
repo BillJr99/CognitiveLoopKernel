@@ -58,6 +58,12 @@ export async function checkpoint(
 
 export async function revertTo(cwd: string, sha: string, signal?: AbortSignal): Promise<void> {
   await git(cwd, ["reset", "--hard", sha], signal);
+  // Remove untracked files/dirs that a failed dispatch may have created.
+  await git(cwd, ["clean", "-fd"], signal);
+}
+
+export async function abortMerge(cwd: string, signal?: AbortSignal): Promise<void> {
+  await git(cwd, ["merge", "--abort"], signal);
 }
 
 export async function currentBranch(cwd: string, signal?: AbortSignal): Promise<string> {

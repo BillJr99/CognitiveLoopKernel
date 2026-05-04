@@ -124,7 +124,7 @@ _clk_setup() {
         open_pi="$(_sv_read "Open pi TUI to configure (login, profiles, etc.) before continuing? (y/N)" "N")"
         if [ "${open_pi,,}" = "y" ]; then
           printf '[setup] Dropping into a shell — run pi commands (e.g. `pi login`), then type `exit` to return.\n' >/dev/tty
-          SHELL_PROMPT='[pi-setup]$ ' "${SHELL:-bash}" </dev/tty >/dev/tty 2>/dev/tty || true
+          PS1='[pi-setup]$ ' "${SHELL:-bash}" -i </dev/tty >/dev/tty 2>/dev/tty || true
           printf '[setup] Returned from pi setup shell.\n' >/dev/tty
         fi
       fi
@@ -349,7 +349,7 @@ case "$CLK_PROVIDER" in
       read -r -p "[kickoff] Open pi TUI to configure (login, profiles, etc.) before continuing? (y/N): " open_pi_rt
       if [ "${open_pi_rt,,}" = "y" ]; then
         echo "[kickoff] Dropping into a shell — run pi commands (e.g. 'pi login'), then type 'exit' to return."
-        SHELL_PROMPT='[pi-setup]$ ' "${SHELL:-bash}" || true
+        PS1='[pi-setup]$ ' "${SHELL:-bash}" -i || true
         echo "[kickoff] Returned from pi setup shell."
       fi
     fi
