@@ -67,6 +67,9 @@ const NETWORK_PATTERNS: RegExp[] = [
   /network.*error/i,
   /socket.*hang/i,
   /failed to fetch/i,
+  /operation was aborted/i,
+  /\bAbortError\b/,
+  /ABORT_ERR/,
 ];
 
 export type ErrorClass = "rate_limit" | "model_error" | "redaction" | "max_turns" | "network" | "other";
