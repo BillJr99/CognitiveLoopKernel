@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { killAllSubagentSessions } from "./subagent.js";
 
 /**
  * The active CLK orchestration run, if any. We track this at module scope so
@@ -57,7 +58,10 @@ export function mergeSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal | un
 }
 
 export function installAbortBridges(pi: ExtensionAPI): void {
-  pi.on("session_shutdown", async () => endRun("session_shutdown"));
+  pi.on("session_shutdown", async () => {
+    await killAllSubagentSessions();
+    endRun("session_shutdown");
+  });
 
   pi.registerCommand("clk-abort", {
     description: "Abort the active /clk orchestration run, if any.",
@@ -67,14 +71,14 @@ export function installAbortBridges(pi: ExtensionAPI): void {
         return;
       }
       endRun("user requested via /clk-abort");
-      // Cancel the chief's current model turn cooperatively. pi-subagents
-      // forwards the parent abort signal to in-flight child sessions, so
-      // any spawned subagents are torn down too.
+      // Cancel the chief's current model turn; AbortSignal propagates to any
+      // live spawnSubagent() calls, which kill their tmux sessions via the
+      // registered abort listener.
       if (!ctx.isIdle()) {
         ctx.abort();
       }
       ctx.ui.setStatus("clk-run", "aborted");
-      ctx.ui.notify("CLK run aborted. Subagents in flight have been signalled to stop.", "warning");
+      ctx.ui.notify("CLK run aborted. In-flight subagent tmux sessions have been killed.", "warning");
     },
   });
 }
