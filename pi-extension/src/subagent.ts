@@ -165,7 +165,13 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
   });
 }
 
-export function registerSubagentTool(pi: ExtensionAPI): void {
+/**
+ * Register the subagent tool. Returns true if registered, false if another
+ * extension (e.g. pi-subagents) already owns the tool name — in which case
+ * that implementation is used and CLK's tmux spawner is skipped gracefully.
+ */
+export function registerSubagentTool(pi: ExtensionAPI): boolean {
+  try {
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
@@ -228,4 +234,9 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
       }
     },
   });
+  return true;
+  } catch (err) {
+    if (/conflict/i.test(String(err))) return false;
+    throw err;
+  }
 }

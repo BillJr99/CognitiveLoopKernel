@@ -20,11 +20,17 @@ import { classifyError, recoveryHint, withRetry } from "./errors.js";
 export default async function (pi: ExtensionAPI): Promise<void> {
   installAbortBridges(pi);
   registerClkTools(pi);
-  registerSubagentTool(pi);
+  const usingNativeSubagent = registerSubagentTool(pi);
 
   pi.on("session_start", async (_event, ctx) => {
     reset();
-    if (!(await tmuxAvailable())) {
+    if (!usingNativeSubagent) {
+      ctx.ui.notify(
+        "CLK: 'subagent' tool provided by pi-subagents (conflict detected). " +
+        "Uninstall pi-subagents to use CLK's built-in tmux subagent sessions.",
+        "info",
+      );
+    } else if (!(await tmuxAvailable())) {
       ctx.ui.notify(
         "CLK requires tmux to spawn subagent sessions. Install it with: brew install tmux / apt install tmux",
         "warning",
