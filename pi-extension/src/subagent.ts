@@ -165,21 +165,15 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
   });
 }
 
-/**
- * Register the subagent tool. Returns true if registered, false if another
- * extension (e.g. pi-subagents) already owns the tool name — in which case
- * that implementation is used and CLK's tmux spawner is skipped gracefully.
- */
-export function registerSubagentTool(pi: ExtensionAPI): boolean {
-  try {
+export function registerSubagentTool(pi: ExtensionAPI): void {
   pi.registerTool({
-    name: "subagent",
-    label: "Subagent",
+    name: "clk_subagent",
+    label: "CLK Subagent",
     description:
-      "Spawn a subagent as a background pi session. The agent label is a role identifier " +
+      "Spawn a subagent as a background tmux pi session. The agent label is a role identifier " +
       "for traceability; the full persona must be embedded in the task string. " +
       "Multiple sibling calls in the same message run concurrently.",
-    promptSnippet: "Dispatch a task to a background pi subagent session.",
+    promptSnippet: "Dispatch a task to a background tmux pi subagent session.",
     parameters: Type.Object({
       agent: Type.String({
         description:
@@ -234,9 +228,4 @@ export function registerSubagentTool(pi: ExtensionAPI): boolean {
       }
     },
   });
-  return true;
-  } catch (err) {
-    if (/conflict/i.test(String(err))) return false;
-    throw err;
-  }
 }
