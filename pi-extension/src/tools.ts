@@ -25,7 +25,7 @@ export function registerClkTools(pi: ExtensionAPI): void {
       "the chief authored.",
     promptSnippet: "Persist the dynamically cast team roster.",
     promptGuidelines: [
-      "Always call clk_cast before the first subagent dispatch and any time the project's needs change.",
+      "Always call clk_cast before the first clk_subagent dispatch and any time the project's needs change.",
     ],
     parameters: Type.Object({
       reason: Type.String({ description: "Why this casting decision was made." }),
@@ -39,7 +39,7 @@ export function registerClkTools(pi: ExtensionAPI): void {
           }),
           systemPersona: Type.String({
             description:
-              "Multi-line persona to prepend when dispatching this role via the subagent tool.",
+              "Multi-line persona to prepend when dispatching this role via the clk_subagent tool.",
           }),
           preferredModel: Type.Optional(Type.String()),
         }),
@@ -86,7 +86,7 @@ export function registerClkTools(pi: ExtensionAPI): void {
             type: "text",
             text:
               `Roster persisted (${validAgents.length} role(s)${skipped > 0 ? `; ${skipped} skipped due to redaction` : ""}). ` +
-              `Dispatch via the subagent tool, prefixing each task with the role's persona and mission.`,
+              `Dispatch via the clk_subagent tool, prefixing each task with the role's persona and mission.`,
           },
         ],
         details: { roster },
