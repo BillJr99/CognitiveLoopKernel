@@ -1,13 +1,14 @@
 /**
  * Utilities for classifying and recovering from model-provider errors.
  *
- * Five failure categories we care about:
+ * Six failure categories we care about:
  *   rate_limit   — provider is throttling; backoff and retry.
  *   model_error  — endpoint doesn't exist or is unavailable; notify and skip.
  *   redaction    — privacy settings stripped a required value; retry without
  *                  the sensitive content.
  *   max_turns    — child pi process hit its turn cap; re-dispatch immediately.
  *   network      — transient connectivity; backoff and retry.
+ *   cancelled    — intentional abort/cancellation; never retry.
  *   other        — anything else; propagate but don't abort the run.
  */
 
@@ -70,14 +71,19 @@ const NETWORK_PATTERNS: RegExp[] = [
 ];
 
 // Abort/cancellation errors are intentional stops, not transient failures.
-// Classify them separately so withRetry() never backs off and retries them.
+// Checked BEFORE network patterns so a fetch abort that also matches
+// "failed to fetch" is never misclassified as a retryable network blip.
+// Includes both external abort signals (AbortError, ABORT_ERR, "operation
+// was aborted") and the extension's own throw new Error("Aborted*") messages.
 const CANCELLED_PATTERNS: RegExp[] = [
+  /\bAborted\b/,
   /operation was aborted/i,
+  /Aborted during retry delay/i,
   /\bAbortError\b/,
   /ABORT_ERR/,
 ];
 
-export type ErrorClass = "rate_limit" | "model_error" | "redaction" | "max_turns" | "network" | "other";
+export type ErrorClass = "rate_limit" | "model_error" | "redaction" | "max_turns" | "network" | "cancelled" | "other";
 
 export function classifyError(err: unknown): ErrorClass {
   const msg =
@@ -98,14 +104,14 @@ export function classifyError(err: unknown): ErrorClass {
     : typeof rawStatus === "string" ? Number(rawStatus)
     : NaN;
 
+  // Cancellation must be checked before network: a fetch abort can produce
+  // messages that match both sets, and cancellation is never retryable.
+  if (CANCELLED_PATTERNS.some((p) => p.test(msg))) return "cancelled";
   if (httpStatus === 429 || RATE_LIMIT_PATTERNS.some((p) => p.test(msg))) return "rate_limit";
   if (httpStatus === 404 || MODEL_ERROR_PATTERNS.some((p) => p.test(msg))) return "model_error";
   if (REDACTION_PATTERNS.some((p) => p.test(msg))) return "redaction";
   if (MAX_TURNS_PATTERNS.some((p) => p.test(msg))) return "max_turns";
   if (NETWORK_PATTERNS.some((p) => p.test(msg))) return "network";
-  // Check abort last: cancellation is intentional, not a transient failure,
-  // so it must not be marked retryable.
-  if (CANCELLED_PATTERNS.some((p) => p.test(msg))) return "other";
   return "other";
 }
 
@@ -239,6 +245,8 @@ export function recoveryHint(cls: ErrorClass): string {
       );
     case "network":
       return "A transient network error occurred. Retry after a short wait.";
+    case "cancelled":
+      return "The operation was cancelled (user abort or run ended). Do not retry — check whether the run is still active before proceeding.";
     case "other":
       return "An unexpected error occurred. Inspect the message and decide whether to retry or skip this step.";
   }

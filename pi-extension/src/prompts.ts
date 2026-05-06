@@ -363,13 +363,18 @@ ${idea}
 - **Direct edits are fine.** You may write files via the built-in
   \`write\`/\`edit\` tools, or delegate file writes to subagents — your call.
   Either way, checkpoint after.
-- **bash tool signature.** When calling the built-in \`bash\` tool always
-  supply the \`command\` property — it is required:
+- **bash tool signature.** The only shell-execution tool available is the
+  built-in \`bash\` tool. Always supply the \`command\` property — it is
+  required:
       bash({ command: "pytest -q" })
+      bash({ command: "ls -la" })
       bash({ command: "sleep 30" })
-  Calling \`bash\` with no arguments or an empty object will fail with a
-  validation error. If you see that error, retry the call with the correct
-  \`command\` value.
+  Do NOT call shell utilities (\`ls\`, \`cat\`, \`grep\`, \`sleep\`, etc.) as
+  tool names directly — they are not registered tools. Everything that runs
+  a shell command must go through \`bash({ command: "..." })\`.
+  Calling \`bash\` with no arguments or an empty object will also fail.
+  If you see a validation error ("tool not found" or "must have required
+  properties command"), retry as \`bash({ command: "<the command>" })\`.
 - **Loop invariant.** After every \`clk_merge\` or \`clk_revert\`, you are
   back on the home branch. Immediately begin the next Ralph iteration
   (rule 4) without waiting for user input.
