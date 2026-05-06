@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { activeSignal, mergeSignals } from "./abort.js";
@@ -44,8 +44,13 @@ async function resolvePI(cwd: string): Promise<string | null> {
     if (p) return p;
   } catch { /* not on PATH */ }
 
+  // Verify the local binary is actually executable before returning it,
+  // matching clk_harness/providers/pi.py _resolve_cmd() behaviour.
   const local = join(cwd, ".clk", "tools", "pi", "bin", "pi");
-  if (existsSync(local)) return resolve(local);
+  try {
+    await access(local, constants.X_OK);
+    return resolve(local);
+  } catch { /* not found or not executable */ }
   return null;
 }
 
@@ -102,16 +107,11 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
     ? `'${safePi}' ${modelStr} --print < '${safeTask}' > '${safeOut}' 2>&1`
     : `'${safePi}' --print < '${safeTask}' > '${safeOut}' 2>&1`;
 
-  // Attempt session creation; retry once on name collision.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      await execFileAsync("tmux", ["new-session", "-d", "-s", sessionId, "-c", opts.cwd, "sh", "-c", shellCmd]);
-      break;
-    } catch (err) {
-      if (attempt === 0 && String(err).includes("duplicate session")) continue;
-      await rm(dirPath, { recursive: true, force: true });
-      throw err;
-    }
+  try {
+    await execFileAsync("tmux", ["new-session", "-d", "-s", sessionId, "-c", opts.cwd, "sh", "-c", shellCmd]);
+  } catch (err) {
+    await rm(dirPath, { recursive: true, force: true });
+    throw err;
   }
 
   activeSessions.add(sessionId);
@@ -125,20 +125,23 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const startMs = Date.now();
     let pollCount = 0;
+    // Declare timer before onAbort so the abort handler can safely clear it
+    // even if abort fires before setInterval assigns the handle.
+    let timer: ReturnType<typeof setInterval> | undefined;
 
     const onAbort = () => {
-      clearInterval(timer);
+      if (timer !== undefined) clearInterval(timer);
       cleanup().then(() => reject(new Error("Aborted"))).catch(() => reject(new Error("Aborted")));
     };
 
     if (opts.signal?.aborted) { onAbort(); return; }
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
-    const timer = setInterval(async () => {
+    timer = setInterval(async () => {
       pollCount++;
 
       if (Date.now() - startMs > SUBAGENT_TIMEOUT_MS) {
-        clearInterval(timer);
+        clearInterval(timer!);
         opts.signal?.removeEventListener("abort", onAbort);
         await cleanup();
         reject(new Error(`subagent ${sessionId} timed out after ${SUBAGENT_TIMEOUT_MS / 60000} minutes`));
@@ -154,7 +157,7 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
         }
       } catch {
         // Session exited.
-        clearInterval(timer);
+        clearInterval(timer!);
         opts.signal?.removeEventListener("abort", onAbort);
         let text = "";
         try { text = await readFile(stdoutPath, "utf8"); } catch { /* no output produced */ }
@@ -210,7 +213,9 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
           preferredModel: params.preferredModel,
           cwd: ctx.cwd,
           signal: sig,
-          onUpdate,
+          // Wrap the plain-string progress message into the ToolResult shape
+          // Pi's onUpdate callback expects ({ content: [...] }).
+          onUpdate: (text) => onUpdate({ content: [{ type: "text", text }] }),
         });
         return {
           content: [{ type: "text", text: result || "(subagent produced no output)" }],

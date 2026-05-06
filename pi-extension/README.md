@@ -23,18 +23,19 @@ The extension:
    under `.clk/state/`.
 2. Hands control to the chief LLM with a CLK operator's manual (see
    [`src/prompts.ts`](src/prompts.ts)) that establishes standing rules:
-   cast a team, dispatch via the `subagent` tool, apply parallel consensus
+   cast a team, dispatch via the `clk_subagent` tool, apply parallel consensus
    on high-stakes decisions, run Ralph refinement after MVP, autoresearch
    on open questions, checkpoint after every win, revert on regression,
    call `clk_done` when every completion criterion is met.
-3. Provides the chief with seven small tools — `clk_cast`, `clk_progress`,
-   `clk_checkpoint`, `clk_branch`, `clk_revert`, `clk_merge`, `clk_done` —
-   that handle persistence and git mechanics. `clk_branch` opens a per-
-   iteration feature branch before each Ralph pass, `clk_merge` folds it into
-   the home branch on success, and `clk_revert` discards the branch without
-   merging when the iteration is rejected. Everything else (dispatch, fan-out,
-   judging, refinement loops) is the chief driving the standard
-   Pi's built-in tools and the extension's own `subagent` tool.
+3. Provides the chief with eight small tools — `clk_cast`, `clk_progress`,
+   `clk_checkpoint`, `clk_branch`, `clk_revert`, `clk_merge`, `clk_done`,
+   and `clk_subagent` — that handle persistence, git mechanics, and subagent
+   dispatch. `clk_branch` opens a per-iteration feature branch before each
+   Ralph pass, `clk_merge` folds it into the home branch on success, and
+   `clk_revert` discards the branch without merging when the iteration is
+   rejected. `clk_subagent` spawns a detached tmux pi session and streams
+   its result back when it exits. Everything else (fan-out, judging,
+   refinement loops) is the chief driving Pi's built-in tools.
 
 The extension itself is intentionally thin: orchestration policy lives in the
 chief's prompt, not in TypeScript. To change CLK's behavior, edit
@@ -115,11 +116,11 @@ A typical first transcript looks like:
 > /clk a local-first journaling app that summarizes my week
 [notification] CLK run started. The chief is taking over.
 [chief] (calls clk_cast with engineer, ux_writer, summarizer, qa)
-[chief] (calls subagent: scout to understand existing layout)
-[chief] (calls subagent x3 in parallel: 3 architectures for storage)
-[chief] (calls subagent: oracle to judge architectures)
+[chief] (calls clk_subagent: scout to understand existing layout)
+[chief] (calls clk_subagent x3 in parallel: 3 architectures for storage)
+[chief] (calls clk_subagent: oracle to judge architectures)
 [chief] (calls clk_progress: consensus → SQLite + JSON sidecar)
-[chief] (calls subagent: worker to implement MVP)
+[chief] (calls clk_subagent: worker to implement MVP)
 [chief] (calls bash: pytest -q)
 [chief] (calls clk_checkpoint: "MVP: capture + persist entries")
 [chief] (enters Ralph loop ...)
@@ -176,7 +177,7 @@ reverts to them on regression.
 | `ACTION:` block protocol for write/edit/append/delete/run | Pi's built-in `read`/`write`/`edit`/`bash` tools |
 | YAML workflows in `.clk/config/workflows/` | None — the chief decides workflow on the fly |
 | Per-agent prompt files in `.clk/prompts/` | One operator's manual in `src/prompts.ts`; per-role personas live in `roster.json` |
-| Subprocess-piped agents | In-session and tmux pi sessions (via built-in `subagent` tool) |
+| Subprocess-piped agents | In-session and tmux pi sessions (via built-in `clk_subagent` tool) |
 
 ## Customising orchestration
 
@@ -204,7 +205,7 @@ recovery path:
 | **Rate limit** | HTTP 429, "too many requests", "quota exceeded" | Exponential backoff, retried indefinitely (delay capped at 5 minutes) until the run is aborted. The chief is also instructed to try a smaller / different model if the limit persists. |
 | **Model unavailable** | HTTP 404, "model not found", "not available on free tier" | No retry — the chief falls back to a built-in Pi agent (`worker`, `researcher`, `scout`, `oracle`) or omits `preferredModel` and lets Pi choose. |
 | **Privacy redaction** | `[REDACTED]` values, "privacy filter", "sensitive content blocked" | Tool params are checked for redaction markers before use; the tool returns a recovery hint asking the chief to retry without the sensitive field (or to write it to a file and pass the path). |
-| **Max turns exhausted** | "max turns reached", "turn limit", "turn cap", "no more turns" | The chief re-dispatches the identical `subagent` call immediately without asking for confirmation. If the task exhausts turns twice in a row the chief splits it into two narrower sequential subtasks. |
+| **Max turns exhausted** | "max turns reached", "turn limit", "turn cap", "no more turns" | The chief re-dispatches the identical `clk_subagent` call immediately without asking for confirmation. If the task exhausts turns twice in a row the chief splits it into two narrower sequential subtasks. |
 | **Network / transient** | ECONNRESET, ETIMEDOUT, "socket hang up" | Same backoff-and-retry as rate limits. |
 
 ### Where this is enforced
@@ -221,7 +222,7 @@ recovery path:
   to proceed.
 - **`src/prompts.ts`** — rule 8 (max-turns: re-dispatch immediately or split
   the task) and rule 10 (other provider errors) in the chief's operator's manual
-  instruct it how to handle error results from `subagent` calls (which happen
+  instruct it how to handle error results from `clk_subagent` calls (which happen
   inside Pi's runtime and cannot be intercepted in TypeScript).
 
 ### Design principle
@@ -237,11 +238,12 @@ want to stop.
   receives a preamble instructing it not to spawn further subagents. The
   chief (parent) may create grandchildren on a child's behalf — that is the
   maximum nesting depth. No env var controls this; it is enforced by the
-  task preamble the `subagent` tool prepends.
-- **Children don't have CLK tools.** Spawned tmux pi sessions receive only
-  Pi's built-in tools. They do not have `clk_*` tools, the `subagent` tool,
-  or any other CLK extension. The chief is the sole orchestrator. Don't
-  try to delegate orchestration to a subagent.
+  task preamble the `clk_subagent` tool prepends.
+- **Children should not use CLK tools.** Spawned tmux pi sessions may have
+  CLK loaded if you have it configured globally, but the task preamble
+  instructs them not to spawn further subagents or call `clk_*` tools.
+  This is a prompt-level constraint, not a technical enforcement. The chief
+  is the intended sole orchestrator — don't try to delegate orchestration.
 - **Concurrency lock.** Only one `/clk` run can be active per Pi session.
   Use `/clk-abort` first if you want to start over with a different idea.
 - **`ctx.signal` is undefined when `/clk` fires** (the extension is
