@@ -8,12 +8,6 @@
   "pi": {
     "extensions": ["./src/index.ts"]
   },
-  "scripts": {
-    "postinstall": "node -e \"const{execSync}=require('child_process');try{execSync('pi install npm:pi-subagents',{stdio:'inherit'})}catch{console.warn('[clk-pi-extension] could not auto-install pi-subagents; run: pi install npm:pi-subagents')}\""
-  },
-  "dependencies": {
-    "pi-subagents": "*"
-  },
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "typebox": "*"

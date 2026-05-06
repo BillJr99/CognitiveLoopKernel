@@ -1,8 +1,3 @@
-import { createRequire } from "node:module";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
-import { execSync } from "node:child_process";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -18,93 +13,20 @@ import {
 import { ensureRepo } from "./git.js";
 import { clkChiefPrimer } from "./prompts.js";
 import { registerClkTools } from "./tools.js";
+import { registerSubagentTool, tmuxAvailable } from "./subagent.js";
 import { startRun, endRun, installAbortBridges, activeSignal } from "./abort.js";
 import { classifyError, recoveryHint, withRetry } from "./errors.js";
 
-function piSubagentsInstalled(cwd?: string): boolean {
-  // Prefer Pi-aware checks first: npm resolution alone does not confirm the
-  // extension is registered with Pi (postinstall may have been skipped or
-  // failed silently).  npm checks are relegated to last-resort below.
-
-  // 1. Pi's settings.json — authoritative list of extensions Pi knows about.
-  const settingsPaths = [
-    join(homedir(), ".pi", "agent", "settings.json"),
-    join(homedir(), ".pi", "settings.json"),
-  ];
-  for (const sp of settingsPaths) {
-    try {
-      const settings = JSON.parse(readFileSync(sp, "utf8")) as Record<string, unknown>;
-      const extensions = settings.extensions;
-      if (Array.isArray(extensions) && extensions.some(
-        (e: unknown) => typeof e === "string" && /\bpi-subagents\b/i.test(e),
-      )) return true;
-    } catch { /* file missing or malformed */ }
-  }
-
-  // 2. Scan Pi's extensions directory — any subdirectory whose name or whose
-  //    package.json "name" field matches pi-subagents.
-  const piExtDirs = [
-    join(homedir(), ".pi", "agent", "extensions"),
-    join(homedir(), ".pi", "extensions"),
-    ...(cwd ? [join(cwd, ".pi", "extensions")] : []),
-  ];
-  for (const extDir of piExtDirs) {
-    try {
-      for (const entry of readdirSync(extDir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        if (/^pi-subagents$/i.test(entry.name)) return true;
-        try {
-          const pkg = JSON.parse(
-            readFileSync(join(extDir, entry.name, "package.json"), "utf8"),
-          ) as Record<string, unknown>;
-          if (typeof pkg.name === "string" && /pi-subagents/i.test(pkg.name)) return true;
-        } catch { /* no package.json */ }
-      }
-    } catch { /* directory missing */ }
-  }
-
-  // 3. npm resolution (local tree) — last-resort, only catches MODULE_NOT_FOUND
-  //    as a normal miss; other errors (permissions, malformed package) are
-  //    treated conservatively so the user still receives the install warning.
-  try {
-    createRequire(import.meta.url).resolve("pi-subagents");
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") return false;
-  }
-
-  // 4. Global npm — `pi install npm:pi-subagents` delegates to npm install -g.
-  //    Last because execSync blocks the event loop.
-  try {
-    const globalRoot = execSync("npm root -g", { timeout: 5000 }).toString().trim();
-    if (existsSync(join(globalRoot, "pi-subagents"))) return true;
-    try {
-      createRequire(import.meta.url).resolve("pi-subagents", { paths: [globalRoot] });
-      return true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") return false;
-    }
-  } catch { /* npm not on PATH or timed out */ }
-
-  return false;
-}
-
 export default async function (pi: ExtensionAPI): Promise<void> {
-  // Allow consensus operations to nest one level deeper than pi-subagents'
-  // default (parent → consensus group → judge). Setting it here as a process
-  // env var means pi-subagents' child spawn picks it up automatically.
-  if (!process.env.PI_SUBAGENT_MAX_DEPTH) {
-    process.env.PI_SUBAGENT_MAX_DEPTH = "3";
-  }
-
   installAbortBridges(pi);
   registerClkTools(pi);
+  registerSubagentTool(pi);
 
   pi.on("session_start", async (_event, ctx) => {
     reset();
-    if (!piSubagentsInstalled(ctx.cwd)) {
+    if (!(await tmuxAvailable())) {
       ctx.ui.notify(
-        "CLK requires the pi-subagents extension, which provides the `subagent` tool. Install it with: pi install npm:pi-subagents",
+        "CLK requires tmux to spawn subagent sessions. Install it with: brew install tmux / apt install tmux",
         "warning",
       );
     }

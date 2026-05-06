@@ -34,7 +34,7 @@ The extension:
    the home branch on success, and `clk_revert` discards the branch without
    merging when the iteration is rejected. Everything else (dispatch, fan-out,
    judging, refinement loops) is the chief driving the standard
-   Pi/pi-subagents tools.
+   Pi's built-in tools and the extension's own `subagent` tool.
 
 The extension itself is intentionally thin: orchestration policy lives in the
 chief's prompt, not in TypeScript. To change CLK's behavior, edit
@@ -43,22 +43,12 @@ chief's prompt, not in TypeScript. To change CLK's behavior, edit
 ## Requirements
 
 - Pi installed and on `PATH` (`pi --version` works).
-- The [`pi-subagents`](https://github.com/nicobailon/pi-subagents) extension,
-  which provides the `subagent` tool the chief dispatches through. It's
-  declared as an npm `dependency` of this extension and a `postinstall`
-  hook runs `pi install npm:pi-subagents` on your behalf, so installing
-  this extension via `pi install` registers it automatically. If you load
-  the extension via symlink or `pi -e` (Options A/B/C below) — neither of
-  which runs `npm install` — install it yourself:
-
-  ```bash
-  pi install npm:pi-subagents
-  ```
-
-  On `session_start` the extension checks whether `pi-subagents` is
-  resolvable and, if not, emits a one-time warning notification with the
-  install command above.
-
+- tmux installed and on `PATH` (`tmux -V` works). The extension spawns each
+  subagent as a detached tmux pi session — this is how it achieves true
+  process isolation without depending on any external Pi extension.
+  Install: `brew install tmux` (macOS) or `apt install tmux` (Debian/Ubuntu).
+  On `session_start` the extension checks for tmux and emits a one-time
+  warning if it's missing.
 - Git on `PATH` (the extension auto-runs `git init` in the project root if
   there's no repo yet).
 - Node 20+ (Pi already requires this; only relevant if you want
@@ -186,7 +176,7 @@ reverts to them on regression.
 | `ACTION:` block protocol for write/edit/append/delete/run | Pi's built-in `read`/`write`/`edit`/`bash` tools |
 | YAML workflows in `.clk/config/workflows/` | None — the chief decides workflow on the fly |
 | Per-agent prompt files in `.clk/prompts/` | One operator's manual in `src/prompts.ts`; per-role personas live in `roster.json` |
-| Subprocess-piped agents | In-session and pi-subagents children |
+| Subprocess-piped agents | In-session and tmux pi sessions (via built-in `subagent` tool) |
 
 ## Customising orchestration
 
@@ -243,14 +233,15 @@ want to stop.
 
 ## Limitations / gotchas
 
-- **Subagent depth is capped.** The extension sets
-  `PI_SUBAGENT_MAX_DEPTH=3` so consensus operations can spawn a judge
-  subagent that itself uses helpers. If you find the chief running into
-  depth caps, raise it via the env var.
-- **Children don't have CLK tools.** Spawned child sessions don't get
-  `subagent`, `clk_*`, or the pi-subagents skill (pi-subagents enforces
-  this). The chief is the sole orchestrator. Don't try to delegate
-  orchestration.
+- **Subagent depth is capped at one level.** Each spawned tmux pi session
+  receives a preamble instructing it not to spawn further subagents. The
+  chief (parent) may create grandchildren on a child's behalf — that is the
+  maximum nesting depth. No env var controls this; it is enforced by the
+  task preamble the `subagent` tool prepends.
+- **Children don't have CLK tools.** Spawned tmux pi sessions receive only
+  Pi's built-in tools. They do not have `clk_*` tools, the `subagent` tool,
+  or any other CLK extension. The chief is the sole orchestrator. Don't
+  try to delegate orchestration to a subagent.
 - **Concurrency lock.** Only one `/clk` run can be active per Pi session.
   Use `/clk-abort` first if you want to start over with a different idea.
 - **`ctx.signal` is undefined when `/clk` fires** (the extension is
@@ -273,6 +264,8 @@ pi-extension/
     prompts.ts         # the chief's operator's manual (the policy)
     tools.ts           # clk_cast, clk_progress, clk_checkpoint,
                        # clk_branch, clk_revert, clk_merge, clk_done
+    subagent.ts        # subagent tool: spawns tmux pi sessions, polls for
+                       # completion, handles cancellation + progress updates
     state.ts           # .clk/state/* persistence + pi.appendEntry mirroring
                        # (tracks idea, roster, progress, homeBranch)
     git.ts             # checkpoint, revertTo, head, abortMerge helpers
