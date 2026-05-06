@@ -210,7 +210,9 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
           preferredModel: params.preferredModel,
           cwd: ctx.cwd,
           signal: sig,
-          onUpdate,
+          // Wrap the plain-string progress message into the ToolResult shape
+          // Pi's onUpdate callback expects ({ content: [...] }).
+          onUpdate: (text) => onUpdate({ content: [{ type: "text", text }] }),
         });
         return {
           content: [{ type: "text", text: result || "(subagent produced no output)" }],
