@@ -162,6 +162,13 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
         let text = "";
         try { text = await readFile(stdoutPath, "utf8"); } catch { /* no output produced */ }
         await cleanup();
+        // If the output looks like a bare error message (starts with "Error:")
+        // throw it so the caller can classify and surface a recovery hint.
+        const trimmed = text.trim();
+        if (trimmed.startsWith("Error:") || trimmed.startsWith("Uncaught Error:")) {
+          reject(new Error(trimmed));
+          return;
+        }
         resolve(text);
       }
     }, POLL_INTERVAL_MS);
@@ -195,6 +202,10 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
       ),
     }),
     async execute(_id, params, signal, onUpdate, ctx) {
+      if (signal?.aborted || activeSignal()?.aborted) {
+        return { content: [{ type: "text", text: "clk_subagent cancelled before start." }], details: {} };
+      }
+
       if (!(await tmuxAvailable())) {
         return {
           content: [{
