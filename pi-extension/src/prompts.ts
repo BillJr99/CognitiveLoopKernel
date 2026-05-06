@@ -363,6 +363,13 @@ ${idea}
 - **Direct edits are fine.** You may write files via the built-in
   \`write\`/\`edit\` tools, or delegate file writes to subagents — your call.
   Either way, checkpoint after.
+- **bash tool signature.** When calling the built-in \`bash\` tool always
+  supply the \`command\` property — it is required:
+      bash({ command: "pytest -q" })
+      bash({ command: "sleep 30" })
+  Calling \`bash\` with no arguments or an empty object will fail with a
+  validation error. If you see that error, retry the call with the correct
+  \`command\` value.
 - **Loop invariant.** After every \`clk_merge\` or \`clk_revert\`, you are
   back on the home branch. Immediately begin the next Ralph iteration
   (rule 4) without waiting for user input.
