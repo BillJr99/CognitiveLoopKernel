@@ -300,7 +300,7 @@ See [`pi-extension/README.md`](pi-extension/README.md) for full
 documentation including tool reference, state layout, error handling,
 and customization notes. Quick summary:
 
-**Requirements:** Pi on `PATH`; `pi-subagents` extension; Git on `PATH`.
+**Requirements:** Pi on `PATH`; tmux on `PATH`; Git on `PATH`.
 
 **Install:**
 
@@ -309,13 +309,6 @@ and customization notes. Quick summary:
 | Quick test | `pi -e /path/to/CognitiveLoopKernel/pi-extension/src/index.ts` | Try it out; reloads on `/reload` |
 | Project-local | `mkdir -p .pi/extensions && ln -s /path/to/CognitiveLoopKernel/pi-extension .pi/extensions/clk` | Version-controlled per project |
 | Global | `mkdir -p ~/.pi/agent/extensions && ln -s /path/to/CognitiveLoopKernel/pi-extension ~/.pi/agent/extensions/clk` | Available in every Pi session |
-
-If you installed via symlink or `-e`, also install `pi-subagents`
-manually (the `postinstall` hook only runs with `pi install`):
-
-```bash
-pi install npm:pi-subagents
-```
 
 **Usage:**
 

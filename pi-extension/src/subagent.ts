@@ -69,6 +69,7 @@ interface SpawnOptions {
   preferredModel?: string;
   cwd: string;
   signal?: AbortSignal;
+  onUpdate?: (text: string) => void;
 }
 
 async function spawnSubagent(opts: SpawnOptions): Promise<string> {
@@ -146,7 +147,11 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
 
       try {
         await execFileAsync("tmux", ["has-session", "-t", sessionId]);
-        // Still running — nothing to do.
+        // Still running — emit a progress ping every 10 polls (~20 s).
+        if (pollCount % 10 === 0) {
+          const elapsed = Math.round((Date.now() - startMs) / 1000);
+          opts.onUpdate?.(`subagent ${sessionId} (${opts.agent}) still running — ${elapsed}s elapsed`);
+        }
       } catch {
         // Session exited.
         clearInterval(timer);
@@ -186,7 +191,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
         }),
       ),
     }),
-    async execute(_id, params, signal, _onUpdate, ctx) {
+    async execute(_id, params, signal, onUpdate, ctx) {
       if (!(await tmuxAvailable())) {
         return {
           content: [{
@@ -205,6 +210,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
           preferredModel: params.preferredModel,
           cwd: ctx.cwd,
           signal: sig,
+          onUpdate,
         });
         return {
           content: [{ type: "text", text: result || "(subagent produced no output)" }],
