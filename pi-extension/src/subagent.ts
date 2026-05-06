@@ -154,9 +154,10 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
     const onAbort = () => {
       if (timer !== undefined) clearInterval(timer);
       const elapsed = Math.round((Date.now() - startMs) / 1000);
-      writeLog(opts.cwd, sessionId, [`aborted elapsed=${elapsed}s`]).then(() =>
-        cleanup("abort").then(() => reject(new Error("Aborted"))).catch(() => reject(new Error("Aborted")))
-      ).catch(() => reject(new Error("Aborted")));
+      // writeLog is best-effort — cleanup runs unconditionally regardless of
+      // whether the log write succeeds.
+      writeLog(opts.cwd, sessionId, [`aborted elapsed=${elapsed}s`]).catch(() => {});
+      cleanup("abort").then(() => reject(new Error("Aborted"))).catch(() => reject(new Error("Aborted")));
     };
 
     if (opts.signal?.aborted) { onAbort(); return; }
