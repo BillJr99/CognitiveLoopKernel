@@ -13,6 +13,9 @@ const execFileAsync = promisify(execFile);
 
 const SUBAGENT_TIMEOUT_MS = 30 * 60 * 1000;
 const POLL_INTERVAL_MS = 2000;
+// Pi's accounting system fails on very large tool results. Cap output here
+// so the chief always receives a well-formed, accountable response.
+const MAX_OUTPUT_CHARS = 80_000;
 
 const MODEL_MAP: Record<string, string> = {
   "claude-opus": "anthropic/claude-opus-4-5",
@@ -191,10 +194,10 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
         let text = "";
         try { text = await readFile(stdoutPath, "utf8"); } catch { /* no output produced */ }
         const elapsed = Math.round((Date.now() - startMs) / 1000);
-        // Log the raw output (first 500 chars) so we can diagnose failures.
+        // Log full output (up to 2000 chars) so we can diagnose large/failing runs.
         await writeLog(opts.cwd, sessionId, [
           `exited elapsed=${elapsed}s output-bytes=${text.length}`,
-          `output-head: ${text.slice(0, 500).replace(/\n/g, "\\n")}`,
+          `output-head: ${text.slice(0, 2000).replace(/\n/g, "\\n")}`,
         ]);
         await cleanup("exit");
         // If the output looks like a bare error message (starts with "Error:")
@@ -263,8 +266,16 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
           // Pi's onUpdate callback expects ({ content: [...] }).
           onUpdate: (text) => onUpdate({ content: [{ type: "text", text }] }),
         });
+        let text = result || "(subagent produced no output)";
+        if (text.length > MAX_OUTPUT_CHARS) {
+          const omitted = text.length - MAX_OUTPUT_CHARS;
+          text =
+            text.slice(0, MAX_OUTPUT_CHARS) +
+            `\n\n[output truncated: ${omitted} additional characters omitted — ` +
+            `see .clk/logs/ for the first 2000 characters of the full output]`;
+        }
         return {
-          content: [{ type: "text", text: result || "(subagent produced no output)" }],
+          content: [{ type: "text", text }],
           details: { agent: params.agent, sessionId: "completed" },
         };
       } catch (err) {
