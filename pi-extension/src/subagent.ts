@@ -16,6 +16,8 @@ const POLL_INTERVAL_MS = 2000;
 // Pi's accounting system fails on very large tool results. Cap output here
 // so the chief always receives a well-formed, accountable response.
 const MAX_OUTPUT_CHARS = 80_000;
+// How many characters of subagent stdout to retain in the session log for diagnostics.
+const LOG_HEAD_CHARS = 2000;
 
 const MODEL_MAP: Record<string, string> = {
   "claude-opus": "anthropic/claude-opus-4-5",
@@ -93,7 +95,7 @@ interface SpawnOptions {
   onUpdate?: (text: string) => void;
 }
 
-async function spawnSubagent(opts: SpawnOptions): Promise<string> {
+async function spawnSubagent(opts: SpawnOptions): Promise<{ output: string; sessionId: string }> {
   const sessionId = `clk-${randomUUID().slice(0, 8)}`;
   const dirPath = join(opts.cwd, ".clk", "subagents", sessionId);
   const taskPath = resolve(join(dirPath, "task.md"));
@@ -147,7 +149,7 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
     try { await rm(dirPath, { recursive: true, force: true }); } catch { /* best-effort */ }
   };
 
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<{ output: string; sessionId: string }>((resolve, reject) => {
     const startMs = Date.now();
     let pollCount = 0;
     // Declare timer before onAbort so the abort handler can safely clear it
@@ -194,10 +196,10 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
         let text = "";
         try { text = await readFile(stdoutPath, "utf8"); } catch { /* no output produced */ }
         const elapsed = Math.round((Date.now() - startMs) / 1000);
-        // Log full output (up to 2000 chars) so we can diagnose large/failing runs.
+        // Log full output (up to LOG_HEAD_CHARS) so we can diagnose large/failing runs.
         await writeLog(opts.cwd, sessionId, [
-          `exited elapsed=${elapsed}s output-bytes=${text.length}`,
-          `output-head: ${text.slice(0, 2000).replace(/\n/g, "\\n")}`,
+          `exited elapsed=${elapsed}s output-bytes=${Buffer.byteLength(text, "utf8")}`,
+          `output-head: ${text.slice(0, LOG_HEAD_CHARS).replace(/\n/g, "\\n")}`,
         ]);
         await cleanup("exit");
         // If the output looks like a bare error message (starts with "Error:")
@@ -207,7 +209,7 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
           reject(new Error(trimmed));
           return;
         }
-        resolve(text);
+        resolve({ output: text, sessionId });
       }
     }, POLL_INTERVAL_MS);
   });
@@ -256,7 +258,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 
       const sig = mergeSignals(signal, activeSignal());
       try {
-        const result = await spawnSubagent({
+        const { output, sessionId } = await spawnSubagent({
           agent: params.agent,
           task: params.task,
           preferredModel: params.preferredModel,
@@ -266,17 +268,17 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
           // Pi's onUpdate callback expects ({ content: [...] }).
           onUpdate: (text) => onUpdate({ content: [{ type: "text", text }] }),
         });
-        let text = result || "(subagent produced no output)";
+        let text = output || "(subagent produced no output)";
         if (text.length > MAX_OUTPUT_CHARS) {
           const omitted = text.length - MAX_OUTPUT_CHARS;
           text =
             text.slice(0, MAX_OUTPUT_CHARS) +
             `\n\n[output truncated: ${omitted} additional characters omitted — ` +
-            `see .clk/logs/ for the first 2000 characters of the full output]`;
+            `see .clk/logs/${sessionId}.log for the first ${LOG_HEAD_CHARS} characters of the full output]`;
         }
         return {
           content: [{ type: "text", text }],
-          details: { agent: params.agent, sessionId: "completed" },
+          details: { agent: params.agent, sessionId },
         };
       } catch (err) {
         const cls = classifyError(err);
