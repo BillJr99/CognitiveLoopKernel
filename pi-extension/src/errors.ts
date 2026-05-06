@@ -67,6 +67,11 @@ const NETWORK_PATTERNS: RegExp[] = [
   /network.*error/i,
   /socket.*hang/i,
   /failed to fetch/i,
+];
+
+// Abort/cancellation errors are intentional stops, not transient failures.
+// Classify them separately so withRetry() never backs off and retries them.
+const CANCELLED_PATTERNS: RegExp[] = [
   /operation was aborted/i,
   /\bAbortError\b/,
   /ABORT_ERR/,
@@ -98,6 +103,9 @@ export function classifyError(err: unknown): ErrorClass {
   if (REDACTION_PATTERNS.some((p) => p.test(msg))) return "redaction";
   if (MAX_TURNS_PATTERNS.some((p) => p.test(msg))) return "max_turns";
   if (NETWORK_PATTERNS.some((p) => p.test(msg))) return "network";
+  // Check abort last: cancellation is intentional, not a transient failure,
+  // so it must not be marked retryable.
+  if (CANCELLED_PATTERNS.some((p) => p.test(msg))) return "other";
   return "other";
 }
 
@@ -174,6 +182,11 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
       const delayMs = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
       if (isRateLimit) rateLimitAttempt++; else networkAttempt++;
       onRetry?.(err, attempt + 1, delayMs);
+
+      // If the signal is already aborted (e.g. the user ran /clk-abort while
+      // we were in the catch block), don't wait through a backoff delay —
+      // bail immediately.
+      if (signal?.aborted) throw new Error("Aborted");
 
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, delayMs);
