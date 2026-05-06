@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -24,6 +24,16 @@ const MODEL_MAP: Record<string, string> = {
 
 const activeSessions = new Set<string>();
 
+async function writeLog(cwd: string, sessionId: string, lines: string[]): Promise<void> {
+  try {
+    const logDir = join(cwd, ".clk", "logs");
+    await mkdir(logDir, { recursive: true });
+    const logPath = join(logDir, `${sessionId}.log`);
+    const ts = new Date().toISOString();
+    await appendFile(logPath, lines.map((l) => `[${ts}] ${l}`).join("\n") + "\n", "utf8");
+  } catch { /* logging must never crash the caller */ }
+}
+
 export async function tmuxAvailable(): Promise<boolean> {
   try {
     await execFileAsync("tmux", ["-V"]);
@@ -37,21 +47,24 @@ export async function tmuxAvailable(): Promise<boolean> {
  * Resolve the pi binary: prefer PATH, fall back to project-local install.
  * Mirrors the logic in clk_harness/providers/pi.py _resolve_cmd().
  */
-async function resolvePI(cwd: string): Promise<string | null> {
+async function resolvePI(cwd: string): Promise<{ path: string } | { error: string }> {
   try {
     const { stdout } = await execFileAsync("which", ["pi"]);
     const p = stdout.trim();
-    if (p) return p;
+    if (p) return { path: p };
   } catch { /* not on PATH */ }
 
-  // Verify the local binary is actually executable before returning it,
-  // matching clk_harness/providers/pi.py _resolve_cmd() behaviour.
   const local = join(cwd, ".clk", "tools", "pi", "bin", "pi");
   try {
     await access(local, constants.X_OK);
-    return resolve(local);
-  } catch { /* not found or not executable */ }
-  return null;
+    return { path: resolve(local) };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") {
+      return { error: `pi binary at ${local} exists but is not executable — run: chmod +x ${local}` };
+    }
+  }
+  return { error: "pi binary not found on PATH or at .clk/tools/pi/bin/pi" };
 }
 
 function resolveModel(preferredModel?: string): string[] {
@@ -85,17 +98,23 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
 
   await mkdir(dirPath, { recursive: true });
 
-  // Prepend depth-cap notice so child pi sessions don't recursively spawn.
+  // Prepend depth-cap notice so child pi sessions don't recursively spawn
+  // and don't call clk_* tools (prompt-level enforcement).
   const taskContent =
-    `NOTE: You are a subagent dispatched by the CLK chief. Do not spawn further subagents.\n` +
+    `NOTE: You are a subagent dispatched by the CLK chief. ` +
+    `Do not spawn further subagents and do not call any clk_* tools.\n` +
     `Role: ${opts.agent}\n\n${opts.task}`;
   await writeFile(taskPath, taskContent, "utf8");
 
-  const piBin = await resolvePI(opts.cwd);
-  if (!piBin) {
+  await writeLog(opts.cwd, sessionId, [`spawn agent=${opts.agent} model=${opts.preferredModel ?? "default"}`]);
+
+  const piResult = await resolvePI(opts.cwd);
+  if ("error" in piResult) {
     await rm(dirPath, { recursive: true, force: true });
-    throw new Error("pi binary not found on PATH or at .clk/tools/pi/bin/pi");
+    await writeLog(opts.cwd, sessionId, [`pi-resolve-error: ${piResult.error}`]);
+    throw new Error(piResult.error);
   }
+  const piBin = piResult.path;
 
   const modelArgs = resolveModel(opts.preferredModel);
   // Build the shell command with single-quoted paths to handle spaces.
@@ -109,15 +128,18 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
 
   try {
     await execFileAsync("tmux", ["new-session", "-d", "-s", sessionId, "-c", opts.cwd, "sh", "-c", shellCmd]);
+    await writeLog(opts.cwd, sessionId, [`tmux-started session=${sessionId}`]);
   } catch (err) {
     await rm(dirPath, { recursive: true, force: true });
+    await writeLog(opts.cwd, sessionId, [`tmux-start-error: ${(err as Error).message}`]);
     throw err;
   }
 
   activeSessions.add(sessionId);
 
-  const cleanup = async () => {
+  const cleanup = async (reason: string) => {
     activeSessions.delete(sessionId);
+    await writeLog(opts.cwd, sessionId, [`cleanup reason=${reason}`]);
     try { await execFileAsync("tmux", ["kill-session", "-t", sessionId]); } catch { /* already gone */ }
     try { await rm(dirPath, { recursive: true, force: true }); } catch { /* best-effort */ }
   };
@@ -131,7 +153,10 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
 
     const onAbort = () => {
       if (timer !== undefined) clearInterval(timer);
-      cleanup().then(() => reject(new Error("Aborted"))).catch(() => reject(new Error("Aborted")));
+      const elapsed = Math.round((Date.now() - startMs) / 1000);
+      writeLog(opts.cwd, sessionId, [`aborted elapsed=${elapsed}s`]).then(() =>
+        cleanup("abort").then(() => reject(new Error("Aborted"))).catch(() => reject(new Error("Aborted")))
+      ).catch(() => reject(new Error("Aborted")));
     };
 
     if (opts.signal?.aborted) { onAbort(); return; }
@@ -143,7 +168,9 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
       if (Date.now() - startMs > SUBAGENT_TIMEOUT_MS) {
         clearInterval(timer!);
         opts.signal?.removeEventListener("abort", onAbort);
-        await cleanup();
+        const elapsed = Math.round((Date.now() - startMs) / 1000);
+        await writeLog(opts.cwd, sessionId, [`timeout elapsed=${elapsed}s`]);
+        await cleanup("timeout");
         reject(new Error(`subagent ${sessionId} timed out after ${SUBAGENT_TIMEOUT_MS / 60000} minutes`));
         return;
       }
@@ -153,6 +180,7 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
         // Still running — emit a progress ping every 10 polls (~20 s).
         if (pollCount % 10 === 0) {
           const elapsed = Math.round((Date.now() - startMs) / 1000);
+          await writeLog(opts.cwd, sessionId, [`running elapsed=${elapsed}s polls=${pollCount}`]);
           opts.onUpdate?.(`subagent ${sessionId} (${opts.agent}) still running — ${elapsed}s elapsed`);
         }
       } catch {
@@ -161,7 +189,13 @@ async function spawnSubagent(opts: SpawnOptions): Promise<string> {
         opts.signal?.removeEventListener("abort", onAbort);
         let text = "";
         try { text = await readFile(stdoutPath, "utf8"); } catch { /* no output produced */ }
-        await cleanup();
+        const elapsed = Math.round((Date.now() - startMs) / 1000);
+        // Log the raw output (first 500 chars) so we can diagnose failures.
+        await writeLog(opts.cwd, sessionId, [
+          `exited elapsed=${elapsed}s output-bytes=${text.length}`,
+          `output-head: ${text.slice(0, 500).replace(/\n/g, "\\n")}`,
+        ]);
+        await cleanup("exit");
         // If the output looks like a bare error message (starts with "Error:")
         // throw it so the caller can classify and surface a recovery hint.
         const trimmed = text.trim();

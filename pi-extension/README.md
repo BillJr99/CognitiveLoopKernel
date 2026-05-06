@@ -140,7 +140,10 @@ Everything CLK persists lives under `.clk/`:
     progress.md    # human-readable timeline (one line per event)
     clk.json       # full state snapshot (idea + roster + progress)
     done.md        # written only when clk_done is called
-  logs/            # reserved for future per-command logs
+  logs/
+    <session-id>.log  # one log file per clk_subagent call; records spawn,
+                      # tmux start/exit, abort, timeout, and the first 500
+                      # chars of output for post-mortem debugging
 ```
 
 The roster, progress log, and full snapshot are also written to Pi's session
@@ -177,7 +180,7 @@ reverts to them on regression.
 | `ACTION:` block protocol for write/edit/append/delete/run | Pi's built-in `read`/`write`/`edit`/`bash` tools |
 | YAML workflows in `.clk/config/workflows/` | None — the chief decides workflow on the fly |
 | Per-agent prompt files in `.clk/prompts/` | One operator's manual in `src/prompts.ts`; per-role personas live in `roster.json` |
-| Subprocess-piped agents | In-session and tmux pi sessions (via built-in `clk_subagent` tool) |
+| Subprocess-piped agents | tmux pi sessions (via the extension's `clk_subagent` tool) |
 
 ## Customising orchestration
 
@@ -240,10 +243,11 @@ want to stop.
   maximum nesting depth. No env var controls this; it is enforced by the
   task preamble the `clk_subagent` tool prepends.
 - **Children should not use CLK tools.** Spawned tmux pi sessions may have
-  CLK loaded if you have it configured globally, but the task preamble
-  instructs them not to spawn further subagents or call `clk_*` tools.
-  This is a prompt-level constraint, not a technical enforcement. The chief
-  is the intended sole orchestrator — don't try to delegate orchestration.
+  CLK loaded if you have it configured globally. The task preamble prepended
+  by `clk_subagent` explicitly instructs each child not to spawn further
+  subagents and not to call `clk_*` tools. This is prompt-level enforcement,
+  not a technical lock. The chief is the intended sole orchestrator — don't
+  try to delegate orchestration.
 - **Concurrency lock.** Only one `/clk` run can be active per Pi session.
   Use `/clk-abort` first if you want to start over with a different idea.
 - **`ctx.signal` is undefined when `/clk` fires** (the extension is
