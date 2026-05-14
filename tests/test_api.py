@@ -3,6 +3,18 @@
 Uses httpx.AsyncClient with ASGITransport to drive the FastAPI app without a
 real server. Subprocess calls are patched out so tests do not require CLK
 installed or any real filesystem state beyond the ephemeral tmp_path fixture.
+
+CRITICAL design constraint
+--------------------------
+asyncio.create_task() only *schedules* a coroutine — it does not run it.
+_run_task therefore runs on the next event-loop iteration, which happens
+the first time the test (or the ASGI transport) awaits *after* the task is
+created.  Every test that submits a research task must keep the
+``with patch(...)`` context manager open until _run_task has finished, so
+the fake subprocess is still in place when the coroutine actually executes.
+Failing to do this causes _run_task to call the *real* asyncio subprocess,
+which spawns a real CLK process; pytest-asyncio then hangs waiting for that
+process to finish when tearing down the event loop.
 """
 
 from __future__ import annotations
@@ -10,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from typing import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,19 +56,45 @@ def _make_fake_proc(returncode: int = 0, output: bytes = b"") -> MagicMock:
     return proc
 
 
+async def _wait_for_status(
+    client: AsyncClient,
+    task_id: str,
+    terminal: tuple[str, ...] = ("done", "failed", "cancelled"),
+    iterations: int = 100,
+    interval: float = 0.1,
+) -> dict:
+    """Poll GET /api/research/{task_id} until a terminal status is reached."""
+    resp = None
+    for _ in range(iterations):
+        await asyncio.sleep(interval)
+        resp = await client.get(f"/api/research/{task_id}")
+        if resp.json()["status"] in terminal:
+            break
+    assert resp is not None
+    return resp.json()
+
+
 @pytest.fixture(autouse=True)
-def _reset_state(tmp_path: Path) -> None:
-    """Clear in-memory task/workspace state and set workspaces dir before each test."""
+async def _reset_state(tmp_path: Path) -> AsyncIterator[None]:
+    """Clear in-memory task/workspace state and set workspaces dir before each test.
+
+    Teardown cancels and *awaits* all outstanding asyncio task handles so that
+    pytest-asyncio does not hang waiting for them when it closes the event loop.
+    """
     import clk_harness.api as api_mod
     TASKS.clear()
     WORKSPACES.clear()
     _task_handles.clear()
     api_mod.WORKSPACES_DIR = tmp_path / "workspaces"
     yield
-    # Cancel any still-running background asyncio tasks before clearing so
-    # lingering coroutines don't crash with KeyError when they next access TASKS.
-    for handle in list(_task_handles.values()):
-        handle.cancel()
+    # Cancel any still-running background asyncio tasks.
+    handles = list(_task_handles.values())
+    for h in handles:
+        h.cancel()
+    # Await all handles so the event loop is idle before we clear state.
+    # return_exceptions=True prevents a CancelledError from propagating.
+    if handles:
+        await asyncio.gather(*handles, return_exceptions=True)
     TASKS.clear()
     WORKSPACES.clear()
     _task_handles.clear()
@@ -187,15 +226,17 @@ async def test_create_research_unknown_workspace(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_research_returns_task_id(client: AsyncClient, tmp_path: Path) -> None:
+async def test_create_research_returns_task_id(client: AsyncClient) -> None:
     fake_proc = _make_fake_proc(returncode=0, output=b"done")
     with patch("clk_harness.api.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
         resp = await client.post("/api/research", json={"command": "init"})
-    assert resp.status_code == 202
-    data = resp.json()
-    assert data["ok"] is True
-    assert "task_id" in data
-    assert "workspace_id" in data
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["ok"] is True
+        assert "task_id" in data
+        assert "workspace_id" in data
+        # Keep patch active until _run_task finishes (fake proc exits immediately).
+        await asyncio.sleep(0.2)
 
 
 @pytest.mark.asyncio
@@ -212,17 +253,18 @@ async def test_get_task_returns_status(client: AsyncClient) -> None:
     fake_proc = _make_fake_proc(returncode=0, output=b"line1\nline2")
     with patch("clk_harness.api.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
         create_resp = await client.post("/api/research", json={"command": "init"})
-    task_id = create_resp.json()["task_id"]
+        task_id = create_resp.json()["task_id"]
 
-    # Allow the background task a moment to run
-    await asyncio.sleep(0.05)
+        # Allow the background task a moment to run — must be inside the patch
+        # context so _run_task sees the fake proc, not the real CLK binary.
+        await asyncio.sleep(0.05)
 
-    resp = await client.get(f"/api/research/{task_id}")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["ok"] is True
-    assert data["task_id"] == task_id
-    assert data["status"] in ("pending", "running", "done", "failed", "cancelled")
+        resp = await client.get(f"/api/research/{task_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["task_id"] == task_id
+        assert data["status"] in ("pending", "running", "done", "failed", "cancelled")
 
 
 @pytest.mark.asyncio
@@ -230,16 +272,11 @@ async def test_task_completes_with_done_status(client: AsyncClient) -> None:
     fake_proc = _make_fake_proc(returncode=0, output=b"hello world")
     with patch("clk_harness.api.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
         create_resp = await client.post("/api/research", json={"command": "init"})
-    task_id = create_resp.json()["task_id"]
+        task_id = create_resp.json()["task_id"]
 
-    # Wait for the task to complete (10 second budget)
-    for _ in range(100):
-        await asyncio.sleep(0.1)
-        r = await client.get(f"/api/research/{task_id}")
-        if r.json()["status"] in ("done", "failed", "cancelled"):
-            break
+        # Poll for completion — keep patch active so _run_task uses the fake proc.
+        data = await _wait_for_status(client, task_id)
 
-    data = r.json()
     assert data["status"] == "done"
     assert data["exit_code"] == 0
 
@@ -249,15 +286,11 @@ async def test_task_fails_on_nonzero_exit(client: AsyncClient) -> None:
     fake_proc = _make_fake_proc(returncode=1, output=b"error output")
     with patch("clk_harness.api.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
         create_resp = await client.post("/api/research", json={"command": "init"})
-    task_id = create_resp.json()["task_id"]
+        task_id = create_resp.json()["task_id"]
 
-    for _ in range(100):
-        await asyncio.sleep(0.1)
-        r = await client.get(f"/api/research/{task_id}")
-        if r.json()["status"] in ("done", "failed", "cancelled"):
-            break
+        data = await _wait_for_status(client, task_id)
 
-    assert r.json()["status"] == "failed"
+    assert data["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -279,20 +312,24 @@ async def test_cancel_task(client: AsyncClient) -> None:
     proc.wait = AsyncMock(return_value=0)
     proc.terminate = MagicMock()
 
+    # Keep the patch active through the entire cancel sequence so _run_task
+    # uses the mock proc (with the blocking readline) rather than real CLK.
     with patch("clk_harness.api.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
         create_resp = await client.post("/api/research", json={"command": "init"})
-    task_id = create_resp.json()["task_id"]
+        task_id = create_resp.json()["task_id"]
 
-    await asyncio.sleep(0.02)
+        # Give _run_task time to start and reach readline() while patch is active.
+        await asyncio.sleep(0.05)
 
-    cancel_resp = await client.post(f"/api/research/{task_id}/cancel")
-    assert cancel_resp.status_code == 200
-    assert cancel_resp.json()["ok"] is True
+        cancel_resp = await client.post(f"/api/research/{task_id}/cancel")
+        assert cancel_resp.status_code == 200
+        assert cancel_resp.json()["ok"] is True
 
-    await asyncio.sleep(0.05)
+        # Allow the CancelledError to propagate through the task.
+        await asyncio.sleep(0.1)
 
-    status_resp = await client.get(f"/api/research/{task_id}")
-    assert status_resp.json()["status"] == "cancelled"
+        status_resp = await client.get(f"/api/research/{task_id}")
+        assert status_resp.json()["status"] == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -300,17 +337,14 @@ async def test_cancel_already_done_task_returns_error(client: AsyncClient) -> No
     fake_proc = _make_fake_proc(returncode=0, output=b"")
     with patch("clk_harness.api.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
         create_resp = await client.post("/api/research", json={"command": "init"})
-    task_id = create_resp.json()["task_id"]
+        task_id = create_resp.json()["task_id"]
 
-    # Wait for completion (10 second budget)
-    for _ in range(100):
-        await asyncio.sleep(0.1)
-        r = await client.get(f"/api/research/{task_id}")
-        if r.json()["status"] in ("done", "failed", "cancelled"):
-            break
+        # Wait for completion — keep patch active.
+        await _wait_for_status(client, task_id)
 
-    # Now try to cancel
-    resp = await client.post(f"/api/research/{task_id}/cancel")
+        # Now try to cancel the completed task.
+        resp = await client.post(f"/api/research/{task_id}/cancel")
+
     assert resp.status_code == 400
     data = resp.json()
     assert data["ok"] is False
@@ -336,8 +370,11 @@ async def test_error_envelope_shape(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_404_on_unknown_route_uses_envelope(client: AsyncClient) -> None:
     resp = await client.get("/api/no-such-endpoint")
-    # FastAPI returns 404 for unknown routes; our handler wraps it
     assert resp.status_code == 404
+    data = resp.json()
+    # FastAPI 404s for unknown routes are wrapped by our HTTPException handler.
+    assert data["ok"] is False
+    assert "error" in data
 
 
 # ---------------------------------------------------------------------------
@@ -355,53 +392,115 @@ async def test_list_workflows(client: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# New tests
+# Auto-init and workflow injection
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_auto_init_runs_for_non_init_command(client: AsyncClient, monkeypatch) -> None:
+async def test_auto_init_runs_for_non_init_command(client: AsyncClient) -> None:
     """When command != 'init' and .clk/ is absent, _run_task should run init first."""
-    import clk_harness.api as api_mod
     calls: list[str] = []
 
     async def fake_create_subprocess(*args, **kwargs):
-        calls.append(args[0] if args else "?")
+        calls.append(str(args[0]) if args else "?")
+        return _make_fake_proc(returncode=0, output=b"")
 
-        class FakeProc:
-            returncode = 0
-            stdout = None
-
-            async def communicate(self):
-                return b"", b""
-
-            async def wait(self):
-                return 0
-
-            def terminate(self):
-                pass
-
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess)
     resp = await client.post("/api/workspaces", json={"name": "test-ws"})
     ws_id = resp.json()["workspace_id"]
 
-    resp = await client.post("/api/research", json={"command": "idea", "workspace_id": ws_id})
-    assert resp.status_code == 202
-    # Give async task time to start
-    await asyncio.sleep(0.2)
-    # Should have called subprocess at least once (for init)
-    assert len(calls) >= 1
+    with patch("clk_harness.api.asyncio.create_subprocess_exec", fake_create_subprocess):
+        resp = await client.post("/api/research", json={"command": "idea", "workspace_id": ws_id})
+        assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
 
+        # Wait for both the implicit init and the idea command to run.
+        await _wait_for_status(client, task_id)
+
+    # Should have called subprocess at least twice: once for init, once for idea.
+    assert len(calls) >= 2
+
+
+@pytest.mark.asyncio
+async def test_workflow_injection_adds_workflow_arg(client: AsyncClient) -> None:
+    """POST /api/research with workflow= should prepend --workflow <name> to args."""
+    captured_args: list[list[str]] = []
+
+    async def fake_create_subprocess(*args, **kwargs):
+        captured_args.append(list(args))
+        return _make_fake_proc(returncode=0, output=b"")
+
+    with patch("clk_harness.api.asyncio.create_subprocess_exec", fake_create_subprocess):
+        resp = await client.post(
+            "/api/research",
+            json={"command": "run", "workflow": "my-flow"},
+        )
+        assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
+        await _wait_for_status(client, task_id)
+
+    flat = [a for call in captured_args for a in call]
+    assert "--workflow" in flat
+    wf_idx = flat.index("--workflow")
+    assert flat[wf_idx + 1] == "my-flow"
+
+
+@pytest.mark.asyncio
+async def test_workflow_injection_skipped_when_already_present(client: AsyncClient) -> None:
+    """If args already contain --workflow, do not inject a second one."""
+    captured_args: list[list[str]] = []
+
+    async def fake_create_subprocess(*args, **kwargs):
+        captured_args.append(list(args))
+        return _make_fake_proc(returncode=0, output=b"")
+
+    with patch("clk_harness.api.asyncio.create_subprocess_exec", fake_create_subprocess):
+        resp = await client.post(
+            "/api/research",
+            json={"command": "run", "workflow": "my-flow", "args": ["--workflow", "other-flow"]},
+        )
+        assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
+        await _wait_for_status(client, task_id)
+
+    flat = [a for call in captured_args for a in call]
+    assert flat.count("--workflow") == 1  # no duplicate injection
+
+
+# ---------------------------------------------------------------------------
+# Artifact path traversal
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_artifact_path_traversal_rejected(client: AsyncClient) -> None:
     """Path traversal attempts must return 403."""
-    resp = await client.post("/api/workspaces", json={"name": "sec-test"})
-    ws_id = resp.json()["workspace_id"]
-    resp2 = await client.post("/api/research", json={"command": "init", "workspace_id": ws_id})
-    task_id = resp2.json()["task_id"]
-    # Wait briefly
-    await asyncio.sleep(0.1)
+    fake_proc = _make_fake_proc(returncode=0, output=b"")
+    with patch("clk_harness.api.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        resp = await client.post("/api/workspaces", json={"name": "sec-test"})
+        ws_id = resp.json()["workspace_id"]
+        resp2 = await client.post("/api/research", json={"command": "init", "workspace_id": ws_id})
+        task_id = resp2.json()["task_id"]
+        await asyncio.sleep(0.1)
+
     resp3 = await client.get(f"/api/research/{task_id}/artifacts/../../../etc/passwd")
     assert resp3.status_code in (403, 404)
+
+
+@pytest.mark.asyncio
+async def test_artifact_in_workspace_accessible(client: AsyncClient, tmp_path: Path) -> None:
+    """A file inside the workspace should be downloadable."""
+    import clk_harness.api as api_mod
+
+    fake_proc = _make_fake_proc(returncode=0, output=b"")
+    with patch("clk_harness.api.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        resp = await client.post("/api/workspaces", json={"name": "artifact-test"})
+        ws_id = resp.json()["workspace_id"]
+        resp2 = await client.post("/api/research", json={"command": "init", "workspace_id": ws_id})
+        task_id = resp2.json()["task_id"]
+        await asyncio.sleep(0.1)
+
+    # Write a file into the workspace directory.
+    ws_path = api_mod.WORKSPACES_DIR / ws_id
+    ws_path.mkdir(parents=True, exist_ok=True)
+    (ws_path / "output.txt").write_text("hello artifact")
+
+    resp3 = await client.get(f"/api/research/{task_id}/artifacts/output.txt")
+    assert resp3.status_code == 200
