@@ -157,8 +157,17 @@ async def _run_task(task_id: str) -> None:
             init_out, _ = await init_proc.communicate()
             for line in (init_out or b"").decode(errors="replace").splitlines():
                 task["lines"].append(f"[init] {line}")
+            if init_proc.returncode != 0:
+                task["status"] = "failed"
+                task["exit_code"] = init_proc.returncode
+                task["finished_at"] = _now_iso()
+                return  # abort — workspace not properly initialized
         except Exception as exc:  # noqa: BLE001
             task["lines"].append(f"[init-error] {exc}")
+            task["status"] = "failed"
+            task["exit_code"] = -1
+            task["finished_at"] = _now_iso()
+            return  # abort
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -249,7 +258,9 @@ async def list_workflows() -> Dict[str, Any]:
             result.append({"name": name.replace(".yaml", ""), "path": name, "description": description})
         return {"ok": True, "workflows": result}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": True, "workflows": [], "warning": str(exc)}
+        # Templates are optional; return ok:false so callers can distinguish
+        # a partial-success (empty list) from a genuine load failure.
+        return {"ok": False, "error": {"code": "template_load_failed", "message": str(exc)}, "workflows": []}
 
 
 # -- Workspaces --------------------------------------------------------------
@@ -435,8 +446,12 @@ async def get_artifact(task_id: str, artifact_path: str) -> FileResponse:
         raise _err("task_not_found", f"Task {task_id!r} not found.", 404)
     ws_path = _workspace_path(task["workspace_id"])
     file_path = (ws_path / artifact_path).resolve()
-    # Safety: must stay inside workspace
-    if not str(file_path).startswith(str(ws_path.resolve())):
+    # Safety: must stay inside workspace — use relative_to() for a correct
+    # containment check that avoids the startswith() prefix-collision pitfall.
+    ws_path_resolved = ws_path.resolve()
+    try:
+        file_path.relative_to(ws_path_resolved)
+    except ValueError:
         raise _err("forbidden", "Path escapes workspace boundary.", 403)
     if not file_path.exists() or not file_path.is_file():
         raise _err("artifact_not_found", f"Artifact {artifact_path!r} not found.", 404)
@@ -471,7 +486,12 @@ async def cancel_task(task_id: str) -> Dict[str, Any]:
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def main() -> None:
+    """Console-script entry point: ``clk-api``."""
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("CLK_API_PORT", "8001")))
+
+
+if __name__ == "__main__":
+    main()
