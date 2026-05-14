@@ -136,6 +136,82 @@ or:
 ./scripts/clk configure --set default_provider=claude
 ```
 
+## REST API
+
+CLK ships a FastAPI-based HTTP server that exposes a subset of CLI
+commands programmatically — specifically: `init`, `idea`, `plan`, `run`,
+`loop`, and `status` (see `/api/capabilities` for the authoritative list).
+Use it to integrate CLK into your own tooling, drive it from a web UI,
+or orchestrate it from CI pipelines without spawning a terminal.
+
+### Install
+
+```bash
+pip install "clk-harness[api]"
+```
+
+### Start the server
+
+```bash
+# Using the console-script entry point (recommended)
+clk-api
+
+# Or via the module entry point
+python -m clk_harness.api
+
+# Or via uvicorn directly
+uvicorn clk_harness.api:app --host 0.0.0.0 --port 8001
+```
+
+The server listens on port `8001` by default.  Override with
+`CLK_API_PORT=<port>`.
+
+### Docker
+
+```bash
+docker run --rm -p 8001:8001 \
+  -v clk-workspaces:/workspaces \
+  clk python -m clk_harness.api
+```
+
+Mount `/workspaces` to persist workspace *directories* across container
+restarts.
+
+> **Note: workspace state is in-memory and is NOT recoverable after restart.**
+> Even when the `/workspaces` volume is mounted, the in-memory registry of
+> workspace IDs and task history is lost every time the container restarts.
+> The files inside `/workspaces` survive on disk, but you must create new
+> workspace registrations via `POST /api/workspaces` after each restart —
+> previous workspace IDs and task IDs will not be recognised by the new
+> container instance.
+
+Override the workspace root with `CLK_WORKSPACES_DIR`.
+
+### Quick curl example
+
+```bash
+# Health check
+curl http://localhost:8001/api/healthz
+
+# Create a workspace
+WS=$(curl -s -X POST http://localhost:8001/api/workspaces \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "my-project"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['workspace_id'])")
+
+# Capture an idea
+TASK=$(curl -s -X POST http://localhost:8001/api/research \
+  -H 'Content-Type: application/json' \
+  -d "{\"command\":\"idea\",\"args\":[\"A local-first journaling app\"],\"workspace_id\":\"$WS\"}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['task_id'])")
+
+# Stream live output
+curl -sN http://localhost:8001/api/research/$TASK/stream
+```
+
+See [docs/REST_API.md](docs/REST_API.md) for the full endpoint reference,
+SSE event format, and more examples.
+
 ## Docker
 
 The harness ships with a `Dockerfile`. Kickoff directories are created under
@@ -271,7 +347,7 @@ docker run --rm -it \
   -v clk-workspace:/app/workspace \
   -e CLK_PROVIDER=ollama \
   -e CLK_OLLAMA_ENDPOINT=http://host.docker.internal:11434 \
-  clk "A local-first journaling app that summarizes my week"
+  clk "My idea"
 ```
 
 ### Non-interactive / CI mode
@@ -336,6 +412,8 @@ The package itself:
 
 ```
 clk_harness/
+  api.py                 # FastAPI REST API server
+  _api_shim.py           # console-script shim for clk-api (guards ImportError)
   cli.py                 # argparse entrypoint
   config.py              # paths, default configs, JSON load/save
   git_ops.py             # init, commit, revert, status helpers
@@ -347,6 +425,8 @@ scripts/
   clk                    # launcher (prefers .clk/venv/bin/python)
   install_local.sh       # creates .clk/venv and installs PyYAML
   run_loop.sh            # convenience wrapper around clk loop
+docs/
+  REST_API.md            # full REST API reference
 ```
 
 The harness state, written by `clk init` and grown by every command:
@@ -383,8 +463,8 @@ The harness state, written by `clk init` and grown by every command:
 ## Providers
 
 | Provider    | Detection                                | Notes |
-|-------------|------------------------------------------|-------|
-| `shell`     | always available                         | dummy; echoes prompts and writes stub files. Use for tests, CI, dry runs. |
+|-------------|------------------------------------------|
+`shell`     | always available                         | dummy; echoes prompts and writes stub files. Use for tests, CI, dry runs. |
 | `claude`    | `claude` on PATH                         | runs `claude --print` non-interactively. Add `"args": ["--print", "--output-format", "json"]` to `providers.json` to get real token counts. |
 | `codex`     | `codex` on PATH                          | runs `codex exec`. |
 | `gemini`    | `gemini` on PATH                         | runs the Google Gemini CLI; prompt fed on stdin. |

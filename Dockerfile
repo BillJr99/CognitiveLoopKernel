@@ -31,8 +31,12 @@ RUN mkdir -p clk_harness && touch clk_harness/__init__.py README.md \
  && pip install --no-cache-dir "." \
  && rm -rf clk_harness README.md
 
-# Copy harness sources.
+# Install REST API dependencies from pyproject.toml [api] extra.
+# Using the extras directly (instead of a separate requirements-api.txt)
+# keeps pyproject.toml as the single source of truth and avoids drift.
 COPY clk_harness/ ./clk_harness/
+RUN pip install --no-cache-dir ".[api]"
+
 COPY scripts/     ./scripts/
 COPY kickoff.sh   ./
 COPY .env.example ./
@@ -57,6 +61,31 @@ RUN git config --global user.name  "CLK Container" \
 # after the container exits, or bind-mount a host directory instead.
 RUN mkdir -p workspace
 VOLUME /app/workspace
+
+# Workspaces for the REST API are stored under /workspaces by default.
+# Mount a volume here to persist them across container restarts.
+RUN mkdir -p /workspaces
+VOLUME /workspaces
+
+# ---------------------------------------------------------------------------
+# Running modes
+# ---------------------------------------------------------------------------
+#
+# Run CLI (default — interactive TUI dashboard):
+#   docker run --rm -it -v clk-workspace:/app/workspace clk "My idea here"
+#
+# Run CLI non-interactively (CI/scripting):
+#   docker run --rm -e CLK_NO_TUI=true ... clk "My idea here"
+#
+# Run REST API:
+#   docker run --rm -p 8001:8001 \
+#     -v clk-workspaces:/workspaces \
+#     clk python -m clk_harness.api
+#
+# The API server respects:
+#   CLK_API_PORT      — TCP port (default 8001)
+#   CLK_WORKSPACES_DIR — workspace root (default /workspaces)
+# ---------------------------------------------------------------------------
 
 # Run with -it for the interactive TUI (the default). For non-interactive
 # use (CI, scripting) pass -e CLK_NO_TUI=true and omit -it.
