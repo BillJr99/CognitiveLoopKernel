@@ -136,6 +136,68 @@ or:
 ./scripts/clk configure --set default_provider=claude
 ```
 
+## REST API
+
+CLK ships a FastAPI-based HTTP server that exposes all CLI commands
+programmatically.  Use it to integrate CLK into your own tooling, drive it
+from a web UI, or orchestrate it from CI pipelines without spawning a
+terminal.
+
+### Install
+
+```bash
+pip install "clk-harness[api]"
+```
+
+### Start the server
+
+```bash
+# Using the module entry point (recommended)
+python -m clk_harness.api
+
+# Or via uvicorn directly
+uvicorn clk_harness.api:app --host 0.0.0.0 --port 8001
+```
+
+The server listens on port `8001` by default.  Override with
+`CLK_API_PORT=<port>`.
+
+### Docker
+
+```bash
+docker run --rm -p 8001:8001 \
+  -v clk-workspaces:/workspaces \
+  clk python -m clk_harness.api
+```
+
+Mount `/workspaces` to persist workspace data across container restarts.
+Override the workspace root with `CLK_WORKSPACES_DIR`.
+
+### Quick curl example
+
+```bash
+# Health check
+curl http://localhost:8001/api/healthz
+
+# Create a workspace
+WS=$(curl -s -X POST http://localhost:8001/api/workspaces \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "my-project"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['workspace_id'])")
+
+# Capture an idea
+TASK=$(curl -s -X POST http://localhost:8001/api/research \
+  -H 'Content-Type: application/json' \
+  -d "{\"command\":\"idea\",\"args\":[\"A local-first journaling app\"],\"workspace_id\":\"$WS\"}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['task_id'])")
+
+# Stream live output
+curl -sN http://localhost:8001/api/research/$TASK/stream
+```
+
+See [docs/REST_API.md](docs/REST_API.md) for the full endpoint reference,
+SSE event format, and more examples.
+
 ## Docker
 
 The harness ships with a `Dockerfile`. Kickoff directories are created under
@@ -336,6 +398,7 @@ The package itself:
 
 ```
 clk_harness/
+  api.py                 # FastAPI REST API server
   cli.py                 # argparse entrypoint
   config.py              # paths, default configs, JSON load/save
   git_ops.py             # init, commit, revert, status helpers
@@ -347,6 +410,8 @@ scripts/
   clk                    # launcher (prefers .clk/venv/bin/python)
   install_local.sh       # creates .clk/venv and installs PyYAML
   run_loop.sh            # convenience wrapper around clk loop
+docs/
+  REST_API.md            # full REST API reference
 ```
 
 The harness state, written by `clk init` and grown by every command:

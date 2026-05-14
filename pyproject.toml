@@ -16,9 +16,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+api = ["fastapi>=0.100", "uvicorn>=0.23", "pydantic>=2.0"]
 
 [project.scripts]
 clk = "clk_harness.cli:main"
+clk-api = "clk_harness.api:app"
 
 [tool.setuptools.packages.find]
 where = ["."]
