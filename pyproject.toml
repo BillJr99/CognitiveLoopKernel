@@ -25,3 +25,6 @@ clk-api = "clk_harness.api:app"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["clk_harness*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
