@@ -26,6 +26,7 @@ from typing import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 
 # Point workspaces at a temp location before importing the app so the module-
@@ -74,7 +75,7 @@ async def _wait_for_status(
     return resp.json()
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def _reset_state(tmp_path: Path) -> AsyncIterator[None]:
     """Clear in-memory task/workspace state and set workspaces dir before each test.
 
@@ -100,7 +101,7 @@ async def _reset_state(tmp_path: Path) -> AsyncIterator[None]:
     _task_handles.clear()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client():
     """Async httpx client backed by the FastAPI ASGI app."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:

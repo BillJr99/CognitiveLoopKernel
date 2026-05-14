@@ -175,16 +175,15 @@ docker run --rm -p 8001:8001 \
 ```
 
 Mount `/workspaces` to persist workspace *directories* across container
-restarts.  Note that the in-memory workspace and task registry is **not**
-persisted — workspace IDs and task IDs from a previous session are not
-recognised after a restart even if the directories remain on disk.  You
-will need to create new workspaces via `POST /api/workspaces` after each
-restart.
+restarts.
 
-> **Note:** The workspace registry (IDs and task history) is kept in-memory
-> and is not persisted across container restarts. Even if you mount
-> `/workspaces`, workspace IDs created before the restart will not be
-> accessible after restart. This is a known limitation.
+> **Note: workspace state is in-memory and is NOT recoverable after restart.**
+> Even when the `/workspaces` volume is mounted, the in-memory registry of
+> workspace IDs and task history is lost every time the container restarts.
+> The files inside `/workspaces` survive on disk, but you must create new
+> workspace registrations via `POST /api/workspaces` after each restart —
+> previous workspace IDs and task IDs will not be recognised by the new
+> container instance.
 
 Override the workspace root with `CLK_WORKSPACES_DIR`.
 
@@ -414,6 +413,7 @@ The package itself:
 ```
 clk_harness/
   api.py                 # FastAPI REST API server
+  _api_shim.py           # console-script shim for clk-api (guards ImportError)
   cli.py                 # argparse entrypoint
   config.py              # paths, default configs, JSON load/save
   git_ops.py             # init, commit, revert, status helpers
