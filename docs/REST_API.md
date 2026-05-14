@@ -1,8 +1,10 @@
 # CLK REST API Reference
 
 The CLK REST API is a thin FastAPI wrapper around the CLK CLI.  It lets you
-start, monitor, and cancel research tasks; manage isolated workspaces; and
-stream live output from any running CLK command — all over plain HTTP.
+start, monitor, and cancel research tasks (using the commands `init`, `idea`,
+`plan`, `run`, `loop`, and `status` — see `/api/capabilities` for the
+authoritative list); manage isolated workspaces; and stream live output from
+running tasks — all over plain HTTP.
 
 ## Quick start
 
@@ -39,7 +41,7 @@ curl -sN http://localhost:8001/api/research/$TASK/stream
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CLK_WORKSPACES_DIR` | `/workspaces` | Root directory under which workspaces are created. Mount a volume here so workspaces persist across container restarts. |
+| `CLK_WORKSPACES_DIR` | `/workspaces` | Root directory under which workspaces are created. Mount a volume here so workspace *directories* persist across container restarts (note: the in-memory workspace registry is not persisted — see workspace notes below). |
 | `CLK_API_PORT` | `8001` | TCP port the server binds to when launched as `clk-api` or `python -m clk_harness.api`. |
 
 ## Authentication
@@ -137,10 +139,6 @@ and a new directory on disk, even if the same `name` has been used before.
 > - Posting to `/api/workspaces` again (with any name) creates a completely
 >   new workspace with a new UUID — it does **not** reconnect to an existing
 >   directory.
-> - If you need workspace-ID persistence across server restarts, implement
->   your own workspace-ID management layer (e.g. store the UUID alongside
->   the directory path and re-register on startup via this endpoint, being
->   aware that the UUID will differ from the original).
 
 **Request body**
 ```json

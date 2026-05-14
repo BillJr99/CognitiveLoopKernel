@@ -1,8 +1,8 @@
 """REST API tests for clk_harness/api.py.
 
-Uses httpx.TestClient (sync) to drive the FastAPI app without a real server.
-Subprocess calls are patched out so tests do not require CLK installed or any
-real filesystem state beyond the ephemeral tmp_path fixture.
+Uses httpx.AsyncClient with ASGITransport to drive the FastAPI app without a
+real server. Subprocess calls are patched out so tests do not require CLK
+installed or any real filesystem state beyond the ephemeral tmp_path fixture.
 """
 
 from __future__ import annotations
@@ -10,8 +10,6 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -261,12 +259,19 @@ async def test_task_fails_on_nonzero_exit(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_cancel_task(client: AsyncClient) -> None:
     """Cancelling a task marks it as cancelled and does not overwrite to done/failed."""
-    # Use a proc that never finishes (readline blocks forever)
+    # readline blocks on an Event so the background task stays alive until
+    # the asyncio Task is actually cancelled via the API, rather than raising
+    # CancelledError immediately and finishing before the cancel request arrives.
+    block_event = asyncio.Event()
+
+    async def _blocking_readline():
+        await block_event.wait()
+        return b""
+
     proc = MagicMock()
     proc.returncode = 0
     proc.stdout = AsyncMock()
-    # readline hangs until CancelledError is injected
-    proc.stdout.readline = AsyncMock(side_effect=asyncio.CancelledError)
+    proc.stdout.readline = _blocking_readline
     proc.wait = AsyncMock(return_value=0)
     proc.terminate = MagicMock()
 

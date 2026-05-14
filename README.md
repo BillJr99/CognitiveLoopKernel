@@ -22,7 +22,7 @@ committed automatically.
   directory. No global installs, no `sudo`.
 - **Provider-agnostic.** Works with Claude Code, OpenAI Codex, Google
   Gemini, OpenWebUI (any OpenAI-compatible HTTP server), Pi, local
-  Ollama, or a built-in dummy "shell" provider for testing.
+  Ollama, or a built-in dummy “shell” provider for testing.
 - **Dynamic team.** A baseline of three agents (`chief`, `qa`, `ralph`)
   ships with the harness; the chief invents project-specific specialists
   on the fly — including `engineer` when an implementer is needed — writes
@@ -174,7 +174,13 @@ docker run --rm -p 8001:8001 \
   clk python -m clk_harness.api
 ```
 
-Mount `/workspaces` to persist workspace data across container restarts.
+Mount `/workspaces` to persist workspace *directories* across container
+restarts.  Note that the in-memory workspace and task registry is **not**
+persisted — workspace IDs and task IDs from a previous session are not
+recognised after a restart even if the directories remain on disk.  You
+will need to create new workspaces via `POST /api/workspaces` after each
+restart.
+
 Override the workspace root with `CLK_WORKSPACES_DIR`.
 
 ### Quick curl example
@@ -337,7 +343,7 @@ docker run --rm -it \
   -v clk-workspace:/app/workspace \
   -e CLK_PROVIDER=ollama \
   -e CLK_OLLAMA_ENDPOINT=http://host.docker.internal:11434 \
-  clk "A local-first journaling app that summarizes my week"
+  clk "My idea"
 ```
 
 ### Non-interactive / CI mode
