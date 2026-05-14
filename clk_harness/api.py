@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------
@@ -57,6 +58,9 @@ COMMANDS = ["init", "idea", "plan", "run", "loop", "status"]
 # }
 TASKS: Dict[str, Dict[str, Any]] = {}
 
+# Asyncio task handles — used to cancel background coroutines.
+_task_handles: Dict[str, asyncio.Task] = {}
+
 # workspace shape:
 # {
 #   id: str,
@@ -75,6 +79,29 @@ app = FastAPI(
     version="1.0.0",
     description="Programmatic HTTP access to the CLK multi-agent development harness.",
 )
+
+
+# ---------------------------------------------------------------------------
+# Exception handlers — ensure all errors use the {ok, error} envelope
+# ---------------------------------------------------------------------------
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Unwrap HTTPException so the response body is always the CLK error envelope."""
+    if isinstance(exc.detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"ok": False, "error": {"code": str(exc.status_code), "message": exc.detail}},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={"ok": False, "error": {"code": "validation_error", "message": str(exc)}},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -151,19 +178,24 @@ async def _run_task(task_id: str) -> None:
             task["lines"].append(line_bytes.decode(errors="replace").rstrip("\n"))
 
         await proc.wait()
-        task["exit_code"] = proc.returncode
-        task["status"] = "done" if proc.returncode == 0 else "failed"
+        returncode = proc.returncode
+        task["exit_code"] = returncode
+        # Only update status if the task wasn't already cancelled
+        if task["status"] != "cancelled":
+            task["status"] = "done" if returncode == 0 else "failed"
 
     except asyncio.CancelledError:
         task["status"] = "cancelled"
         task["exit_code"] = -1
     except Exception as exc:  # noqa: BLE001
         task["lines"].append(f"[api-error] {exc}")
-        task["status"] = "failed"
+        if task["status"] != "cancelled":
+            task["status"] = "failed"
         task["exit_code"] = -1
     finally:
         task["finished_at"] = _now_iso()
         task["proc"] = None
+        _task_handles.pop(task_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +338,8 @@ async def create_research(body: ResearchRequest) -> Dict[str, Any]:
     }
     TASKS[task_id] = task
 
-    asyncio.create_task(_run_task(task_id))
+    # Store the asyncio.Task handle so it can be cancelled later
+    _task_handles[task_id] = asyncio.create_task(_run_task(task_id))
 
     return {"ok": True, "task_id": task_id, "workspace_id": workspace_id}
 
@@ -417,15 +450,20 @@ async def cancel_task(task_id: str) -> Dict[str, Any]:
         raise _err("task_not_found", f"Task {task_id!r} not found.", 404)
     if task["status"] not in ("pending", "running"):
         raise _err("not_cancellable", f"Task is already {task['status']!r}.")
+    # Mark cancelled before terminating so _run_task won't overwrite with 'failed'
+    task["status"] = "cancelled"
+    task["finished_at"] = _now_iso()
+    task["exit_code"] = -1
+    # Terminate the subprocess if it's running
     proc = task.get("proc")
     if proc is not None:
         try:
             proc.terminate()
         except ProcessLookupError:
             pass
-    task["status"] = "cancelled"
-    task["finished_at"] = _now_iso()
-    task["exit_code"] = -1
+    # Cancel the asyncio background task if still pending/running
+    if task_id in _task_handles:
+        _task_handles[task_id].cancel()
     return {"ok": True}
 
 

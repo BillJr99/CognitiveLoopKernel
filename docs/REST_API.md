@@ -116,7 +116,10 @@ Return the bundled workflow templates.
 
 ### `POST /api/workspaces`
 
-Create a named, persistent workspace directory.
+Create a named, persistent workspace directory.  Each call allocates a fresh
+UUID and a new directory, even if the provided `name` has been used before.
+To recover a workspace after a server restart, re-register it by posting with
+the same name — note that a **new UUID will be assigned** each time.
 
 **Request body**
 ```json
@@ -153,10 +156,10 @@ List all workspaces known to this server instance.
 }
 ```
 
-> **Note:** The workspace registry is in-memory. It resets when the server
-> restarts. Workspace directories on disk survive a restart; re-register them
-> by POSTing to `/api/workspaces` with the same name (a new UUID will be
-> assigned).
+> **Note:** The workspace registry is in-memory and resets when the server
+> restarts. Workspace directories on disk survive a restart. To re-register an
+> existing directory, POST to `/api/workspaces` with any name — a **new UUID
+> is always assigned**, so update any stored references accordingly.
 
 ---
 
