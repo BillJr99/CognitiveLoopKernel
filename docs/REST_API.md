@@ -11,8 +11,10 @@ stream live output from any running CLK command — all over plain HTTP.
 pip install "clk-harness[api]"
 
 # 2. Start the server (default port 8001)
+clk-api
+# or via the module entry point
 python -m clk_harness.api
-# or
+# or via uvicorn directly
 uvicorn clk_harness.api:app --host 0.0.0.0 --port 8001
 
 # 3. Create a workspace
@@ -38,7 +40,7 @@ curl -sN http://localhost:8001/api/research/$TASK/stream
 | Variable | Default | Purpose |
 |---|---|---|
 | `CLK_WORKSPACES_DIR` | `/workspaces` | Root directory under which workspaces are created. Mount a volume here so workspaces persist across container restarts. |
-| `CLK_API_PORT` | `8001` | TCP port the server binds to when launched as `python -m clk_harness.api`. |
+| `CLK_API_PORT` | `8001` | TCP port the server binds to when launched as `clk-api` or `python -m clk_harness.api`. |
 
 ## Authentication
 
@@ -112,14 +114,33 @@ Return the bundled workflow templates.
 }
 ```
 
+If the template package cannot be loaded the response will be
+`{"ok": false, "error": {"code": "template_load_failed", "message": "..."}, "workflows": []}`.
+
 ---
 
 ### `POST /api/workspaces`
 
-Create a named, persistent workspace directory.  Each call allocates a fresh
-UUID and a new directory, even if the provided `name` has been used before.
-To recover a workspace after a server restart, re-register it by posting with
-the same name — note that a **new UUID will be assigned** each time.
+Create a named workspace directory.  Every call allocates a **brand-new UUID**
+and a new directory on disk, even if the same `name` has been used before.
+
+> **Important — workspace registry is in-memory only.**
+> The `WORKSPACES` mapping lives entirely in the server process and is lost
+> on every restart.  Workspace *directories* on disk survive a restart, but
+> they are **not automatically re-registered** — there is currently no
+> "recover/import existing directory" mechanism.
+>
+> Practical consequences:
+> - After a server restart, previously-created workspace directories on disk
+>   are **not addressable through the API**.  Any stored workspace UUID or
+>   task ID from a previous server session is no longer valid.
+> - Posting to `/api/workspaces` again (with any name) creates a completely
+>   new workspace with a new UUID — it does **not** reconnect to an existing
+>   directory.
+> - If you need workspace-ID persistence across server restarts, implement
+>   your own workspace-ID management layer (e.g. store the UUID alongside
+>   the directory path and re-register on startup via this endpoint, being
+>   aware that the UUID will differ from the original).
 
 **Request body**
 ```json
@@ -157,9 +178,8 @@ List all workspaces known to this server instance.
 ```
 
 > **Note:** The workspace registry is in-memory and resets when the server
-> restarts. Workspace directories on disk survive a restart. To re-register an
-> existing directory, POST to `/api/workspaces` with any name — a **new UUID
-> is always assigned**, so update any stored references accordingly.
+> restarts. Workspace directories on disk survive a restart, but they are not
+> re-registered automatically. See `POST /api/workspaces` for details.
 
 ---
 
