@@ -22,7 +22,7 @@ committed automatically.
   directory. No global installs, no `sudo`.
 - **Provider-agnostic.** Works with Claude Code, OpenAI Codex, Google
   Gemini, OpenWebUI (any OpenAI-compatible HTTP server), Pi, local
-  Ollama, or a built-in dummy “shell” provider for testing.
+  Ollama, or a built-in dummy "shell" provider for testing.
 - **Dynamic team.** A baseline of three agents (`chief`, `qa`, `ralph`)
   ships with the harness; the chief invents project-specific specialists
   on the fly — including `engineer` when an implementer is needed — writes
@@ -180,6 +180,11 @@ persisted — workspace IDs and task IDs from a previous session are not
 recognised after a restart even if the directories remain on disk.  You
 will need to create new workspaces via `POST /api/workspaces` after each
 restart.
+
+> **Note:** The workspace registry (IDs and task history) is kept in-memory
+> and is not persisted across container restarts. Even if you mount
+> `/workspaces`, workspace IDs created before the restart will not be
+> accessible after restart. This is a known limitation.
 
 Override the workspace root with `CLK_WORKSPACES_DIR`.
 
@@ -458,8 +463,8 @@ The harness state, written by `clk init` and grown by every command:
 ## Providers
 
 | Provider    | Detection                                | Notes |
-|-------------|------------------------------------------|-------|
-| `shell`     | always available                         | dummy; echoes prompts and writes stub files. Use for tests, CI, dry runs. |
+|-------------|------------------------------------------|
+`shell`     | always available                         | dummy; echoes prompts and writes stub files. Use for tests, CI, dry runs. |
 | `claude`    | `claude` on PATH                         | runs `claude --print` non-interactively. Add `"args": ["--print", "--output-format", "json"]` to `providers.json` to get real token counts. |
 | `codex`     | `codex` on PATH                          | runs `codex exec`. |
 | `gemini`    | `gemini` on PATH                         | runs the Google Gemini CLI; prompt fed on stdin. |

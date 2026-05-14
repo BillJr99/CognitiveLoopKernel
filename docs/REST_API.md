@@ -121,8 +121,8 @@ Return the bundled workflow templates.
 }
 ```
 
-If the template package cannot be loaded the response will be
-`{"ok": false, "error": {"code": "template_load_failed", "message": "..."}, "workflows": []}`.
+If the template package cannot be loaded the response will be HTTP 500 with
+`{"ok": false, "error": {"code": "template_load_failed", "message": "Failed to load workflow templates."}}`.
 
 ---
 
@@ -190,6 +190,9 @@ List all workspaces known to this server instance.
 
 Delete a workspace and all its files.
 
+Returns `409 Conflict` if any task using this workspace is currently `pending`
+or `running`. Cancel all active tasks before deleting the workspace.
+
 **Response** `200 OK`
 ```json
 { "ok": true }
@@ -208,7 +211,7 @@ Start a CLK command as a background task.
 | `command` | string | yes | One of `init`, `idea`, `plan`, `run`, `loop`, `status`. |
 | `args` | `string[]` | no | Extra CLI arguments forwarded verbatim (e.g. `["A journaling app"]`). |
 | `workspace_id` | string | no | Existing workspace UUID. Omit to create an ephemeral workspace. |
-| `workflow` | string | no | Convenience shortcut: injects `--workflow <value>` when `command` is `run`. |
+| `workflow` | string | no | Convenience shortcut: injects `--workflow <value>` when `command` is `run`. Ignored if `--workflow` or `--workflow=<value>` is already in `args`. |
 
 **Example — capture an idea in an existing workspace**
 ```json
@@ -263,6 +266,7 @@ Poll task status.
   "workspace_id": "3fa85f64-...",
   "command": "idea",
   "status": "running",
+  "created_at": "2024-01-15T12:00:04.000000Z",
   "started_at": "2024-01-15T12:00:05.123456Z",
   "finished_at": null,
   "exit_code": null,
@@ -279,6 +283,14 @@ Poll task status.
 | `done` | Subprocess exited with code 0. |
 | `failed` | Subprocess exited with non-zero code. |
 | `cancelled` | Task was cancelled via `POST /cancel`. |
+
+Timestamp fields:
+
+| Field | Description |
+|---|---|
+| `created_at` | ISO-8601 UTC timestamp set when the task is accepted (always present). |
+| `started_at` | ISO-8601 UTC timestamp set when the subprocess begins executing; `null` while status is `pending`. |
+| `finished_at` | ISO-8601 UTC timestamp set when the task reaches a terminal state; `null` while `pending` or `running`. |
 
 ---
 

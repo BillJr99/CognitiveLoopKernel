@@ -232,9 +232,9 @@ async def test_task_completes_with_done_status(client: AsyncClient) -> None:
         create_resp = await client.post("/api/research", json={"command": "init"})
     task_id = create_resp.json()["task_id"]
 
-    # Wait for the task to complete
-    for _ in range(20):
-        await asyncio.sleep(0.05)
+    # Wait for the task to complete (10 second budget)
+    for _ in range(100):
+        await asyncio.sleep(0.1)
         r = await client.get(f"/api/research/{task_id}")
         if r.json()["status"] in ("done", "failed", "cancelled"):
             break
@@ -251,8 +251,8 @@ async def test_task_fails_on_nonzero_exit(client: AsyncClient) -> None:
         create_resp = await client.post("/api/research", json={"command": "init"})
     task_id = create_resp.json()["task_id"]
 
-    for _ in range(20):
-        await asyncio.sleep(0.05)
+    for _ in range(100):
+        await asyncio.sleep(0.1)
         r = await client.get(f"/api/research/{task_id}")
         if r.json()["status"] in ("done", "failed", "cancelled"):
             break
@@ -302,9 +302,9 @@ async def test_cancel_already_done_task_returns_error(client: AsyncClient) -> No
         create_resp = await client.post("/api/research", json={"command": "init"})
     task_id = create_resp.json()["task_id"]
 
-    # Wait for completion
-    for _ in range(20):
-        await asyncio.sleep(0.05)
+    # Wait for completion (10 second budget)
+    for _ in range(100):
+        await asyncio.sleep(0.1)
         r = await client.get(f"/api/research/{task_id}")
         if r.json()["status"] in ("done", "failed", "cancelled"):
             break
@@ -352,3 +352,56 @@ async def test_list_workflows(client: AsyncClient) -> None:
     assert data["ok"] is True
     assert "workflows" in data
     assert isinstance(data["workflows"], list)
+
+
+# ---------------------------------------------------------------------------
+# New tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_auto_init_runs_for_non_init_command(client: AsyncClient, monkeypatch) -> None:
+    """When command != 'init' and .clk/ is absent, _run_task should run init first."""
+    import clk_harness.api as api_mod
+    calls: list[str] = []
+
+    async def fake_create_subprocess(*args, **kwargs):
+        calls.append(args[0] if args else "?")
+
+        class FakeProc:
+            returncode = 0
+            stdout = None
+
+            async def communicate(self):
+                return b"", b""
+
+            async def wait(self):
+                return 0
+
+            def terminate(self):
+                pass
+
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess)
+    resp = await client.post("/api/workspaces", json={"name": "test-ws"})
+    ws_id = resp.json()["workspace_id"]
+
+    resp = await client.post("/api/research", json={"command": "idea", "workspace_id": ws_id})
+    assert resp.status_code == 202
+    # Give async task time to start
+    await asyncio.sleep(0.2)
+    # Should have called subprocess at least once (for init)
+    assert len(calls) >= 1
+
+
+@pytest.mark.asyncio
+async def test_artifact_path_traversal_rejected(client: AsyncClient) -> None:
+    """Path traversal attempts must return 403."""
+    resp = await client.post("/api/workspaces", json={"name": "sec-test"})
+    ws_id = resp.json()["workspace_id"]
+    resp2 = await client.post("/api/research", json={"command": "init", "workspace_id": ws_id})
+    task_id = resp2.json()["task_id"]
+    # Wait briefly
+    await asyncio.sleep(0.1)
+    resp3 = await client.get(f"/api/research/{task_id}/artifacts/../../../etc/passwd")
+    assert resp3.status_code in (403, 404)

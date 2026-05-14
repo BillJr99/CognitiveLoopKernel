@@ -12,11 +12,16 @@ CLK_WORKSPACES_DIR
 CLK_API_PORT
     TCP port the server binds to when run as ``__main__``.
     Defaults to ``8001``.
+
+Note: The ``clk-api`` console script entry point (``main()``) guards against
+missing optional dependencies at import time and will print a clear error if
+fastapi/uvicorn are not installed rather than crashing with an ImportError.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import sys
@@ -31,6 +36,16 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
+# Version — read from installed package metadata; fall back to "0.0.0"
+# ---------------------------------------------------------------------------
+
+try:
+    from importlib.metadata import version as _pkg_version
+    _API_VERSION = _pkg_version("clk-harness")
+except Exception:
+    _API_VERSION = "0.0.0"
+
+# ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
@@ -38,6 +53,15 @@ WORKSPACES_DIR = Path(os.environ.get("CLK_WORKSPACES_DIR", "/workspaces"))
 START_TIME = datetime.utcnow()
 
 COMMANDS = ["init", "idea", "plan", "run", "loop", "status"]
+
+# Maximum number of output lines kept per task (prevents unbounded memory growth).
+MAX_TASK_LINES = 10_000
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # In-memory task store
@@ -50,6 +74,7 @@ COMMANDS = ["init", "idea", "plan", "run", "loop", "status"]
 #   command: str,
 #   args: list[str],
 #   status: "pending" | "running" | "done" | "failed" | "cancelled",
+#   created_at: str,            # ISO-8601 UTC; set when task is created
 #   started_at: str | None,     # ISO-8601 UTC; None until _run_task begins
 #   finished_at: str | None,
 #   exit_code: int | None,
@@ -76,7 +101,7 @@ WORKSPACES: Dict[str, Dict[str, Any]] = {}
 
 app = FastAPI(
     title="CognitiveLoopKernel REST API",
-    version="0.1.0",
+    version=_API_VERSION,
     description="Programmatic HTTP access to the CLK multi-agent development harness.",
 )
 
@@ -101,6 +126,15 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(
         status_code=422,
         content={"ok": False, "error": {"code": "validation_error", "message": str(exc)}},
+    )
+
+
+@app.exception_handler(Exception)
+async def _global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled exception on %s", request.url)
+    return JSONResponse(
+        status_code=500,
+        content={"ok": False, "error": {"code": "internal_error", "message": "An internal server error occurred."}},
     )
 
 
@@ -155,15 +189,27 @@ async def _run_task(task_id: str) -> None:
                     stderr=asyncio.subprocess.STDOUT,
                     cwd=str(ws_path),
                 )
-                init_out, _ = await init_proc.communicate()
+                # Expose init_proc so cancel_task can terminate it if needed.
+                task["proc"] = init_proc
+                try:
+                    init_out, _ = await init_proc.communicate()
+                except asyncio.CancelledError:
+                    init_proc.terminate()
+                    raise
+                finally:
+                    task["proc"] = None
                 for line in (init_out or b"").decode(errors="replace").splitlines():
-                    task["lines"].append(f"[init] {line}")
+                    if len(task["lines"]) < MAX_TASK_LINES:
+                        task["lines"].append(f"[init] {line}")
                 if init_proc.returncode != 0:
                     task["status"] = "failed"
                     task["exit_code"] = init_proc.returncode
                     return  # abort; outer finally handles cleanup
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001
-                task["lines"].append(f"[init-error] {exc}")
+                if len(task["lines"]) < MAX_TASK_LINES:
+                    task["lines"].append(f"[init-error] {exc}")
                 task["status"] = "failed"
                 task["exit_code"] = -1
                 return  # abort; outer finally handles cleanup
@@ -182,7 +228,8 @@ async def _run_task(task_id: str) -> None:
             line_bytes = await proc.stdout.readline()
             if not line_bytes:
                 break
-            task["lines"].append(line_bytes.decode(errors="replace").rstrip("\n"))
+            if len(task["lines"]) < MAX_TASK_LINES:
+                task["lines"].append(line_bytes.decode(errors="replace").rstrip("\n"))
 
         await proc.wait()
         returncode = proc.returncode
@@ -197,7 +244,8 @@ async def _run_task(task_id: str) -> None:
         task["status"] = "cancelled"
         task["exit_code"] = -1
     except Exception as exc:  # noqa: BLE001
-        task["lines"].append(f"[api-error] {exc}")
+        if len(task["lines"]) < MAX_TASK_LINES:
+            task["lines"].append(f"[api-error] {exc}")
         if task["status"] != "cancelled":
             task["status"] = "failed"
         task["exit_code"] = -1
@@ -233,7 +281,7 @@ class ResearchRequest(BaseModel):
 @app.get("/api/healthz")
 async def healthz() -> Dict[str, Any]:
     uptime = (datetime.utcnow() - START_TIME).total_seconds()
-    return {"ok": True, "version": "0.1.0", "uptime_s": round(uptime, 2)}
+    return {"ok": True, "version": _API_VERSION, "uptime_s": round(uptime, 2)}
 
 
 @app.get("/api/capabilities")
@@ -250,13 +298,21 @@ async def list_workflows() -> Dict[str, Any]:
         from clk_harness.templates import WORKFLOWS  # type: ignore
         result = []
         for name, body in WORKFLOWS.items():
-            # Try YAML 'description:' field first, then fall back to comment header.
             description = ""
-            for line in body.splitlines():
-                stripped = line.strip()
-                if stripped.lower().startswith("description:"):
-                    description = stripped[len("description:"):].strip().strip("'\"")
-                    break
+            # Try to parse YAML 'description:' field first.
+            try:
+                import yaml as _yaml
+                parsed = _yaml.safe_load(body)
+                description = parsed.get("description", "") if isinstance(parsed, dict) else ""
+            except Exception:  # noqa: BLE001
+                pass
+            # Fall back to regex matching 'description:' on raw text.
+            if not description:
+                import re as _re
+                m = _re.search(r"^description:\s*(.+)", body, _re.MULTILINE)
+                if m:
+                    description = m.group(1).strip().strip("'\"")
+            # Last resort: first comment line.
             if not description:
                 for line in body.splitlines():
                     stripped = line.strip()
@@ -266,9 +322,11 @@ async def list_workflows() -> Dict[str, Any]:
             result.append({"name": name.replace(".yaml", ""), "path": name, "description": description})
         return {"ok": True, "workflows": result}
     except Exception as exc:  # noqa: BLE001
-        # Templates are optional; return ok:false so callers can distinguish
-        # a partial-success (empty list) from a genuine load failure.
-        return {"ok": False, "error": {"code": "template_load_failed", "message": str(exc)}, "workflows": []}
+        logger.exception("Failed to load workflow templates")
+        raise HTTPException(
+            status_code=500,
+            detail={"ok": False, "error": {"code": "template_load_failed", "message": "Failed to load workflow templates."}},
+        ) from exc
 
 
 # -- Workspaces --------------------------------------------------------------
@@ -298,12 +356,23 @@ async def list_workspaces() -> Dict[str, Any]:
 async def delete_workspace(workspace_id: str) -> Dict[str, Any]:
     if workspace_id not in WORKSPACES:
         raise _err("workspace_not_found", f"Workspace {workspace_id!r} not found.", 404)
+    # Refuse to delete if active tasks are using this workspace.
+    active = [
+        t for t in TASKS.values()
+        if t.get("workspace_id") == workspace_id and t.get("status") in ("pending", "running")
+    ]
+    if active:
+        raise _err(
+            "workspace_in_use",
+            f"Workspace has {len(active)} active task(s). Cancel them first.",
+            409,
+        )
     ws_path = _workspace_path(workspace_id)
     try:
         if ws_path.exists():
             shutil.rmtree(ws_path)
     except Exception as exc:  # noqa: BLE001
-        raise _err("delete_failed", str(exc)) from exc
+        raise _err("delete_failed", str(exc), 500) from exc
     del WORKSPACES[workspace_id]
     return {"ok": True}
 
@@ -340,8 +409,9 @@ async def create_research(body: ResearchRequest) -> Dict[str, Any]:
     # Build args — inject --workflow if provided and command is `run`.
     # Check both "--workflow" (space form) and "--workflow=" (equals form).
     args = list(body.args)
-    workflow_present = "--workflow" in args or any(a.startswith("--workflow=") for a in args)
-    if body.workflow and body.command == "run" and not workflow_present:
+    if body.workflow and body.command == "run" and not any(
+        a == "--workflow" or a.startswith("--workflow=") for a in args
+    ):
         args = ["--workflow", body.workflow] + args
 
     task_id = str(uuid.uuid4())
@@ -351,7 +421,8 @@ async def create_research(body: ResearchRequest) -> Dict[str, Any]:
         "command": body.command,
         "args": args,
         "status": "pending",
-        "started_at": None,  # set by _run_task when execution begins
+        "created_at": _now_iso(),  # always set at creation time
+        "started_at": None,        # set by _run_task when execution begins
         "finished_at": None,
         "exit_code": None,
         "lines": [],
@@ -376,6 +447,7 @@ async def get_task(task_id: str) -> Dict[str, Any]:
         "workspace_id": task["workspace_id"],
         "command": task["command"],
         "status": task["status"],
+        "created_at": task.get("created_at"),
         "started_at": task["started_at"],
         "finished_at": task["finished_at"],
         "exit_code": task["exit_code"],
@@ -497,8 +569,25 @@ async def cancel_task(task_id: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    """Console-script entry point: ``clk-api``."""
-    import uvicorn
+    """Console-script entry point: ``clk-api``.
+
+    Guards against missing optional [api] dependencies so users get a clear
+    error message instead of a confusing ImportError traceback.
+    """
+    # NOTE: fastapi and uvicorn are already imported at module top-level in
+    # this file, which means a missing [api] extra will raise ImportError
+    # before main() is even called.  The guard below handles the case where
+    # a future refactor lazily imports them, and documents the intent.
+    try:
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
+    except ImportError:
+        print(
+            "Error: REST API dependencies not installed. "
+            "Run: pip install 'clk-harness[api]'",
+            file=__import__('sys').stderr,
+        )
+        raise SystemExit(1)
 
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("CLK_API_PORT", "8001")))
 
