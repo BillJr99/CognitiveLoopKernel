@@ -168,14 +168,21 @@ def _clk_cmd(command: str, args: List[str]) -> List[str]:
 
 async def _run_task(task_id: str) -> None:
     """Background coroutine: run CLK as a subprocess and collect output."""
-    task = TASKS[task_id]
+    task = TASKS.get(task_id)
+    if task is None:
+        return
+    # Guard: if task was cancelled before we started, do not overwrite status
+    if task.get("status") == "cancelled":
+        task["finished_at"] = _now_iso()
+        _task_handles.pop(task_id, None)
+        return
+    task["status"] = "running"
+    task["started_at"] = _now_iso()
+
     workspace_id = task["workspace_id"]
     ws_path = _workspace_path(workspace_id)
     command = task["command"]
     args = list(task["args"])
-
-    task["status"] = "running"
-    task["started_at"] = _now_iso()
 
     try:
         # If the workspace is not yet initialised, run `init` first (unless that
