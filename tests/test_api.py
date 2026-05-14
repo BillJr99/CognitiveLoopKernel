@@ -52,6 +52,10 @@ def _reset_state(tmp_path: Path) -> None:
     _task_handles.clear()
     api_mod.WORKSPACES_DIR = tmp_path / "workspaces"
     yield
+    # Cancel any still-running background asyncio tasks before clearing so
+    # lingering coroutines don't crash with KeyError when they next access TASKS.
+    for handle in list(_task_handles.values()):
+        handle.cancel()
     TASKS.clear()
     WORKSPACES.clear()
     _task_handles.clear()

@@ -31,12 +31,12 @@ RUN mkdir -p clk_harness && touch clk_harness/__init__.py README.md \
  && pip install --no-cache-dir "." \
  && rm -rf clk_harness README.md
 
-# Install REST API dependencies (FastAPI, uvicorn, pydantic).
-COPY requirements-api.txt ./
-RUN pip install --no-cache-dir -r requirements-api.txt
-
-# Copy harness sources.
+# Install REST API dependencies from pyproject.toml [api] extra.
+# Using the extras directly (instead of a separate requirements-api.txt)
+# keeps pyproject.toml as the single source of truth and avoids drift.
 COPY clk_harness/ ./clk_harness/
+RUN pip install --no-cache-dir ".[api]"
+
 COPY scripts/     ./scripts/
 COPY kickoff.sh   ./
 COPY .env.example ./

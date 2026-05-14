@@ -244,8 +244,10 @@ Start a CLK command as a background task.
 }
 ```
 
-> If `workspace_id` is omitted, CLK automatically runs `init` before the
-> requested command (unless the command itself is `init`).
+> CLK automatically runs `init` before the requested command whenever the
+> workspace has not yet been initialised (i.e. `.clk/` is absent), regardless
+> of whether `workspace_id` was provided.  The auto-`init` step is skipped
+> only when the requested command is already `init`.
 
 ---
 
