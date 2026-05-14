@@ -51,7 +51,7 @@ Do not expose it to the public internet without a reverse-proxy or firewall.
 
 ## Response envelope
 
-Every endpoint returns JSON.  Successful responses always include `"ok": true`;
+Most endpoints return JSON.  Successful responses always include `"ok": true`;
 error responses include `"ok": false` and an `error` object:
 
 ```json
@@ -68,6 +68,11 @@ error responses include `"ok": false` and an `error` object:
 }
 ```
 
+**Exceptions:** `GET /api/research/{task_id}/stream` returns `text/event-stream`
+(SSE — see the stream endpoint section for the event format) and
+`GET /api/research/{task_id}/artifacts/{path}` returns the raw file content with
+the file's natural MIME type.
+
 ---
 
 ## Endpoints
@@ -80,7 +85,7 @@ Liveness check.
 ```json
 {
   "ok": true,
-  "version": "1.0.0",
+  "version": "0.1.0",
   "uptime_s": 42.7
 }
 ```
@@ -267,7 +272,7 @@ Poll task status.
 
 | Value | Meaning |
 |---|---|
-| `pending` | Task accepted, not yet started. |
+| `pending` | Task accepted, not yet started (`started_at` is null). |
 | `running` | Subprocess is active. |
 | `done` | Subprocess exited with code 0. |
 | `failed` | Subprocess exited with non-zero code. |
@@ -327,6 +332,8 @@ List all files in the workspace after (or during) a task run.
 
 Download a single artifact by its relative path within the workspace.
 Paths that escape the workspace boundary are rejected with `403 Forbidden`.
+The response body is the raw file content; the `Content-Type` is inferred
+from the file extension.
 
 ---
 

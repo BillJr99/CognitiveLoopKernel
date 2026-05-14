@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -50,7 +50,7 @@ COMMANDS = ["init", "idea", "plan", "run", "loop", "status"]
 #   command: str,
 #   args: list[str],
 #   status: "pending" | "running" | "done" | "failed" | "cancelled",
-#   started_at: str,          # ISO-8601 UTC
+#   started_at: str | None,     # ISO-8601 UTC; None until _run_task begins
 #   finished_at: str | None,
 #   exit_code: int | None,
 #   lines: list[str],
@@ -76,7 +76,7 @@ WORKSPACES: Dict[str, Dict[str, Any]] = {}
 
 app = FastAPI(
     title="CognitiveLoopKernel REST API",
-    version="1.0.0",
+    version="0.1.0",
     description="Programmatic HTTP access to the CLK multi-agent development harness.",
 )
 
@@ -219,7 +219,7 @@ class WorkspaceCreate(BaseModel):
 
 class ResearchRequest(BaseModel):
     command: str
-    args: List[str] = []
+    args: List[str] = Field(default_factory=list)
     workspace_id: Optional[str] = None
     workflow: Optional[str] = None  # convenience: injects --workflow <value> for `run`
 
@@ -233,7 +233,7 @@ class ResearchRequest(BaseModel):
 @app.get("/api/healthz")
 async def healthz() -> Dict[str, Any]:
     uptime = (datetime.utcnow() - START_TIME).total_seconds()
-    return {"ok": True, "version": "1.0.0", "uptime_s": round(uptime, 2)}
+    return {"ok": True, "version": "0.1.0", "uptime_s": round(uptime, 2)}
 
 
 @app.get("/api/capabilities")
@@ -250,13 +250,19 @@ async def list_workflows() -> Dict[str, Any]:
         from clk_harness.templates import WORKFLOWS  # type: ignore
         result = []
         for name, body in WORKFLOWS.items():
-            # Extract a one-line description from the YAML comment if present
+            # Try YAML 'description:' field first, then fall back to comment header.
             description = ""
             for line in body.splitlines():
-                line = line.strip()
-                if line.startswith("#"):
-                    description = line.lstrip("# ").strip()
+                stripped = line.strip()
+                if stripped.lower().startswith("description:"):
+                    description = stripped[len("description:"):].strip().strip("'\"")
                     break
+            if not description:
+                for line in body.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("#"):
+                        description = stripped.lstrip("# ").strip()
+                        break
             result.append({"name": name.replace(".yaml", ""), "path": name, "description": description})
         return {"ok": True, "workflows": result}
     except Exception as exc:  # noqa: BLE001
@@ -331,9 +337,11 @@ async def create_research(body: ResearchRequest) -> Dict[str, Any]:
             "created_at": _now_iso(),
         }
 
-    # Build args — inject --workflow if provided and command is `run`
+    # Build args — inject --workflow if provided and command is `run`.
+    # Check both "--workflow" (space form) and "--workflow=" (equals form).
     args = list(body.args)
-    if body.workflow and body.command == "run" and "--workflow" not in args:
+    workflow_present = "--workflow" in args or any(a.startswith("--workflow=") for a in args)
+    if body.workflow and body.command == "run" and not workflow_present:
         args = ["--workflow", body.workflow] + args
 
     task_id = str(uuid.uuid4())
@@ -343,7 +351,7 @@ async def create_research(body: ResearchRequest) -> Dict[str, Any]:
         "command": body.command,
         "args": args,
         "status": "pending",
-        "started_at": _now_iso(),
+        "started_at": None,  # set by _run_task when execution begins
         "finished_at": None,
         "exit_code": None,
         "lines": [],
