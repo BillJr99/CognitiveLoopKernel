@@ -138,10 +138,11 @@ or:
 
 ## REST API
 
-CLK ships a FastAPI-based HTTP server that exposes all CLI commands
-programmatically.  Use it to integrate CLK into your own tooling, drive it
-from a web UI, or orchestrate it from CI pipelines without spawning a
-terminal.
+CLK ships a FastAPI-based HTTP server that exposes a subset of CLI
+commands programmatically — specifically: `init`, `idea`, `plan`, `run`,
+`loop`, and `status` (see `/api/capabilities` for the authoritative list).
+Use it to integrate CLK into your own tooling, drive it from a web UI,
+or orchestrate it from CI pipelines without spawning a terminal.
 
 ### Install
 
@@ -152,7 +153,10 @@ pip install "clk-harness[api]"
 ### Start the server
 
 ```bash
-# Using the module entry point (recommended)
+# Using the console-script entry point (recommended)
+clk-api
+
+# Or via the module entry point
 python -m clk_harness.api
 
 # Or via uvicorn directly
