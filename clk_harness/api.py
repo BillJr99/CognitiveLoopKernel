@@ -34,6 +34,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # ---------------------------------------------------------------------------
 # Version — read from installed package metadata; fall back to "0.0.0"
@@ -109,6 +110,17 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 # Exception handlers — ensure all errors use the {ok, error} envelope
 # ---------------------------------------------------------------------------
+
+@app.exception_handler(StarletteHTTPException)
+async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """Handle routing-level 404s (unknown URLs) that bypass FastAPI's HTTPException handler."""
+    if isinstance(exc.detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"ok": False, "error": {"code": str(exc.status_code), "message": str(exc.detail)}},
+    )
+
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
