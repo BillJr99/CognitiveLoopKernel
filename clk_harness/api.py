@@ -143,33 +143,31 @@ async def _run_task(task_id: str) -> None:
     task["status"] = "running"
     task["started_at"] = _now_iso()
 
-    # If the workspace is not yet initialised, run `init` first (unless that
-    # is already the requested command).
-    clk_dir = ws_path / ".clk"
-    if command != "init" and not clk_dir.exists():
-        try:
-            init_proc = await asyncio.create_subprocess_exec(
-                *_clk_cmd("init", []),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=str(ws_path),
-            )
-            init_out, _ = await init_proc.communicate()
-            for line in (init_out or b"").decode(errors="replace").splitlines():
-                task["lines"].append(f"[init] {line}")
-            if init_proc.returncode != 0:
-                task["status"] = "failed"
-                task["exit_code"] = init_proc.returncode
-                task["finished_at"] = _now_iso()
-                return  # abort — workspace not properly initialized
-        except Exception as exc:  # noqa: BLE001
-            task["lines"].append(f"[init-error] {exc}")
-            task["status"] = "failed"
-            task["exit_code"] = -1
-            task["finished_at"] = _now_iso()
-            return  # abort
-
     try:
+        # If the workspace is not yet initialised, run `init` first (unless that
+        # is already the requested command).
+        clk_dir = ws_path / ".clk"
+        if command != "init" and not clk_dir.exists():
+            try:
+                init_proc = await asyncio.create_subprocess_exec(
+                    *_clk_cmd("init", []),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=str(ws_path),
+                )
+                init_out, _ = await init_proc.communicate()
+                for line in (init_out or b"").decode(errors="replace").splitlines():
+                    task["lines"].append(f"[init] {line}")
+                if init_proc.returncode != 0:
+                    task["status"] = "failed"
+                    task["exit_code"] = init_proc.returncode
+                    return  # abort; outer finally handles cleanup
+            except Exception as exc:  # noqa: BLE001
+                task["lines"].append(f"[init-error] {exc}")
+                task["status"] = "failed"
+                task["exit_code"] = -1
+                return  # abort; outer finally handles cleanup
+
         proc = await asyncio.create_subprocess_exec(
             *_clk_cmd(command, args),
             stdout=asyncio.subprocess.PIPE,
@@ -188,9 +186,11 @@ async def _run_task(task_id: str) -> None:
 
         await proc.wait()
         returncode = proc.returncode
-        task["exit_code"] = returncode
-        # Only update status if the task wasn't already cancelled
+        # Only update status and exit_code if the task wasn't already cancelled;
+        # a subprocess that exits quickly after SIGTERM must not overwrite the
+        # cancel sentinel.
         if task["status"] != "cancelled":
+            task["exit_code"] = returncode
             task["status"] = "done" if returncode == 0 else "failed"
 
     except asyncio.CancelledError:
@@ -202,6 +202,8 @@ async def _run_task(task_id: str) -> None:
             task["status"] = "failed"
         task["exit_code"] = -1
     finally:
+        # Always run on every exit path — including early returns from the
+        # auto-init block — so _task_handles never holds stale entries.
         task["finished_at"] = _now_iso()
         task["proc"] = None
         _task_handles.pop(task_id, None)
