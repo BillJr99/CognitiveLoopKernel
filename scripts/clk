@@ -26,14 +26,22 @@ PY=""
 if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
   PY="$VIRTUAL_ENV/bin/python"
 elif [ -x "$PROJECT_ROOT/.clk/venv/bin/python" ]; then
-  PY="$PROJECT_ROOT/.clk/venv/bin/python"
-elif command -v python3 >/dev/null 2>&1; then
-  PY="$(command -v python3)"
-elif command -v python >/dev/null 2>&1; then
-  PY="$(command -v python)"
-else
-  echo "clk: no python interpreter found on PATH" >&2
-  exit 127
+  # Only use the project venv if it actually has the required runtime deps.
+  # A stale venv missing uvicorn or fastapi should fall through to the system
+  # python so a plain `pip install -r requirements.txt` just works.
+  if "$PROJECT_ROOT/.clk/venv/bin/python" -c "import uvicorn, fastapi" 2>/dev/null; then
+    PY="$PROJECT_ROOT/.clk/venv/bin/python"
+  fi
+fi
+if [ -z "$PY" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PY="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PY="$(command -v python)"
+  else
+    echo "clk: no python interpreter found on PATH" >&2
+    exit 127
+  fi
 fi
 
 EXTRA_PATH="$HARNESS_HOME"
