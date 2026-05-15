@@ -1,0 +1,10 @@
+# Core runtime dependencies
+PyYAML>=6.0
+fastapi>=0.100
+uvicorn>=0.23
+pydantic>=2.0
+
+# Dev / test dependencies
+pytest>=7
+pytest-asyncio>=0.23
+httpx>=0.24
