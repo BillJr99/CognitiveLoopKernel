@@ -21,7 +21,6 @@ import subprocess
 import sys
 import textwrap
 import traceback
-import venv
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -144,18 +143,6 @@ def _ensure_gitignore(paths: Paths) -> bool:
         return False
 
 
-def _setup_local_venv(paths: Paths) -> bool:
-    if paths.venv.exists():
-        return False
-    try:
-        log(f"creating local venv at {paths.venv}")
-        builder = venv.EnvBuilder(with_pip=False, clear=False, symlinks=True)
-        builder.create(str(paths.venv))
-        return True
-    except Exception as exc:
-        log_exception("cli._setup_local_venv", exc)
-        return False
-
 
 def _make_runner(paths: Paths) -> AgentRunner:
     return AgentRunner(
@@ -192,7 +179,6 @@ def cmd_init(args: argparse.Namespace) -> int:
     prompts_written = _materialize_prompts(paths)
     workflows_written = _materialize_workflows(paths)
     gitignore_changed = _ensure_gitignore(paths)
-    venv_created = _setup_local_venv(paths)
     repo_initialized = init_repo(paths.root)
 
     # Seed initial state files
@@ -211,7 +197,6 @@ def cmd_init(args: argparse.Namespace) -> int:
         f"prompts_written: {len(prompts_written)}",
         f"workflows_written: {len(workflows_written)}",
         f"gitignore_updated: {gitignore_changed}",
-        f"venv_created: {venv_created}",
         f"git_repo: {repo_initialized}",
     ]
     log("\n".join(summary_lines))
