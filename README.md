@@ -152,6 +152,11 @@ pip install "clk-harness[api]"
 
 ### Start the server
 
+The REST API starts **automatically in the background** whenever you run
+any `clk` sub-command (provided the optional `[api]` extras are installed).
+A `[clk] REST API listening on http://…` banner is printed to stderr at
+startup.  You can also start it standalone:
+
 ```bash
 # Using the console-script entry point (recommended)
 clk-api
@@ -165,6 +170,29 @@ uvicorn clk_harness.api:app --host 0.0.0.0 --port 8001
 
 The server listens on port `8001` by default.  Override with
 `CLK_API_PORT=<port>`.
+
+### Security and network bind address
+
+> **Warning: the REST API has no authentication and binds to `0.0.0.0`
+> (all interfaces) by default.**  This default suits sandbox / container
+> environments where network isolation is provided by the runtime.
+> **Do not expose the API port to an untrusted network without additional
+> access controls.**  For local development, restrict the server to
+> loopback (`127.0.0.1`) using the mechanisms below.
+
+When the CLI starts, the REST API auto-starts on a background daemon thread
+and prints a `[clk]` banner to stderr.  Override the bind address or disable
+the API entirely:
+
+| Mechanism | Effect |
+|---|---|
+| `CLK_API_HOST=127.0.0.1` | Restrict the API to loopback (recommended for local dev) |
+| `CLK_API_PORT=<port>` | Change the listen port (default `8001`) |
+| `clk --no-api <cmd>` | Skip the background API for this invocation |
+| `CLK_DISABLE_API=1` | Disable the background API for all CLI invocations |
+
+If the optional `[api]` extras (`fastapi`, `uvicorn`) are not installed,
+the background thread is silently skipped and the CLI works normally.
 
 ### Docker
 
@@ -413,6 +441,7 @@ The package itself:
 ```
 clk_harness/
   api.py                 # FastAPI REST API server
+  _api_launcher.py       # background daemon thread launcher (auto-start on CLI)
   _api_shim.py           # console-script shim for clk-api (guards ImportError)
   cli.py                 # argparse entrypoint
   config.py              # paths, default configs, JSON load/save
