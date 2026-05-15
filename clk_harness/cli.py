@@ -152,8 +152,10 @@ def _setup_local_venv(paths: Paths) -> bool:
         try:
             builder = venv.EnvBuilder(with_pip=True, clear=False, symlinks=True)
             builder.create(str(paths.venv))
-        except (ImportError, ModuleNotFoundError) as pip_exc:
-            # ensurepip unavailable on some minimal images; fall back to no-pip venv
+        except (ImportError, ModuleNotFoundError, subprocess.CalledProcessError) as pip_exc:
+            # ensurepip unavailable on some minimal images — venv raises CalledProcessError
+            # when `python -m ensurepip` fails, or ImportError/ModuleNotFoundError when the
+            # module is entirely absent; fall back to a no-pip venv in all cases.
             log_exception("cli._setup_local_venv.ensurepip", pip_exc)
             builder = venv.EnvBuilder(with_pip=False, clear=False, symlinks=True)
             builder.create(str(paths.venv))
