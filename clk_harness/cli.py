@@ -149,8 +149,23 @@ def _setup_local_venv(paths: Paths) -> bool:
         return False
     try:
         log(f"creating local venv at {paths.venv}")
-        builder = venv.EnvBuilder(with_pip=False, clear=False, symlinks=True)
-        builder.create(str(paths.venv))
+        try:
+            builder = venv.EnvBuilder(with_pip=True, clear=False, symlinks=True)
+            builder.create(str(paths.venv))
+        except Exception:
+            # ensurepip unavailable on some minimal images; fall back to no-pip venv
+            builder = venv.EnvBuilder(with_pip=False, clear=False, symlinks=True)
+            builder.create(str(paths.venv))
+
+        # Install requirements into the fresh venv so the harness and API work.
+        pip = paths.venv / "bin" / "pip"
+        req = Path(__file__).parent.parent / "requirements.txt"
+        if pip.exists() and req.exists():
+            log(f"installing requirements from {req}")
+            subprocess.run(
+                [str(pip), "install", "--quiet", "-r", str(req)],
+                check=False,
+            )
         return True
     except Exception as exc:
         log_exception("cli._setup_local_venv", exc)

@@ -10,8 +10,8 @@ CLK_WORKSPACES_DIR
     Root directory under which workspaces are created.
     Defaults to ``/workspaces``.
 CLK_API_HOST
-    Network interface the server binds to.  Defaults to ``0.0.0.0``
-    (all interfaces).  Set to ``127.0.0.1`` to restrict to loopback.
+    Network interface the server binds to.  Defaults to ``127.0.0.1``
+    (loopback only).  Set to ``0.0.0.0`` to expose on all interfaces.
 CLK_API_PORT
     TCP port the server binds to when run as ``__main__``.
     Defaults to ``8001``.
@@ -57,8 +57,8 @@ WORKSPACES_DIR = Path(os.environ.get("CLK_WORKSPACES_DIR", "/workspaces"))
 START_TIME = datetime.utcnow()
 
 # Default bind address — exposes the API on ALL interfaces. Intended for
-# isolated sandbox / container use; set CLK_API_HOST=127.0.0.1 to restrict.
-DEFAULT_HOST = "0.0.0.0"
+# Loopback by default; set CLK_API_HOST=0.0.0.0 to expose on all interfaces.
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8001
 
 
