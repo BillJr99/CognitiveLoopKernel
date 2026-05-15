@@ -9,6 +9,9 @@ Environment variables
 CLK_WORKSPACES_DIR
     Root directory under which workspaces are created.
     Defaults to ``/workspaces``.
+CLK_API_HOST
+    Network interface the server binds to.  Defaults to ``0.0.0.0``
+    (all interfaces).  Set to ``127.0.0.1`` to restrict to loopback.
 CLK_API_PORT
     TCP port the server binds to when run as ``__main__``.
     Defaults to ``8001``.
@@ -52,6 +55,25 @@ except Exception:
 
 WORKSPACES_DIR = Path(os.environ.get("CLK_WORKSPACES_DIR", "/workspaces"))
 START_TIME = datetime.utcnow()
+
+# Default bind address — exposes the API on ALL interfaces. Intended for
+# isolated sandbox / container use; set ``CLK_API_HOST=127.0.0.1`` to
+# restrict to loopback.
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = 8001
+
+
+def get_bind_host() -> str:
+    """Return the host the REST API should bind to."""
+    return os.environ.get("CLK_API_HOST", DEFAULT_HOST)
+
+
+def get_bind_port() -> int:
+    """Return the port the REST API should bind to."""
+    try:
+        return int(os.environ.get("CLK_API_PORT", str(DEFAULT_PORT)))
+    except ValueError:
+        return DEFAULT_PORT
 
 COMMANDS = ["init", "idea", "plan", "run", "loop", "status"]
 
@@ -608,7 +630,7 @@ def main() -> None:
         )
         raise SystemExit(1)
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("CLK_API_PORT", "8001")))
+    uvicorn.run(app, host=get_bind_host(), port=get_bind_port())
 
 
 if __name__ == "__main__":
