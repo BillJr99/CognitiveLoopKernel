@@ -158,14 +158,24 @@ def _setup_local_venv(paths: Paths) -> bool:
             builder.create(str(paths.venv))
 
         # Install requirements into the fresh venv so the harness and API work.
+        # In the kickoff layout requirements.txt is not copied, but pyproject.toml
+        # is — so fall back to a directory install when the file is absent.
         pip = paths.venv / "bin" / "pip"
-        req = Path(__file__).parent.parent / "requirements.txt"
-        if pip.exists() and req.exists():
-            log(f"installing requirements from {req}")
-            subprocess.run(
-                [str(pip), "install", "--quiet", "-r", str(req)],
-                check=False,
-            )
+        harness_dir = Path(__file__).parent.parent
+        req = harness_dir / "requirements.txt"
+        if pip.exists():
+            if req.exists():
+                log(f"installing requirements from {req}")
+                subprocess.run(
+                    [str(pip), "install", "--quiet", "-r", str(req)],
+                    check=False,
+                )
+            elif (harness_dir / "pyproject.toml").exists():
+                log(f"installing package from {harness_dir}")
+                subprocess.run(
+                    [str(pip), "install", "--quiet", str(harness_dir)],
+                    check=False,
+                )
         return True
     except Exception as exc:
         log_exception("cli._setup_local_venv", exc)

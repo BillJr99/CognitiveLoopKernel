@@ -472,10 +472,11 @@ copy_if_present() {
 # the agents' point of view. The launcher (.clk/scripts/clk) and the
 # installer know to look here.
 mkdir -p "$KICKOFF_DIR/.clk/harness"
-copy_if_present "$SCRIPT_DIR/clk_harness"    "$KICKOFF_DIR/.clk/harness/clk_harness"
-copy_if_present "$SCRIPT_DIR/scripts"        "$KICKOFF_DIR/.clk/harness/scripts"
-copy_if_present "$SCRIPT_DIR/pyproject.toml" "$KICKOFF_DIR/.clk/harness/pyproject.toml"
-copy_if_present "$SCRIPT_DIR/README.md"      "$KICKOFF_DIR/.clk/harness/README.md"
+copy_if_present "$SCRIPT_DIR/clk_harness"       "$KICKOFF_DIR/.clk/harness/clk_harness"
+copy_if_present "$SCRIPT_DIR/scripts"           "$KICKOFF_DIR/.clk/harness/scripts"
+copy_if_present "$SCRIPT_DIR/pyproject.toml"    "$KICKOFF_DIR/.clk/harness/pyproject.toml"
+copy_if_present "$SCRIPT_DIR/requirements.txt"  "$KICKOFF_DIR/.clk/harness/requirements.txt"
+copy_if_present "$SCRIPT_DIR/README.md"         "$KICKOFF_DIR/.clk/harness/README.md"
 
 # Launcher shim lives under .clk/scripts/ so the project root stays clean.
 # The shim exports CLK_PROJECT_ROOT so the harness launcher resolves harness
