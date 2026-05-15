@@ -4,8 +4,8 @@ Used by the CLI to start uvicorn on a daemon thread before dispatching the
 requested sub-command, so the REST API auto-starts during normal CLI/TUI use.
 
 Imports of ``fastapi`` / ``uvicorn`` / ``clk_harness.api`` are deferred to
-``start_api_in_background()`` so that the base CLI keeps working for users
-who skipped the optional ``[api]`` extras.
+``start_api_in_background()`` so that a missing install does not crash the CLI.
+Install all dependencies with ``pip install -r requirements.txt``.
 """
 
 from __future__ import annotations
@@ -56,14 +56,14 @@ def start_api_in_background(
     if disable or api_disabled_by_env():
         return None
 
-    # Lazy import so a missing [api] extra does not crash the CLI.
+    # Lazy import so missing dependencies do not crash the CLI.
     try:
         import uvicorn
         from clk_harness.api import app, get_bind_host, get_bind_port
     except ImportError as exc:
         print(
             f"[clk] REST API disabled: optional dependencies missing ({exc}). "
-            "Install with `pip install 'clk-harness[api]'` to enable. "
+            "Run `pip install -r requirements.txt` to enable. "
             "Continuing without the API.",
             file=out,
         )
@@ -74,8 +74,6 @@ def start_api_in_background(
 
     def _run() -> None:
         try:
-            # Use the uvicorn imported above; re-importing inside the thread
-            # is redundant and confuses the traceback when startup fails.
             config = uvicorn.Config(
                 app,
                 host=host,
