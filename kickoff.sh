@@ -176,7 +176,7 @@ PY
       printf '  Leave blank if pi login above already handled auth.\n' >&4
       pi_key_type="$(_sv_read "Key type (openrouter|openai|anthropic|<provider>, blank to skip)" "$pi_key_type")"
       if [ -n "$pi_key_type" ]; then
-        new="$(_sv_secret "API key for $pi_key_type (leave blank to keep / skip)")"; [ -n "$new" ] && pi_key="$new"
+        new="$(_sv_secret "API key for $pi_key_type")"; [ -n "$new" ] && pi_key="$new"
       fi
       ;;
   esac
