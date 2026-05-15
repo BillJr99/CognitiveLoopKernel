@@ -292,13 +292,18 @@ def parse_consensus_proposals(text: str) -> List[ConsensusProposal]:
 _RESERVED_NAMES = set(BASELINE_AGENTS)
 
 # Names that always act as similarity anchors even when absent from
-# agents.json.  "autoresearch" was absorbed into ralph; keeping it here
-# prevents the chief from accidentally re-creating it as a dynamic role.
-# "engineer" is no longer a default baseline but its name is reserved so
-# that variants like "engineering" or "coder" are always rejected.
+# agents.json.  "engineer" is no longer a default baseline but its name
+# is reserved so that variants like "engineering" or "coder" are always
+# rejected; the exact name "engineer" is still creatable dynamically.
 _SEED_ROLE_ANCHORS: frozenset = frozenset({
     "autoresearch",
     "engineer",
+})
+
+# Subset of _SEED_ROLE_ANCHORS whose exact names are also blocked.
+# These roles were absorbed into other agents and must not be re-created.
+_RETIRED_ROLE_NAMES: frozenset = frozenset({
+    "autoresearch",
 })
 
 
@@ -439,9 +444,12 @@ def _similar_existing_name(name: str, agents: Dict[str, Any]) -> Optional[str]:
         ex_key = _name_key(existing)
         if not key or not ex_key:
             continue
-        # Creating the exact canonical name is always allowed — only aliases
-        # are blocked. e.g. "engineer" vs seed anchor "engineer": OK.
         if normalized == existing:
+            # Retired roles block even the exact name (absorbed into another
+            # agent and must not be re-created).  Plain seed anchors only
+            # block similar variants; their exact name is still creatable.
+            if existing in _RETIRED_ROLE_NAMES:
+                return existing
             continue
         if key == ex_key:
             return existing

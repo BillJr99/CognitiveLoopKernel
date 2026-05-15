@@ -89,8 +89,13 @@ app = FastAPI(
 )
 
 
+# ---------------------------------------------------------------------------
+# Exception handlers
+# ---------------------------------------------------------------------------
+
 @app.exception_handler(StarletteHTTPException)
 async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """Normalise Starlette 404/405/etc. into the CLK error envelope."""
     if isinstance(exc.detail, dict):
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
     return JSONResponse(
@@ -101,6 +106,7 @@ async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPE
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Normalise FastAPI HTTPException into the CLK error envelope."""
     if isinstance(exc.detail, dict):
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
     return JSONResponse(
@@ -126,11 +132,16 @@ async def _global_exception_handler(request: Request, exc: Exception) -> JSONRes
     )
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
 
 def _err(code: str, message: str, status: int = 400) -> HTTPException:
+    """Return a structured HTTPException using the CLK ``{ok, error}`` envelope."""
     return HTTPException(
         status_code=status,
         detail={"ok": False, "error": {"code": code, "message": message}},
@@ -146,10 +157,32 @@ def _workspace_path(workspace_id: str) -> Path:
 
 
 def _clk_cmd(command: str, args: List[str]) -> List[str]:
+    """Build the argv list that invokes ``clk_harness.cli`` as a subprocess."""
     return [sys.executable, "-m", "clk_harness.cli", command] + args
 
 
+# TASKS in-memory registry shape:
+# {
+#   "task_id":      str (UUID),
+#   "workspace_id": str (UUID),
+#   "command":      str (one of COMMANDS),
+#   "args":         list[str],
+#   "status":       "pending" | "running" | "done" | "failed" | "cancelled",
+#   "created_at":   ISO-8601 str,
+#   "started_at":   ISO-8601 str | None  (set when _run_task transitions to "running"),
+#   "finished_at":  ISO-8601 str | None,
+#   "exit_code":    int | None,
+#   "lines":        list[str]  (stdout lines, capped at MAX_TASK_LINES),
+#   "proc":         asyncio.subprocess.Process | None  (live handle while running),
+# }
+
 async def _run_task(task_id: str) -> None:
+    """Background coroutine that drives a CLK subprocess for *task_id*.
+
+    Transitions ``TASKS[task_id]["status"]`` through pending → running →
+    done | failed | cancelled, and updates ``started_at`` / ``finished_at``
+    timestamps.  Always cleans up ``_task_handles`` in its finally block.
+    """
     task = TASKS.get(task_id)
     if task is None:
         return
@@ -236,6 +269,10 @@ async def _run_task(task_id: str) -> None:
         _task_handles.pop(task_id, None)
 
 
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+
 class WorkspaceCreate(BaseModel):
     name: str
 
@@ -246,6 +283,10 @@ class ResearchRequest(BaseModel):
     workspace_id: Optional[str] = None
     workflow: Optional[str] = None
 
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
 @app.get("/api/healthz")
 async def healthz() -> Dict[str, Any]:

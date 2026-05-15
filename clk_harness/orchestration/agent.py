@@ -925,9 +925,24 @@ class AgentRunner:
     def _collect_context(self, objective: str, extra: Dict[str, Any]) -> Dict[str, Any]:
         idea_path = self.paths.state / "idea.json"
         brief_path = self.paths.state / "system_brief.md"
-        prd_path = self.paths.state / "prd.json"
-        progress_path = self.paths.state / "progress.md"
-        decisions_path = self.paths.state / "decisions.md"
+        # Agents write PRD.json, PROGRESS.md, and DECISIONS.md to the project
+        # root (they cannot write to .clk/state/ via ACTIONs).  Check those
+        # paths first; fall back to the legacy .clk/state/ location.
+        prd_path = (
+            self.paths.root / "PRD.json"
+            if (self.paths.root / "PRD.json").exists()
+            else self.paths.state / "prd.json"
+        )
+        progress_path = (
+            self.paths.root / "PROGRESS.md"
+            if (self.paths.root / "PROGRESS.md").exists()
+            else self.paths.state / "progress.md"
+        )
+        decisions_path = (
+            self.paths.root / "DECISIONS.md"
+            if (self.paths.root / "DECISIONS.md").exists()
+            else self.paths.state / "decisions.md"
+        )
 
         idea = {}
         if idea_path.exists():
