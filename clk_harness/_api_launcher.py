@@ -63,7 +63,8 @@ def start_api_in_background(
     except ImportError as exc:
         print(
             f"[clk] REST API disabled: optional dependencies missing ({exc}). "
-            "Run `pip install -r requirements.txt` to enable. "
+            f"Active interpreter: {sys.executable}. "
+            f"Install with: {sys.executable} -m pip install -r requirements.txt. "
             "Continuing without the API.",
             file=out,
         )
