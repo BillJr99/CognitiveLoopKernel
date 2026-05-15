@@ -152,8 +152,9 @@ def _setup_local_venv(paths: Paths) -> bool:
         try:
             builder = venv.EnvBuilder(with_pip=True, clear=False, symlinks=True)
             builder.create(str(paths.venv))
-        except Exception:
+        except (ImportError, ModuleNotFoundError) as pip_exc:
             # ensurepip unavailable on some minimal images; fall back to no-pip venv
+            log_exception("cli._setup_local_venv.ensurepip", pip_exc)
             builder = venv.EnvBuilder(with_pip=False, clear=False, symlinks=True)
             builder.create(str(paths.venv))
 
@@ -166,16 +167,19 @@ def _setup_local_venv(paths: Paths) -> bool:
         if pip.exists():
             if req.exists():
                 log(f"installing requirements from {req}")
-                subprocess.run(
-                    [str(pip), "install", "--quiet", "-r", str(req)],
-                    check=False,
-                )
+                cmd = [str(pip), "install", "--quiet", "-r", str(req)]
             elif (harness_dir / "pyproject.toml").exists():
                 log(f"installing package from {harness_dir}")
-                subprocess.run(
-                    [str(pip), "install", "--quiet", str(harness_dir)],
-                    check=False,
-                )
+                cmd = [str(pip), "install", "--quiet", str(harness_dir)]
+            else:
+                cmd = []
+            if cmd:
+                result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+                if result.returncode != 0:
+                    log(
+                        f"[WARN] pip install failed (exit {result.returncode}): "
+                        f"{result.stderr.strip() or result.stdout.strip()}"
+                    )
         return True
     except Exception as exc:
         log_exception("cli._setup_local_venv", exc)
