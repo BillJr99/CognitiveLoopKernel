@@ -56,7 +56,6 @@ except Exception:
 WORKSPACES_DIR = Path(os.environ.get("CLK_WORKSPACES_DIR", "/workspaces"))
 START_TIME = datetime.utcnow()
 
-# Default bind address — exposes the API on ALL interfaces. Intended for
 # Loopback by default; set CLK_API_HOST=0.0.0.0 to expose on all interfaces.
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8001
