@@ -58,7 +58,7 @@ def start_api_in_background(
 
     # Lazy import so a missing [api] extra does not crash the CLI.
     try:
-        import uvicorn  # noqa: F401
+        import uvicorn
         from clk_harness.api import app, get_bind_host, get_bind_port
     except ImportError as exc:
         print(
@@ -74,16 +74,16 @@ def start_api_in_background(
 
     def _run() -> None:
         try:
-            import uvicorn as _uvicorn
-            # ``log_level="warning"`` keeps uvicorn quiet under the CLI/TUI.
-            config = _uvicorn.Config(
+            # Use the uvicorn imported above; re-importing inside the thread
+            # is redundant and confuses the traceback when startup fails.
+            config = uvicorn.Config(
                 app,
                 host=host,
                 port=port,
                 log_level=os.environ.get("CLK_API_LOG_LEVEL", "warning"),
                 access_log=False,
             )
-            server = _uvicorn.Server(config)
+            server = uvicorn.Server(config)
             server.run()
         except Exception as exc:  # noqa: BLE001
             logger.warning("REST API server thread exited: %s", exc)
@@ -96,7 +96,7 @@ def start_api_in_background(
     )
     thread.start()
 
-    print(f"[clk] REST API listening on http://{host}:{port}", file=out)
+    print(f"[clk] REST API starting on http://{host}:{port}", file=out)
     if host == "0.0.0.0":
         print(
             "[clk] WARNING: REST API is bound to 0.0.0.0 (all interfaces) "

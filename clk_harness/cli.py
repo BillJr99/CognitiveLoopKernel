@@ -567,6 +567,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Do not auto-start the background REST API server. "
+            "Must appear before the sub-command: `clk --no-api <cmd>`. "
             "Equivalent to setting CLK_DISABLE_API=1."
         ),
     )
