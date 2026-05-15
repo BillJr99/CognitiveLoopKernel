@@ -143,7 +143,9 @@ class RalphLoop:
             self.paths.state.mkdir(parents=True, exist_ok=True)
             with (self.paths.state / "experiments.jsonl").open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(outcome.__dict__) + "\n")
-            progress = self.paths.state / "progress.md"
+            # Write PROGRESS.md to the project root so agents can read and
+            # append to it (agents cannot write .clk/state/ via ACTIONs).
+            progress = self.paths.root / "PROGRESS.md"
             line = (
                 f"- iter {outcome.index} @ {outcome.finished_at} "
                 f"improved={outcome.improved} committed={outcome.committed} :: {outcome.objective}\n"

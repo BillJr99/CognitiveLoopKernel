@@ -215,9 +215,6 @@ class ActionResult:
         return " ".join(bits) or "(no actions)"
 
 
-_HARNESS_DIR_NAMES = (".clk", "workspace")
-
-
 def _normalize_rel(root: Path, rel: str) -> str:
     """Strip redundant prefixes and rewrite blackboard paths.
 

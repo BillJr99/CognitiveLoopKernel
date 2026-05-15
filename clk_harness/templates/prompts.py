@@ -182,7 +182,7 @@ cycles; dispatch ralph whenever you need autoresearch. Do NOT create a
 separate autoresearch, researcher_loop, or similar agent for this purpose.
 When any sub-objective has a measurable numeric outcome (latency,
 throughput, test-pass rate, benchmark score, coverage, error rate,
-binary size, memory), add a ralph research-mode stage before the
+binary size, memory), add a ralph autoresearch stage before the
 engineer stage so the design space is surveyed before implementation.
 qa is the validation agent — always include at least one qa stage in
 every engineering workflow (typically as the final stage before done).
@@ -600,7 +600,7 @@ Refinement mode (when a runnable candidate already exists):
 - Output line 1: the objective.
 - Output line 2+: rationale and a shell command that validates success.
 
-Research mode (Karpathy autoresearch — when the state has open questions):
+Autoresearch objective (Karpathy-style — when the state has open questions):
 
 1. Survey before questioning
    - List relevant files in $project_root and scan ``PROGRESS.md`` at the

@@ -27,7 +27,8 @@ def _env_var_for_key_type(key_type: str) -> str:
     explicit override is registered in ``_KEY_TYPE_ENV_OVERRIDES``.
     Examples: openrouter -> OPENROUTER_API_KEY, mistral -> MISTRAL_API_KEY.
     """
-    return _KEY_TYPE_ENV_OVERRIDES.get(key_type) or f"{key_type.upper()}_API_KEY"
+    sanitized = key_type.upper().replace("-", "_")
+    return _KEY_TYPE_ENV_OVERRIDES.get(key_type) or f"{sanitized}_API_KEY"
 
 # Maps abstract capability names to pi CLI flags.
 _CAP_MAP: dict = {

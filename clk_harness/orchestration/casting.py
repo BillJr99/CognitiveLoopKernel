@@ -439,9 +439,12 @@ def _similar_existing_name(name: str, agents: Dict[str, Any]) -> Optional[str]:
         ex_key = _name_key(existing)
         if not key or not ex_key:
             continue
-        # Creating the exact canonical name is always allowed — only aliases
-        # are blocked. e.g. "engineer" vs seed anchor "engineer": OK.
         if normalized == existing:
+            # Seed anchors block the exact name (they exist precisely to
+            # prevent re-creation of a retired role).  An exact match
+            # against a live agent is handled elsewhere as a duplicate.
+            if existing in _SEED_ROLE_ANCHORS:
+                return existing
             continue
         if key == ex_key:
             return existing
