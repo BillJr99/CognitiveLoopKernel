@@ -10,8 +10,11 @@
 #                     Defaults to HARNESS_HOME for the source-tree case, but
 #                     the kickoff shim exports CLK_PROJECT_ROOT explicitly.
 #
-# Prefers the project's local .clk/venv interpreter if present, falls back
-# to the system python3. Always invokes clk_harness.cli as a module.
+# Python interpreter selection order:
+#   1. Caller's active virtualenv ($VIRTUAL_ENV/bin/python) — respects
+#      whatever venv the user already activated.
+#   2. Project-local .clk/venv — created by install_local.sh.
+#   3. python3 / python on PATH (system or conda, etc.).
 
 set -euo pipefail
 
@@ -20,7 +23,9 @@ HARNESS_HOME="$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
 PROJECT_ROOT="${CLK_PROJECT_ROOT:-$HARNESS_HOME}"
 
 PY=""
-if [ -x "$PROJECT_ROOT/.clk/venv/bin/python" ]; then
+if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+  PY="$VIRTUAL_ENV/bin/python"
+elif [ -x "$PROJECT_ROOT/.clk/venv/bin/python" ]; then
   PY="$PROJECT_ROOT/.clk/venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
   PY="$(command -v python3)"
