@@ -9,6 +9,9 @@ Environment variables
 CLK_WORKSPACES_DIR
     Root directory under which workspaces are created.
     Defaults to ``/workspaces``.
+CLK_API_HOST
+    Network interface the server binds to.  Defaults to ``0.0.0.0``
+    (all interfaces).  Set to ``127.0.0.1`` to restrict to loopback.
 CLK_API_PORT
     TCP port the server binds to when run as ``__main__``.
     Defaults to ``8001``.
@@ -37,7 +40,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # ---------------------------------------------------------------------------
-# Version — read from installed package metadata; fall back to "0.0.0"
+# Version
 # ---------------------------------------------------------------------------
 
 try:
@@ -53,52 +56,31 @@ except Exception:
 WORKSPACES_DIR = Path(os.environ.get("CLK_WORKSPACES_DIR", "/workspaces"))
 START_TIME = datetime.utcnow()
 
+# Default bind address — exposes the API on ALL interfaces. Intended for
+# isolated sandbox / container use; set CLK_API_HOST=127.0.0.1 to restrict.
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = 8001
+
+
+def get_bind_host() -> str:
+    return os.environ.get("CLK_API_HOST", DEFAULT_HOST)
+
+
+def get_bind_port() -> int:
+    try:
+        return int(os.environ.get("CLK_API_PORT", str(DEFAULT_PORT)))
+    except ValueError:
+        return DEFAULT_PORT
+
+
 COMMANDS = ["init", "idea", "plan", "run", "loop", "status"]
-
-# Maximum number of output lines kept per task (prevents unbounded memory growth).
 MAX_TASK_LINES = 10_000
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# In-memory task store
-# ---------------------------------------------------------------------------
-
-# task shape:
-# {
-#   task_id: str,
-#   workspace_id: str,
-#   command: str,
-#   args: list[str],
-#   status: "pending" | "running" | "done" | "failed" | "cancelled",
-#   created_at: str,            # ISO-8601 UTC; set when task is created
-#   started_at: str | None,     # ISO-8601 UTC; None until _run_task begins
-#   finished_at: str | None,
-#   exit_code: int | None,
-#   lines: list[str],
-#   proc: asyncio.subprocess.Process | None,
-# }
 TASKS: Dict[str, Dict[str, Any]] = {}
-
-# Asyncio task handles — used to cancel background coroutines.
 _task_handles: Dict[str, asyncio.Task] = {}
-
-# workspace shape:
-# {
-#   id: str,
-#   name: str,
-#   path: str,
-#   created_at: str,
-# }
 WORKSPACES: Dict[str, Dict[str, Any]] = {}
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="CognitiveLoopKernel REST API",
@@ -107,13 +89,8 @@ app = FastAPI(
 )
 
 
-# ---------------------------------------------------------------------------
-# Exception handlers — ensure all errors use the {ok, error} envelope
-# ---------------------------------------------------------------------------
-
 @app.exception_handler(StarletteHTTPException)
 async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-    """Handle routing-level 404s (unknown URLs) that bypass FastAPI's HTTPException handler."""
     if isinstance(exc.detail, dict):
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
     return JSONResponse(
@@ -124,7 +101,6 @@ async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPE
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    """Unwrap HTTPException so the response body is always the CLK error envelope."""
     if isinstance(exc.detail, dict):
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
     return JSONResponse(
@@ -150,10 +126,6 @@ async def _global_exception_handler(request: Request, exc: Exception) -> JSONRes
     )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
@@ -174,16 +146,13 @@ def _workspace_path(workspace_id: str) -> Path:
 
 
 def _clk_cmd(command: str, args: List[str]) -> List[str]:
-    """Build the CLK subprocess command."""
     return [sys.executable, "-m", "clk_harness.cli", command] + args
 
 
 async def _run_task(task_id: str) -> None:
-    """Background coroutine: run CLK as a subprocess and collect output."""
     task = TASKS.get(task_id)
     if task is None:
         return
-    # Guard: if task was cancelled before we started, do not overwrite status
     if task.get("status") == "cancelled":
         task["finished_at"] = _now_iso()
         _task_handles.pop(task_id, None)
@@ -197,8 +166,6 @@ async def _run_task(task_id: str) -> None:
     args = list(task["args"])
 
     try:
-        # If the workspace is not yet initialised, run `init` first (unless that
-        # is already the requested command).
         clk_dir = ws_path / ".clk"
         if command != "init" and not clk_dir.exists():
             try:
@@ -208,7 +175,6 @@ async def _run_task(task_id: str) -> None:
                     stderr=asyncio.subprocess.STDOUT,
                     cwd=str(ws_path),
                 )
-                # Expose init_proc so cancel_task can terminate it if needed.
                 task["proc"] = init_proc
                 try:
                     init_out, _ = await init_proc.communicate()
@@ -223,7 +189,7 @@ async def _run_task(task_id: str) -> None:
                 if init_proc.returncode != 0:
                     task["status"] = "failed"
                     task["exit_code"] = init_proc.returncode
-                    return  # abort; outer finally handles cleanup
+                    return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -231,7 +197,7 @@ async def _run_task(task_id: str) -> None:
                     task["lines"].append(f"[init-error] {exc}")
                 task["status"] = "failed"
                 task["exit_code"] = -1
-                return  # abort; outer finally handles cleanup
+                return
 
         proc = await asyncio.create_subprocess_exec(
             *_clk_cmd(command, args),
@@ -241,7 +207,6 @@ async def _run_task(task_id: str) -> None:
         )
         task["proc"] = proc
 
-        # Stream lines as they arrive
         assert proc.stdout is not None
         while True:
             line_bytes = await proc.stdout.readline()
@@ -252,9 +217,6 @@ async def _run_task(task_id: str) -> None:
 
         await proc.wait()
         returncode = proc.returncode
-        # Only update status and exit_code if the task wasn't already cancelled;
-        # a subprocess that exits quickly after SIGTERM must not overwrite the
-        # cancel sentinel.
         if task["status"] != "cancelled":
             task["exit_code"] = returncode
             task["status"] = "done" if returncode == 0 else "failed"
@@ -269,16 +231,10 @@ async def _run_task(task_id: str) -> None:
             task["status"] = "failed"
         task["exit_code"] = -1
     finally:
-        # Always run on every exit path — including early returns from the
-        # auto-init block — so _task_handles never holds stale entries.
         task["finished_at"] = _now_iso()
         task["proc"] = None
         _task_handles.pop(task_id, None)
 
-
-# ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
 
 class WorkspaceCreate(BaseModel):
     name: str
@@ -288,14 +244,8 @@ class ResearchRequest(BaseModel):
     command: str
     args: List[str] = Field(default_factory=list)
     workspace_id: Optional[str] = None
-    workflow: Optional[str] = None  # convenience: injects --workflow <value> for `run`
+    workflow: Optional[str] = None
 
-
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
-# -- Health & capabilities ---------------------------------------------------
 
 @app.get("/api/healthz")
 async def healthz() -> Dict[str, Any]:
@@ -308,30 +258,24 @@ async def capabilities() -> Dict[str, Any]:
     return {"ok": True, "modes": COMMANDS}
 
 
-# -- Workflows ---------------------------------------------------------------
-
 @app.get("/api/workflows")
 async def list_workflows() -> Dict[str, Any]:
-    """Return bundled workflow templates known to the package."""
     try:
         from clk_harness.templates import WORKFLOWS  # type: ignore
         result = []
         for name, body in WORKFLOWS.items():
             description = ""
-            # Try to parse YAML 'description:' field first.
             try:
                 import yaml as _yaml
                 parsed = _yaml.safe_load(body)
                 description = parsed.get("description", "") if isinstance(parsed, dict) else ""
             except Exception:  # noqa: BLE001
                 pass
-            # Fall back to regex matching 'description:' on raw text.
             if not description:
                 import re as _re
                 m = _re.search(r"^description:\s*(.+)", body, _re.MULTILINE)
                 if m:
                     description = m.group(1).strip().strip("'\"")
-            # Last resort: first comment line.
             if not description:
                 for line in body.splitlines():
                     stripped = line.strip()
@@ -348,20 +292,13 @@ async def list_workflows() -> Dict[str, Any]:
         ) from exc
 
 
-# -- Workspaces --------------------------------------------------------------
-
 @app.post("/api/workspaces", status_code=201)
 async def create_workspace(body: WorkspaceCreate) -> Dict[str, Any]:
     _ensure_workspaces_dir()
     workspace_id = str(uuid.uuid4())
     ws_path = _workspace_path(workspace_id)
     ws_path.mkdir(parents=True, exist_ok=True)
-    entry = {
-        "id": workspace_id,
-        "name": body.name,
-        "path": str(ws_path),
-        "created_at": _now_iso(),
-    }
+    entry = {"id": workspace_id, "name": body.name, "path": str(ws_path), "created_at": _now_iso()}
     WORKSPACES[workspace_id] = entry
     return {"ok": True, "workspace_id": workspace_id, "path": str(ws_path)}
 
@@ -375,17 +312,12 @@ async def list_workspaces() -> Dict[str, Any]:
 async def delete_workspace(workspace_id: str) -> Dict[str, Any]:
     if workspace_id not in WORKSPACES:
         raise _err("workspace_not_found", f"Workspace {workspace_id!r} not found.", 404)
-    # Refuse to delete if active tasks are using this workspace.
     active = [
         t for t in TASKS.values()
         if t.get("workspace_id") == workspace_id and t.get("status") in ("pending", "running")
     ]
     if active:
-        raise _err(
-            "workspace_in_use",
-            f"Workspace has {len(active)} active task(s). Cancel them first.",
-            409,
-        )
+        raise _err("workspace_in_use", f"Workspace has {len(active)} active task(s). Cancel them first.", 409)
     ws_path = _workspace_path(workspace_id)
     try:
         if ws_path.exists():
@@ -396,37 +328,26 @@ async def delete_workspace(workspace_id: str) -> Dict[str, Any]:
     return {"ok": True}
 
 
-# -- Research tasks ----------------------------------------------------------
-
 @app.post("/api/research", status_code=202)
 async def create_research(body: ResearchRequest) -> Dict[str, Any]:
     if body.command not in COMMANDS:
-        raise _err(
-            "invalid_command",
-            f"command must be one of {COMMANDS}; got {body.command!r}.",
-        )
+        raise _err("invalid_command", f"command must be one of {COMMANDS}; got {body.command!r}.")
 
     _ensure_workspaces_dir()
 
-    # Resolve or create workspace
     if body.workspace_id:
         if body.workspace_id not in WORKSPACES:
             raise _err("workspace_not_found", f"Workspace {body.workspace_id!r} not found.", 404)
         workspace_id = body.workspace_id
     else:
-        # Ephemeral workspace
         workspace_id = str(uuid.uuid4())
         ws_path = _workspace_path(workspace_id)
         ws_path.mkdir(parents=True, exist_ok=True)
         WORKSPACES[workspace_id] = {
-            "id": workspace_id,
-            "name": f"ephemeral-{workspace_id[:8]}",
-            "path": str(ws_path),
-            "created_at": _now_iso(),
+            "id": workspace_id, "name": f"ephemeral-{workspace_id[:8]}",
+            "path": str(ws_path), "created_at": _now_iso(),
         }
 
-    # Build args — inject --workflow if provided and command is `run`.
-    # Check both "--workflow" (space form) and "--workflow=" (equals form).
     args = list(body.args)
     if body.workflow and body.command == "run" and not any(
         a == "--workflow" or a.startswith("--workflow=") for a in args
@@ -435,23 +356,12 @@ async def create_research(body: ResearchRequest) -> Dict[str, Any]:
 
     task_id = str(uuid.uuid4())
     task: Dict[str, Any] = {
-        "task_id": task_id,
-        "workspace_id": workspace_id,
-        "command": body.command,
-        "args": args,
-        "status": "pending",
-        "created_at": _now_iso(),  # always set at creation time
-        "started_at": None,        # set by _run_task when execution begins
-        "finished_at": None,
-        "exit_code": None,
-        "lines": [],
-        "proc": None,
+        "task_id": task_id, "workspace_id": workspace_id, "command": body.command,
+        "args": args, "status": "pending", "created_at": _now_iso(),
+        "started_at": None, "finished_at": None, "exit_code": None, "lines": [], "proc": None,
     }
     TASKS[task_id] = task
-
-    # Store the asyncio.Task handle so it can be cancelled later
     _task_handles[task_id] = asyncio.create_task(_run_task(task_id))
-
     return {"ok": True, "task_id": task_id, "workspace_id": workspace_id}
 
 
@@ -461,22 +371,15 @@ async def get_task(task_id: str) -> Dict[str, Any]:
     if task is None:
         raise _err("task_not_found", f"Task {task_id!r} not found.", 404)
     return {
-        "ok": True,
-        "task_id": task["task_id"],
-        "workspace_id": task["workspace_id"],
-        "command": task["command"],
-        "status": task["status"],
-        "created_at": task.get("created_at"),
-        "started_at": task["started_at"],
-        "finished_at": task["finished_at"],
-        "exit_code": task["exit_code"],
-        "line_count": len(task["lines"]),
+        "ok": True, "task_id": task["task_id"], "workspace_id": task["workspace_id"],
+        "command": task["command"], "status": task["status"], "created_at": task.get("created_at"),
+        "started_at": task["started_at"], "finished_at": task["finished_at"],
+        "exit_code": task["exit_code"], "line_count": len(task["lines"]),
     }
 
 
 @app.get("/api/research/{task_id}/stream")
 async def stream_task(task_id: str, request: Request) -> StreamingResponse:
-    """SSE stream of task output lines, then a final status event."""
     task = TASKS.get(task_id)
     if task is None:
         raise _err("task_not_found", f"Task {task_id!r} not found.", 404)
@@ -485,7 +388,7 @@ async def stream_task(task_id: str, request: Request) -> StreamingResponse:
 
     async def _generate():
         seq = 0
-        sent = 0  # lines already sent
+        sent = 0
         while True:
             if await request.is_disconnected():
                 break
@@ -496,28 +399,19 @@ async def stream_task(task_id: str, request: Request) -> StreamingResponse:
                 sent += 1
                 seq += 1
             if task["status"] in ("done", "failed", "cancelled"):
-                # Flush any final lines then send terminal event
                 current_lines = task["lines"]
                 while sent < len(current_lines):
                     payload = _json.dumps({"line": current_lines[sent], "seq": seq})
                     yield f"data: {payload}\n\n"
                     sent += 1
                     seq += 1
-                done_payload = _json.dumps(
-                    {"status": task["status"], "exit_code": task["exit_code"]}
-                )
+                done_payload = _json.dumps({"status": task["status"], "exit_code": task["exit_code"]})
                 yield f"data: {done_payload}\n\n"
                 break
             await asyncio.sleep(0.2)
 
-    return StreamingResponse(
-        _generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return StreamingResponse(_generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/research/{task_id}/artifacts")
@@ -532,11 +426,8 @@ async def list_artifacts(task_id: str) -> Dict[str, Any]:
             if p.is_file():
                 rel = str(p.relative_to(ws_path))
                 stat = p.stat()
-                artifacts.append({
-                    "path": rel,
-                    "size": stat.st_size,
-                    "modified": datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z",
-                })
+                artifacts.append({"path": rel, "size": stat.st_size,
+                                   "modified": datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z"})
     return {"ok": True, "task_id": task_id, "artifacts": artifacts}
 
 
@@ -547,8 +438,6 @@ async def get_artifact(task_id: str, artifact_path: str) -> FileResponse:
         raise _err("task_not_found", f"Task {task_id!r} not found.", 404)
     ws_path = _workspace_path(task["workspace_id"])
     file_path = (ws_path / artifact_path).resolve()
-    # Safety: must stay inside workspace — use relative_to() for a correct
-    # containment check that avoids the startswith() prefix-collision pitfall.
     ws_path_resolved = ws_path.resolve()
     try:
         file_path.relative_to(ws_path_resolved)
@@ -566,49 +455,31 @@ async def cancel_task(task_id: str) -> Dict[str, Any]:
         raise _err("task_not_found", f"Task {task_id!r} not found.", 404)
     if task["status"] not in ("pending", "running"):
         raise _err("not_cancellable", f"Task is already {task['status']!r}.")
-    # Mark cancelled before terminating so _run_task won't overwrite with 'failed'
     task["status"] = "cancelled"
     task["finished_at"] = _now_iso()
     task["exit_code"] = -1
-    # Terminate the subprocess if it's running
     proc = task.get("proc")
     if proc is not None:
         try:
             proc.terminate()
         except ProcessLookupError:
             pass
-    # Cancel the asyncio background task if still pending/running
     if task_id in _task_handles:
         _task_handles[task_id].cancel()
     return {"ok": True}
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 def main() -> None:
-    """Console-script entry point: ``clk-api``.
-
-    Guards against missing optional [api] dependencies so users get a clear
-    error message instead of a confusing ImportError traceback.
-    """
-    # NOTE: fastapi and uvicorn are already imported at module top-level in
-    # this file, which means a missing [api] extra will raise ImportError
-    # before main() is even called.  The guard below handles the case where
-    # a future refactor lazily imports them, and documents the intent.
+    """Console-script entry point: ``clk-api``."""
     try:
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError:
-        print(
-            "Error: REST API dependencies not installed. "
-            "Run: pip install 'clk-harness[api]'",
-            file=__import__('sys').stderr,
-        )
+        print("Error: REST API dependencies not installed. Run: pip install 'clk-harness[api]'",
+              file=__import__('sys').stderr)
         raise SystemExit(1)
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("CLK_API_PORT", "8001")))
+    uvicorn.run(app, host=get_bind_host(), port=get_bind_port())
 
 
 if __name__ == "__main__":

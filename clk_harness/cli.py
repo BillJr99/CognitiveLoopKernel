@@ -562,6 +562,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Cognitive Loop Kernel - local-only multi-agent development harness.",
     )
     p.add_argument("--version", action="version", version=__version__)
+    p.add_argument(
+        "--no-api",
+        action="store_true",
+        help=(
+            "Do not auto-start the background REST API server. "
+            "Equivalent to setting CLK_DISABLE_API=1."
+        ),
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     p_init = sub.add_parser("init", help="Initialize CLK in the current directory.")
@@ -622,6 +630,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # Auto-start the REST API on a daemon thread so it is available during
+    # normal CLI / TUI operation.  Falls back gracefully if the optional
+    # [api] extras are not installed.
+    try:
+        from ._api_launcher import start_api_in_background
+        start_api_in_background(disable=bool(getattr(args, "no_api", False)))
+    except Exception as exc:  # noqa: BLE001 — must never block the CLI
+        log_exception("cli.main.start_api", exc)
+
     try:
         return int(args.func(args) or 0)
     except KeyboardInterrupt:
