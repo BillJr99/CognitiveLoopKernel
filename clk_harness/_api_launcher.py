@@ -100,8 +100,8 @@ def start_api_in_background(
         print(
             "[clk] WARNING: REST API is bound to 0.0.0.0 (all interfaces) "
             "and has NO authentication. Intended for isolated sandbox / "
-            "container use. Set CLK_API_HOST=127.0.0.1 to restrict to "
-            "loopback, or pass --no-api / CLK_DISABLE_API=1 to disable.",
+            "container use. Unset CLK_API_HOST (or set it to 127.0.0.1) to "
+            "restrict to loopback, or pass --no-api / CLK_DISABLE_API=1 to disable.",
             file=out,
         )
     return thread
