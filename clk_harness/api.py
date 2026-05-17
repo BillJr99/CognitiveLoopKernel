@@ -29,7 +29,7 @@ import os
 import shutil
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -54,7 +54,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 WORKSPACES_DIR = Path(os.environ.get("CLK_WORKSPACES_DIR", "/workspaces"))
-START_TIME = datetime.utcnow()
+START_TIME = datetime.now(timezone.utc)
 
 # Loopback by default; set CLK_API_HOST=0.0.0.0 to expose on all interfaces.
 DEFAULT_HOST = "127.0.0.1"
@@ -136,7 +136,7 @@ async def _global_exception_handler(request: Request, exc: Exception) -> JSONRes
 # ---------------------------------------------------------------------------
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _err(code: str, message: str, status: int = 400) -> HTTPException:
@@ -289,7 +289,7 @@ class ResearchRequest(BaseModel):
 
 @app.get("/api/healthz")
 async def healthz() -> Dict[str, Any]:
-    uptime = (datetime.utcnow() - START_TIME).total_seconds()
+    uptime = (datetime.now(timezone.utc) - START_TIME).total_seconds()
     return {"ok": True, "version": _API_VERSION, "uptime_s": round(uptime, 2)}
 
 
