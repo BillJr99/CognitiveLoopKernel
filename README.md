@@ -217,27 +217,6 @@ the API entirely:
 If the optional `[api]` extras (`fastapi`, `uvicorn`) are not installed,
 the background thread is silently skipped and the CLI works normally.
 
-### Docker
-
-```bash
-docker run --rm -p 8001:8001 \
-  -v clk-workspaces:/workspaces \
-  clk python -m clk_harness.api
-```
-
-Mount `/workspaces` to persist workspace *directories* across container
-restarts.
-
-> **Note: workspace state is in-memory and is NOT recoverable after restart.**
-> Even when the `/workspaces` volume is mounted, the in-memory registry of
-> workspace IDs and task history is lost every time the container restarts.
-> The files inside `/workspaces` survive on disk, but you must create new
-> workspace registrations via `POST /api/workspaces` after each restart —
-> previous workspace IDs and task IDs will not be recognised by the new
-> container instance.
-
-Override the workspace root with `CLK_WORKSPACES_DIR`.
-
 ### Quick curl example
 
 ```bash
@@ -435,6 +414,30 @@ docker run --rm \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   clk "A local-first journaling app that summarizes my week"
 ```
+
+### Run the REST API
+
+To run the [REST API](#rest-api) server inside the container instead of the
+TUI, override the entrypoint command:
+
+```bash
+docker run --rm -p 8001:8001 \
+  -v clk-workspaces:/workspaces \
+  clk python -m clk_harness.api
+```
+
+Mount `/workspaces` to persist workspace *directories* across container
+restarts.
+
+> **Note: workspace state is in-memory and is NOT recoverable after restart.**
+> Even when the `/workspaces` volume is mounted, the in-memory registry of
+> workspace IDs and task history is lost every time the container restarts.
+> The files inside `/workspaces` survive on disk, but you must create new
+> workspace registrations via `POST /api/workspaces` after each restart —
+> previous workspace IDs and task IDs will not be recognised by the new
+> container instance.
+
+Override the workspace root with `CLK_WORKSPACES_DIR`.
 
 ## Telegram Bot
 
