@@ -204,11 +204,17 @@ class OpenWebUIProvider(AgentProvider):
                 usage["source"] = "openwebui-estimate"
             return AgentResponse(ok=True, text=text, raw=payload, usage=usage)
         except urllib.error.HTTPError as exc:
-            print(f"[providers.openwebui.invoke] HTTP error: {exc}", file=sys.stderr)
-            traceback.print_exc()
             detail, headers_str = _read_error_detail(exc)
             retryable, reason = _classify_retryable(exc.code, detail)
             retry_after = _retry_after_seconds(exc)
+            print(
+                f"[providers.openwebui.invoke] HTTP {exc.code} {exc.reason} "
+                f"url={url} model={body.get('model')} attempt={attempt}/{attempts} "
+                f"retryable={retryable}{' (' + reason + ')' if reason else ''} "
+                f"retry_after_s={retry_after} headers=[{headers_str}] detail={detail}",
+                file=sys.stderr,
+            )
+            traceback.print_exc()
             progress(
                 "http_response",
                 (
