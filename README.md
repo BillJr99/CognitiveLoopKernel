@@ -300,6 +300,26 @@ docker run --rm -it \
 `--setup` also works locally (outside Docker) and updates `./kickoff.sh`'s
 own `.env` in-place.
 
+### Pull from GHCR
+
+Prebuilt images are published to GitHub Container Registry on every push to
+`main` (tagged `latest` and `main`), every semver tag (`vX.Y.Z` → `X.Y.Z`,
+`X.Y`), and every commit (`sha-<short>`):
+
+```bash
+docker pull ghcr.io/billjr99/cognitiveloopkernel:latest
+```
+
+You can run the pulled image exactly like the locally-built `clk` tag — just
+substitute the image reference:
+
+```bash
+docker run --rm -it \
+  -v clk-workspace:/app/workspace \
+  ghcr.io/billjr99/cognitiveloopkernel:latest \
+  "A local-first journaling app that summarizes my week"
+```
+
 ### Build
 
 ```bash
