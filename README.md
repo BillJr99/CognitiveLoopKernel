@@ -274,6 +274,32 @@ container has a terminal. If no `.env` is present it will prompt for provider
 and settings before launching. Pass your idea as the first argument to skip
 the prompt and go straight to the engineering workflow.
 
+All examples below assume the image is tagged `clk` locally — either
+build it from source or pull a prebuilt image and re-tag it (see the next
+two sections).
+
+### Build
+
+```bash
+docker build -t clk .
+```
+
+### Pull from GHCR
+
+Prebuilt images are published to GitHub Container Registry on every push to
+`main` (tagged `latest` and `main`), every semver tag (`vX.Y.Z` → `X.Y.Z`,
+`X.Y`), and every commit (`sha-<short>`):
+
+```bash
+docker pull ghcr.io/billjr99/cognitiveloopkernel:latest
+docker tag ghcr.io/billjr99/cognitiveloopkernel:latest clk
+```
+
+The `docker tag` step lets every later command in this README refer to the
+image simply as `clk`. If you'd rather not re-tag, substitute
+`ghcr.io/billjr99/cognitiveloopkernel:latest` for `clk` in the examples
+below.
+
 ### Configuration via .env
 
 `kickoff.sh` loads `/app/.env` at startup, so any setting that can be
@@ -322,32 +348,6 @@ docker run --rm -it \
 
 `--setup` also works locally (outside Docker) and updates `./kickoff.sh`'s
 own `.env` in-place.
-
-### Pull from GHCR
-
-Prebuilt images are published to GitHub Container Registry on every push to
-`main` (tagged `latest` and `main`), every semver tag (`vX.Y.Z` → `X.Y.Z`,
-`X.Y`), and every commit (`sha-<short>`):
-
-```bash
-docker pull ghcr.io/billjr99/cognitiveloopkernel:latest
-```
-
-You can run the pulled image exactly like the locally-built `clk` tag — just
-substitute the image reference:
-
-```bash
-docker run --rm -it \
-  -v clk-workspace:/app/workspace \
-  ghcr.io/billjr99/cognitiveloopkernel:latest \
-  "A local-first journaling app that summarizes my week"
-```
-
-### Build
-
-```bash
-docker build -t clk .
-```
 
 ### Run (interactive TUI — default)
 
