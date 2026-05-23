@@ -35,13 +35,17 @@ RUN mkdir -p clk_harness && touch clk_harness/__init__.py README.md \
 # Using the extras directly (instead of a separate requirements-api.txt)
 # keeps pyproject.toml as the single source of truth and avoids drift.
 COPY clk_harness/ ./clk_harness/
-RUN pip install --no-cache-dir ".[api]"
+RUN pip install --no-cache-dir ".[api,telegram]"
 
 COPY scripts/     ./scripts/
 COPY kickoff.sh   ./
 COPY .env.example ./
 
-RUN chmod +x kickoff.sh scripts/clk scripts/install_local.sh scripts/run_loop.sh 2>/dev/null || true
+RUN chmod +x kickoff.sh \
+             scripts/clk \
+             scripts/install_local.sh \
+             scripts/run_loop.sh \
+             scripts/telegram_setup_wizard.sh 2>/dev/null || true
 
 # kickoff.sh loads /app/.env at startup (provider, API keys, git identity, ...).
 # Bind-mount your host file there to provide config from outside the image:
