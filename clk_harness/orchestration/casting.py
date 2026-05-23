@@ -784,13 +784,33 @@ def write_workflow(
         if not re.search(r"^name\s*:", body, re.MULTILINE):
             body = f"name: {name}\n" + body
         if proposal.description and not re.search(r"^description\s*:", body, re.MULTILINE):
+            # Quote the injected description so embedded colons / specials
+            # cannot break YAML parsing downstream.
+            desc_yaml = json.dumps(proposal.description)
             body = re.sub(
                 r"^name\s*:.*$",
-                lambda m: m.group(0) + f"\ndescription: {proposal.description}",
+                lambda m: m.group(0) + f"\ndescription: {desc_yaml}",
                 body,
                 count=1,
                 flags=re.MULTILINE,
             )
+        # Validate before clobbering an existing (working) workflow file.
+        # A chief that emits malformed YAML would otherwise wedge the
+        # runner into an infinite zero-stage supervise loop.
+        try:
+            import yaml as _yaml  # type: ignore
+        except Exception:
+            _yaml = None  # type: ignore
+        if _yaml is not None:
+            try:
+                parsed = _yaml.safe_load(body) or {}
+            except Exception as exc:
+                return False, f"invalid_yaml:{exc.__class__.__name__}"
+            if not isinstance(parsed, dict):
+                return False, "invalid_yaml:not_mapping"
+            stages = parsed.get("stages")
+            if not isinstance(stages, list) or not stages:
+                return False, "invalid_yaml:no_stages"
         target.write_text(body.rstrip() + "\n", encoding="utf-8")
     except Exception as exc:
         log_exception("orchestration.casting.write_workflow", exc)

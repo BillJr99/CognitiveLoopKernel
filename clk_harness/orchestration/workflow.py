@@ -291,13 +291,39 @@ def load_workflow(path: Path) -> Workflow:
             data = yaml.safe_load(text) or {}
         except Exception as exc:
             log_exception("orchestration.workflow.load_workflow.pyyaml", exc)
-            data = _mini_yaml_loads(text)
+            try:
+                data = _mini_yaml_loads(text)
+            except Exception:
+                data = {}
     else:
         try:
             data = _mini_yaml_loads(text)
         except Exception as exc:
             log_exception("orchestration.workflow.load_workflow.fallback", exc)
             raise
+
+    # If parsing produced nothing usable (e.g. the chief wrote a
+    # malformed workflow that wedges every subsequent supervise cycle),
+    # restore the bundled template for this workflow name so the runner
+    # has stages to execute on the next pass.
+    if not isinstance(data, dict) or not data.get("stages"):
+        try:
+            from ..templates.workflows import WORKFLOWS as _BUNDLED_WORKFLOWS
+        except Exception:
+            _BUNDLED_WORKFLOWS = {}
+        fallback = _BUNDLED_WORKFLOWS.get(path.name)
+        if fallback:
+            try:
+                path.write_text(fallback, encoding="utf-8")
+            except Exception as exc:
+                log_exception("orchestration.workflow.load_workflow.restore", exc)
+            if yaml is not None:
+                try:
+                    data = yaml.safe_load(fallback) or {}
+                except Exception:
+                    data = _mini_yaml_loads(fallback)
+            else:
+                data = _mini_yaml_loads(fallback)
 
     stages: List[WorkflowStage] = []
     for raw in data.get("stages") or []:
