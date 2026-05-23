@@ -454,6 +454,11 @@ scripts/
   clk                    # launcher (prefers .clk/venv/bin/python)
   install_local.sh       # creates .clk/venv and installs PyYAML
   run_loop.sh            # convenience wrapper around clk loop
+  run_all_tests.sh       # orchestrator: build + test in ephemeral Docker
+tests/                   # pytest regression suite (CI-gated)
+user_tests/              # pytest end-to-end suite (drives CLI + REST API)
+pi-extension/            # standalone Pi extension (TypeScript)
+  tests/                 # node --test suites (errors, prompts, state, git, index)
 docs/
   REST_API.md            # full REST API reference
 ```
@@ -766,6 +771,124 @@ convention you create it only when:
 - a deployment plan exists,
 - a deployment checklist exists,
 - at least one user-facing interaction path exists.
+
+## Testing
+
+CLK ships three test suites and a one-command orchestrator that runs them
+all in an ephemeral Docker container.
+
+| Suite                  | What it covers                                          | Runner |
+|------------------------|---------------------------------------------------------|--------|
+| `tests/`               | Unit + integration regression tests (CI-gated)          | pytest |
+| `user_tests/`          | End-to-end CLI / REST API / `kickoff.sh` user tests     | pytest |
+| `pi-extension/tests/`  | TypeScript Node tests for the Pi extension              | npm    |
+
+### One-command run
+
+```bash
+# Interactive: prompts for LLM provider, API key, base URL, model.
+# Builds an ephemeral Docker image, runs every suite inside, then tears
+# the container down (success or failure).
+./scripts/run_all_tests.sh
+
+# CI / scripted use — skip the prompts and use the shell provider:
+./scripts/run_all_tests.sh --non-interactive
+
+# Single suite (no Docker, runs directly on the host):
+./scripts/run_all_tests.sh --local --suite=user
+./scripts/run_all_tests.sh --local --suite=ci
+./scripts/run_all_tests.sh --local --suite=pi
+```
+
+The interactive menu asks four questions:
+
+1. **LLM provider** (shell / claude / codex / gemini / pi / ollama / openwebui)
+2. **Auth mode** (cli vs apikey) for the CLI-driven providers
+3. **API key**, base URL, model name — only for the chosen provider
+4. **Confirm + go**
+
+All deterministic tests (CLI plumbing, REST API contract, etc.) run
+against the `shell` provider regardless — they need no credentials and
+always succeed.  The opt-in *real-provider smoke* test
+(`test_kickoff_with_user_selected_provider` in `user_tests/`) runs
+kickoff.sh end-to-end with whatever provider you selected, and the
+`pi-extension` runtime smoke verifies the `pi` CLI is reachable when you
+chose `pi` and gave it a model + key.
+
+### What runs inside the Docker container
+
+`run_all_tests.sh` (Docker mode):
+
+1. Builds `clk:tests-<pid>` from the project `Dockerfile`.
+2. Mounts the repo read-only at `/repo`, copies it into a writable
+   `/work` inside the container.
+3. Runs `pytest tests/` then `pytest user_tests/` then
+   `npm test` inside `pi-extension/`.
+4. **Always tears down** the container on exit (success, failure, or
+   ^C) and removes the ephemeral image, unless `--keep` is passed.
+
+Useful flags:
+
+| Flag                | Effect |
+|---------------------|--------|
+| `--local`           | Run on the host directly; no Docker daemon required. |
+| `--non-interactive` | Skip all prompts; force `CLK_PROVIDER=shell`. |
+| `--suite=all`       | Default — run all three test directories. |
+| `--suite=ci`        | Only `tests/` (regression). |
+| `--suite=user`      | Only `user_tests/`. |
+| `--suite=pi`        | Only `pi-extension/tests/`. |
+| `--keep`            | Don't remove the container or image on exit. |
+| `--no-build`        | Reuse a pre-built `clk:tests-latest` image. |
+| `-k <expr>`         | Forward a `-k` filter to pytest. |
+| `-- <args>`         | Pass remaining args verbatim to pytest. |
+
+### Running suites manually
+
+Each suite is just pytest / npm and can be invoked on its own:
+
+```bash
+# Regression suite (existing CI tests)
+pip install -e ".[api,dev]" pytest pytest-asyncio httpx
+pytest tests/ -v
+
+# User-perspective end-to-end suite (CLI subprocess + live REST API +
+# real kickoff.sh runs). Uses the shell provider — no API keys needed.
+pytest user_tests/ -v
+
+# Pi extension TypeScript suite
+cd pi-extension
+npm install
+npm test                # unit + integration tests (53 tests, ~1s)
+npm run test:strict     # also runs `tsc --noEmit`
+```
+
+The `user_tests/` suite verifies, from a real user's vantage point:
+
+- Every `clk` sub-command (`init`, `idea`, `cast`, `roles`,
+  `plan`, `run`, `loop`, `status`, `providers`, `configure`) exits
+  cleanly and writes the documented `.clk/` artefacts.
+- All seven shipped providers register and the `shell` provider is
+  always available.
+- The REST API serves health, capabilities, workflows, workspace CRUD,
+  research task creation, SSE streaming, artifact listing, path
+  traversal blocking, and cancellation.
+- `kickoff.sh` produces a self-contained workspace dir with its own git
+  repo, and respects `--provider` / `CLK_PROVIDER` overrides.
+- Filesystem invariants (commit history, `.clk/runs/shell-stubs/`,
+  per-command `.clk/logs/<cmd>-<ts>.log`, etc.).
+
+The `pi-extension/tests/` suite verifies:
+
+- `classifyError`, `withRetry`, `looksRedacted`, `isMaxTurnsResult`,
+  and all `recoveryHint` branches.
+- `clkChiefPrimer` renders the captured idea + all CLK tool names.
+- `setIdea`, `setRoster`, `appendProgress`, `markDone`, `isDone`
+  round-trip state through `.clk/state/*.json` and `progress.md`.
+- The `git` wrapper does init, checkpoint, branch, merge, and revert
+  correctly against a real `git` binary.
+- The extension's `default` export registers the documented tools
+  (`clk_cast`, `clk_progress`, `clk_checkpoint`, `clk_done`) and the
+  `/clk` slash command, and handles an empty-idea invocation cleanly.
 
 ## Customization
 
