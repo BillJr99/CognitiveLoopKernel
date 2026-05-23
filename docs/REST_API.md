@@ -407,3 +407,11 @@ curl -sN $BASE/api/research/$TASK2/stream
 ## Docker
 
 See the main [README](../README.md#rest-api) for Docker-specific instructions.
+
+## Telegram bot
+
+The `clk-telegram-bot` console script consumes this API: `/api/workspaces`,
+`/api/research`, `/api/research/{id}`, `/api/research/{id}/cancel`,
+`/api/research/{id}/stream`, and `/api/research/{id}/artifacts`. See
+[README → Telegram Bot](../README.md#telegram-bot) for setup, the wizard,
+and the chat command reference.

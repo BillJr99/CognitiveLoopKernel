@@ -403,6 +403,28 @@ fi
 _apply_defaults
 
 # ===========================================================================
+# 3b. Offer Telegram bot setup if not yet configured.
+# Skipped silently if /dev/tty is unavailable (CI / non-interactive Docker)
+# or if the user opted out previously via CLK_TELEGRAM_SKIP=true.
+# ===========================================================================
+if [ "${CLK_TELEGRAM_ENABLED:-false}" != "true" ] \
+   && [ -z "${CLK_TELEGRAM_BOT_TOKEN:-}" ] \
+   && [ "${CLK_TELEGRAM_SKIP:-false}" != "true" ]; then
+  if { exec 5<>/dev/tty; } 2>/dev/null; then
+    printf '[kickoff] Telegram bot is not configured.\n' >&2
+    IFS= read -r -p "[kickoff] Set up Telegram bot now? [y/N]: " _tg_ans <&5
+    exec 5>&-
+    if [ "${_tg_ans,,}" = "y" ]; then
+      "$SCRIPT_DIR/scripts/telegram_setup_wizard.sh" || \
+        printf '[kickoff] telegram wizard exited non-zero; continuing\n' >&2
+      [ -f "$SCRIPT_DIR/.env" ] && { set -a; . "$SCRIPT_DIR/.env"; set +a; }
+    else
+      printf '[kickoff] Skipping. Set CLK_TELEGRAM_SKIP=true in .env to silence this prompt.\n' >&2
+    fi
+  fi
+fi
+
+# ===========================================================================
 # 4. Validate; if anything is missing, offer --setup then retry or exit
 # ===========================================================================
 _MISSING="$(_clk_missing)"

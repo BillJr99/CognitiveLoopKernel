@@ -20,10 +20,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-asyncio>=0.23", "httpx>=0.24"]
 api = ["fastapi>=0.100", "uvicorn>=0.23", "pydantic>=2.0"]
+telegram = ["python-telegram-bot>=21", "httpx>=0.24"]
 
 [project.scripts]
 clk = "clk_harness.cli:main"
 clk-api = "clk_harness._api_shim:main"
+clk-telegram-bot = "clk_harness.integrations.telegram.bot:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
