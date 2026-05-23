@@ -26,6 +26,7 @@ import sys
 import traceback
 import urllib.error
 import urllib.request
+import uuid
 from typing import Any, Dict, List
 from urllib.parse import urlparse
 
@@ -111,6 +112,9 @@ class OpenWebUIProvider(AgentProvider):
                 error=f"openwebui endpoint unreachable: {self._endpoint()}",
             )
 
+        # Recent OpenWebUI builds require chat_id in the payload; missing it
+        # surfaces as HTTP 400 with "'NoneType' object has no attribute
+        # 'startswith'". See https://github.com/greeves89/owui_coding_proxy/commit/1fceee8
         body: Dict[str, Any] = {
             "model": self._model(),
             "messages": [
@@ -118,6 +122,7 @@ class OpenWebUIProvider(AgentProvider):
                 {"role": "user", "content": req.prompt},
             ],
             "stream": False,
+            "chat_id": str(uuid.uuid4()),
         }
         url = self._endpoint() + "/api/chat/completions"
         data = json.dumps(body).encode("utf-8")
