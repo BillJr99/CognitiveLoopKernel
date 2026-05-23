@@ -181,6 +181,18 @@ PY
       ;;
   esac
 
+  printf '\n--- Telegram bot (two-way chat control) ---\n' >&4
+  local tg_setup tg_skip
+  local default_tg="N"
+  [ "${CLK_TELEGRAM_ENABLED:-false}" = "true" ] && default_tg="y"
+  tg_setup="$(_sv_read "Set up Telegram bot now? (y/N)" "$default_tg")"
+  if [ "${tg_setup,,}" = "y" ]; then
+    tg_skip="false"
+  else
+    tg_skip="true"
+    printf '[setup] Skipping Telegram. CLK_TELEGRAM_SKIP=true will be written to .env.\n' >&4
+  fi
+
   printf '\n--- Git identity (used in kickoff commits) ---\n' >&4
   local cur_name cur_email
   cur_name="$(git config --global user.name  2>/dev/null || true)"
@@ -225,9 +237,23 @@ CLK_PI_KEY_TYPE=$pi_key_type
 # Git identity for kickoff commits (overrides global git config inside containers)
 CLK_GIT_NAME=$git_name
 CLK_GIT_EMAIL=$git_email
+
+# Telegram bot (populated by scripts/telegram_setup_wizard.sh when enabled)
+CLK_TELEGRAM_BOT_TOKEN=${CLK_TELEGRAM_BOT_TOKEN:-}
+CLK_TELEGRAM_ALLOWED_USERS=${CLK_TELEGRAM_ALLOWED_USERS:-}
+CLK_TELEGRAM_ENABLED=${CLK_TELEGRAM_ENABLED:-false}
+CLK_TELEGRAM_WORKSPACE=${CLK_TELEGRAM_WORKSPACE:-}
+CLK_TELEGRAM_SKIP=$tg_skip
 ENV
 
   printf '\n[setup] saved %s\n' "$env_file" >&4
+
+  if [ "${tg_setup,,}" = "y" ]; then
+    printf '\n[setup] launching Telegram wizard...\n' >&4
+    CLK_ENV_FILE="$env_file" "$SCRIPT_DIR/scripts/telegram_setup_wizard.sh" >&4 2>&4 || \
+      printf '[setup] telegram wizard exited non-zero; continuing\n' >&4
+  fi
+
   exec 4>&- 2>/dev/null || true
 }
 
@@ -401,28 +427,6 @@ fi
 [ -n "$_OVR_RUN_INSTALL" ] && CLK_RUN_INSTALL="$_OVR_RUN_INSTALL"
 
 _apply_defaults
-
-# ===========================================================================
-# 3b. Offer Telegram bot setup if not yet configured.
-# Skipped silently if /dev/tty is unavailable (CI / non-interactive Docker)
-# or if the user opted out previously via CLK_TELEGRAM_SKIP=true.
-# ===========================================================================
-if [ "${CLK_TELEGRAM_ENABLED:-false}" != "true" ] \
-   && [ -z "${CLK_TELEGRAM_BOT_TOKEN:-}" ] \
-   && [ "${CLK_TELEGRAM_SKIP:-false}" != "true" ]; then
-  if { exec 5<>/dev/tty; } 2>/dev/null; then
-    printf '[kickoff] Telegram bot is not configured.\n' >&2
-    IFS= read -r -p "[kickoff] Set up Telegram bot now? [y/N]: " _tg_ans <&5
-    exec 5>&-
-    if [ "${_tg_ans,,}" = "y" ]; then
-      "$SCRIPT_DIR/scripts/telegram_setup_wizard.sh" || \
-        printf '[kickoff] telegram wizard exited non-zero; continuing\n' >&2
-      [ -f "$SCRIPT_DIR/.env" ] && { set -a; . "$SCRIPT_DIR/.env"; set +a; }
-    else
-      printf '[kickoff] Skipping. Set CLK_TELEGRAM_SKIP=true in .env to silence this prompt.\n' >&2
-    fi
-  fi
-fi
 
 # ===========================================================================
 # 4. Validate; if anything is missing, offer --setup then retry or exit
