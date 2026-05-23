@@ -1,10 +1,13 @@
-"""Confirm kickoff.sh's Telegram-setup prompt logic.
+"""Confirm kickoff.sh's Telegram-setup wizard integration.
 
-We can't drive the full kickoff flow in a unit test (it would try to
-build a workspace and run a provider), so we surgically extract the
-prompt block by passing the no-tty path: when /dev/tty is unopenable,
-kickoff must silently skip the prompt. We assert that property indirectly
-by checking the relevant guard text is in the script.
+Telegram is configured from the `--setup` wizard rather than from every
+kickoff run. We can't drive the full setup flow in a unit test, so we
+assert structurally that:
+  * the setup wizard asks about Telegram and conditionally invokes the
+    standalone telegram_setup_wizard.sh helper,
+  * CLK_TELEGRAM_SKIP is persisted to .env based on that answer,
+  * pre-existing CLK_TELEGRAM_* values are preserved across re-runs of
+    --setup (i.e. referenced from the heredoc).
 """
 
 from pathlib import Path
@@ -21,9 +24,21 @@ def test_kickoff_has_telegram_block():
     assert "CLK_TELEGRAM_ENABLED" in body
 
 
-def test_kickoff_skip_flag_short_circuits():
+def test_setup_invokes_wizard_only_on_yes():
     body = KICKOFF.read_text()
-    # The guard must check both ENABLED and TOKEN before prompting,
-    # and respect CLK_TELEGRAM_SKIP.
-    assert '"${CLK_TELEGRAM_SKIP:-false}" != "true"' in body
-    assert '"${CLK_TELEGRAM_ENABLED:-false}" != "true"' in body
+    # The wizard is asked about during --setup and invoked only if the
+    # user answered y/Y.
+    assert 'Set up Telegram bot now?' in body
+    assert '"${tg_setup,,}" = "y"' in body
+    assert 'CLK_ENV_FILE="$env_file" "$SCRIPT_DIR/scripts/telegram_setup_wizard.sh"' in body
+
+
+def test_setup_persists_skip_and_existing_values():
+    body = KICKOFF.read_text()
+    # Declining the prompt writes CLK_TELEGRAM_SKIP=true (variable
+    # interpolated from $tg_skip in the heredoc).
+    assert "CLK_TELEGRAM_SKIP=$tg_skip" in body
+    # Pre-existing Telegram values survive a --setup re-run.
+    assert "CLK_TELEGRAM_BOT_TOKEN=${CLK_TELEGRAM_BOT_TOKEN:-}" in body
+    assert "CLK_TELEGRAM_ALLOWED_USERS=${CLK_TELEGRAM_ALLOWED_USERS:-}" in body
+    assert "CLK_TELEGRAM_ENABLED=${CLK_TELEGRAM_ENABLED:-false}" in body
