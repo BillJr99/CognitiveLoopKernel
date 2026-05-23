@@ -399,6 +399,27 @@ if $SETUP_MODE; then
 fi
 
 # ===========================================================================
+# 1b. First-run nudge: if .env is missing and we have a TTY, offer setup
+# inline so the user doesn't have to know about --setup. Declining falls
+# through to defaults. CI / non-interactive containers skip silently.
+# ===========================================================================
+if [ ! -f "$SCRIPT_DIR/.env" ]; then
+  if { exec 6<>/dev/tty; } 2>/dev/null; then
+    printf '[kickoff] No .env found at %s — first run?\n' "$SCRIPT_DIR/.env" >&2
+    IFS= read -r -p "[kickoff] Run --setup now to configure? [Y/n]: " _firstrun_ans <&6
+    exec 6>&-
+    case "${_firstrun_ans,,}" in
+      ""|y|yes)
+        _clk_setup
+        ;;
+      *)
+        printf '[kickoff] Skipping setup; continuing with defaults.\n' >&2
+        ;;
+    esac
+  fi
+fi
+
+# ===========================================================================
 # 2. Load .env (export every assigned var so subprocesses inherit it)
 # ===========================================================================
 if [ -f "$SCRIPT_DIR/.env" ]; then
