@@ -403,9 +403,13 @@ fi
 # inline so the user doesn't have to know about --setup. Declining falls
 # through to defaults. CI / non-interactive containers skip silently.
 # ===========================================================================
-if [ ! -f "$SCRIPT_DIR/.env" ]; then
+if [ ! -s "$SCRIPT_DIR/.env" ]; then
   if { exec 6<>/dev/tty; } 2>/dev/null; then
-    printf '[kickoff] No .env found at %s — first run?\n' "$SCRIPT_DIR/.env" >&2
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+      printf '[kickoff] %s is empty (placeholder) — first run?\n' "$SCRIPT_DIR/.env" >&2
+    else
+      printf '[kickoff] No .env found at %s — first run?\n' "$SCRIPT_DIR/.env" >&2
+    fi
     IFS= read -r -p "[kickoff] Run --setup now to configure? [Y/n]: " _firstrun_ans <&6
     exec 6>&-
     case "${_firstrun_ans,,}" in
