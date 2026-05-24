@@ -1048,7 +1048,7 @@ The harness state, written by `clk init` and grown by every command:
 | `codex`     | `codex` on PATH                          | runs `codex exec`. |
 | `gemini`    | `gemini` on PATH                         | runs the Google Gemini CLI; prompt fed on stdin. |
 | `pi`        | `pi` on PATH or `.clk/tools/pi/bin/pi`   | pi.dev terminal harness; supports model selection, OpenRouter, and any API-key provider. See below. |
-| `ollama`    | TCP reachable at `endpoint`              | local-only LLM via HTTP. |
+| `ollama`    | TCP reachable at `endpoint`              | local-only LLM via HTTP. **Use a ≥14B model** (e.g. `qwen3:14b`) — see [Ollama provider](#ollama-provider) for why. |
 | `openwebui` | TCP reachable at `endpoint`              | any OpenAI-compatible server. Configure `endpoint`, `api_key`, `model` in `providers.json`; kickoff offers a numbered model picker fetched from `/api/models`. |
 
 `./scripts/clk providers` prints availability as JSON. Customize per
@@ -1074,6 +1074,49 @@ choose how authentication works at kickoff:
 The other providers don't need this knob: `shell` and `ollama` are
 local, `openwebui` uses an explicit bearer token, and `pi` has its own
 authentication model described below.
+
+### Ollama provider
+
+Ollama is local and free — no API key, no rate limits — which makes
+it tempting to default to. The catch is that **CLK asks the chief to
+emit machine-parseable YAML workflows**, and small open-weight models
+(≤8B parameters) are inconsistent at this. Specifically, the chief
+will occasionally produce a `PROPOSE_WORKFLOW` block where a list
+item contains an unquoted colon (e.g. `[type:finding,
+stage:create_file]`), which YAML can't parse.
+
+What you'll see when this happens:
+
+```
+[workflow] PROPOSE_WORKFLOW parse failed: mapping values are not
+allowed here :: keeping prior workflow
+[supervise] cycle N/M no progress (workflow still has zero new stages)
+```
+
+The harness handles this safely — it detects the bad YAML, refuses
+to clobber the existing workflow file, falls back to the bundled
+engineering template, and the supervise loop keeps the run alive
+until its cap. But the visible symptom is a loop that "spins" without
+forward progress, which is frustrating.
+
+**Recommendation: use `qwen3:14b` or larger as the minimum.** It
+follows the structured-output instructions reliably enough that the
+chief's proposals parse on the first try. Pull it with:
+
+```bash
+ollama pull qwen3:14b
+```
+
+Other ≥14B options that work well: `llama3.1:70b`, `qwen2.5-coder:32b`,
+`deepseek-r1:14b`. Models ≤8B (`llama3.2`, `gemma2`, `qwen2.5:7b`,
+`phi3`) are fine for chat but flaky for workflow generation — they'll
+get through some cycles cleanly but fail the YAML contract often
+enough that the loop won't make steady progress.
+
+Memory rule of thumb: a 14B Q4 model needs ~10 GB of RAM/VRAM; 32B
+needs ~20 GB; 70B needs ~40 GB. The setup wizard's ollama section
+streams `ollama pull` progress so you can see download size before
+it lands.
 
 ### Pi provider
 

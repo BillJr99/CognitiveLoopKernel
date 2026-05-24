@@ -449,8 +449,12 @@ _configure_ollama() {
 
   if [ -z "$model" ]; then
     _it_say ""
-    _it_say "[configure ollama] common models: llama3.1, llama3.2, qwen2.5-coder, gemma2, deepseek-r1"
-    model="$(_it_read "Model name to pull" "llama3.1")"
+    _it_say "[configure ollama] CLK asks the chief to emit YAML workflows."
+    _it_say "[configure ollama] Models <=8B (llama3.2, gemma2, phi3) produce invalid YAML often"
+    _it_say "[configure ollama] enough to stall the supervise loop. Use qwen3:14b or larger."
+    _it_say "[configure ollama] Recommended: qwen3:14b (10GB), qwen2.5-coder:32b (20GB), llama3.1:70b (40GB)."
+    _it_say "[configure ollama] Smaller (fine for chat, flaky for workflows): llama3.1, llama3.2, gemma2"
+    model="$(_it_read "Model name to pull" "qwen3:14b")"
     if _it_has ollama && _it_confirm "Run \`ollama pull $model\` now?" "Y"; then
       _it_say "[configure ollama] pulling $model — this can take a few minutes..."
       if ! ollama pull "$model"; then
