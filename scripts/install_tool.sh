@@ -179,10 +179,28 @@ check_tool() {
       ;;
     openwebui)
       local endpoint="${CLK_OPENWEBUI_ENDPOINT:-http://localhost:8080}"
+      # Prefer an HTTP probe — many minimal shells lack /dev/tcp, and we
+      # care that OpenWebUI is *responding*, not just that a port is open.
+      # Any HTTP status (including 401/403 for authenticated instances)
+      # counts as reachable.
+      if _it_has curl; then
+        local code
+        code="$(curl -sS -o /dev/null -m 4 -w '%{http_code}' "$endpoint" 2>/dev/null || echo 000)"
+        [ "$code" != "000" ] && return 0
+        # Also try the health endpoint that OpenWebUI exposes.
+        code="$(curl -sS -o /dev/null -m 4 -w '%{http_code}' "${endpoint%/}/health" 2>/dev/null || echo 000)"
+        [ "$code" != "000" ] && return 0
+      fi
+      # Fallback: raw TCP probe for environments without curl.
       local host port
       host="$(echo "$endpoint" | sed -E 's|^https?://||; s|/.*||; s|:.*||')"
       port="$(echo "$endpoint" | sed -nE 's|^https?://[^:/]+:([0-9]+).*|\1|p')"
-      port="${port:-8080}"
+      if [ -z "$port" ]; then
+        case "$endpoint" in
+          https://*) port=443 ;;
+          *)         port=8080 ;;
+        esac
+      fi
       (echo > "/dev/tcp/$host/$port") 2>/dev/null
       ;;
     *)
