@@ -1011,9 +1011,15 @@ orchestration model — dynamic casting, stochastic consensus, Ralph
 refinement, and Karpathy-style autoresearch — into Pi behind a single
 `/clk` command. No Python harness required at runtime.
 
-See [`pi-extension/README.md`](pi-extension/README.md) for full
-documentation including tool reference, state layout, error handling,
-and customization notes. Quick summary:
+The TypeScript extension now ports the harness's response-quality
+scoring and consensus fan-out as **real tools** (`clk_consensus`,
+`clk_subagent_quality`, `clk_autoresearch`, `clk_ralph`) rather than
+relying on chief compliance — every parallel sample is scored by the
+same rules `clk_harness/orchestration/response_quality.py` uses, the
+winner is picked in code, and Ralph branches are created by the tool so
+the protocol can't be skipped. See [`pi-extension/README.md`](pi-extension/README.md)
+for the full tool reference, state layout, error handling, and
+customisation notes.
 
 **Requirements:** Pi on `PATH`; tmux on `PATH`; Git on `PATH`.
 
@@ -1025,12 +1031,35 @@ and customization notes. Quick summary:
 | Project-local | `mkdir -p .pi/extensions && ln -s /path/to/CognitiveLoopKernel/pi-extension .pi/extensions/clk` | Version-controlled per project |
 | Global | `mkdir -p ~/.pi/agent/extensions && ln -s /path/to/CognitiveLoopKernel/pi-extension ~/.pi/agent/extensions/clk` | Available in every Pi session |
 
-**Usage:**
+**Commands:**
 
 | Command | Effect |
 |---------|--------|
 | `/clk <idea>` | Capture the idea and hand off to the chief. Resumes if state exists. |
 | `/clk-abort` | End the active run. State is preserved; resume with `/clk` later. |
+| `/clk-help` | List every CLK slash command, every orchestration tool the chief uses, and the active safety nets. |
+| `/clk-doctor` | Health-check tmux, git, the workspace `.clk/` layout, the pre-push hook, and (when a remote exists) the count of local commits not yet pushed. |
+| `/clk-undo` | Preview the last CLK commit; `/clk-undo confirm` creates a revert commit on top of it. |
+
+**Orchestration tools the chief uses (you don't call these directly):**
+
+| Tool | Purpose |
+|---|---|
+| `clk_cast` | Persist a roster of project-specific specialist roles. |
+| `clk_subagent` | Raw single-subagent dispatch via a detached tmux pi session. |
+| `clk_subagent_quality` | One subagent + automatic repair-preamble re-rolls on quality failures. |
+| `clk_consensus` | Fan out N parallel samples (default 3, max 6), score each, return the winner plus every candidate's score. |
+| `clk_autoresearch` | Bounded researcher + critic alternation; each iteration recorded on the progress log. |
+| `clk_ralph` | Create a `ralph/<iter>` branch and run a consensus fan-out in one call; chief then calls `clk_merge` or `clk_revert`. |
+| `clk_branch` / `clk_merge` / `clk_revert` / `clk_checkpoint` | Git plumbing for the Ralph iteration cycle. |
+| `clk_progress` | Append a one-line entry to `.clk/state/progress.md`. |
+| `clk_done` | Mark the run complete and write `.clk/state/done.md`. |
+
+**Optional env vars:**
+
+| Variable | Effect |
+|---|---|
+| `CLK_GITHUB_PUSH_ON_COMMIT=true` | After every `clk_checkpoint` and `clk_merge`, run `git push origin HEAD` best-effort and surface an `↑N` ahead counter if the push fails. Same env var as the Python TUI. |
 
 A typical session:
 
@@ -1038,10 +1067,12 @@ A typical session:
 > /clk a local-first journaling app that summarizes my week
 [CLK run started. The chief is taking over.]
 [chief casts engineer, ux_writer, summarizer, qa]
-[chief fans out to 3 parallel architecture subagents → judge synthesizes]
-[chief dispatches worker to implement MVP]
-[chief calls clk_checkpoint: "MVP: capture + persist entries"]
-[chief opens feature branch with clk_branch, runs Ralph iteration ...]
+[chief calls clk_consensus({agent:"architect", samples:3, task:"... storage design ..."})]
+[harness fans out 3 parallel tmux pi subagents, scores each, returns the winner]
+[chief calls clk_autoresearch({question:"sync model: append-only vs CRDT?"})]
+[chief calls clk_ralph({iterationName:"iter-1-mvp", agent:"engineer", task:"... build MVP ..."})]
+[chief calls bash: pytest -q]
+[chief calls clk_merge: "ralph win: MVP capture+persist+summarize"]
 [chief calls clk_done: "MVP runs; tests pass; README + deploy plan present"]
 ```
 
@@ -1069,7 +1100,19 @@ scripts/
 tests/                   # pytest regression suite (CI-gated)
 user_tests/              # pytest end-to-end suite (drives CLI + REST API)
 pi-extension/            # standalone Pi extension (TypeScript)
-  tests/                 # node --test suites (errors, prompts, state, git, index)
+  src/
+    index.ts             # /clk + /clk-help + /clk-doctor + /clk-undo, session lifecycle
+    prompts.ts           # the chief's operator's manual
+    tools.ts             # clk_cast / clk_progress / clk_checkpoint / clk_branch /
+                         #   clk_merge / clk_revert / clk_consensus / clk_subagent_quality /
+                         #   clk_autoresearch / clk_ralph / clk_done
+    subagent.ts          # raw clk_subagent — spawnSubagent() exposed for consensus
+    consensus.ts         # dispatchWithQuality + runConsensus (port of agent.py)
+    quality.ts           # scoreResponse + repairHint (port of response_quality.py)
+    git.ts               # checkpoint, branch, merge, revert + hasRemote / commitsAhead /
+                         #   pushBestEffort (port of git_ops.py auto-push helpers)
+    state.ts / abort.ts / errors.ts / types.ts
+  tests/                 # node --test suites covering every file in src/
 docs/
   REST_API.md            # full REST API reference
 ```
@@ -1801,7 +1844,7 @@ pytest user_tests/ -v
 # Pi extension TypeScript suite
 cd pi-extension
 npm install
-npm test                # unit + integration tests (53 tests, ~1s)
+npm test                # unit + integration tests (96 tests, ~2s)
 npm run test:strict     # also runs `tsc --noEmit`
 ```
 
@@ -1824,14 +1867,31 @@ The `pi-extension/tests/` suite verifies:
 
 - `classifyError`, `withRetry`, `looksRedacted`, `isMaxTurnsResult`,
   and all `recoveryHint` branches.
-- `clkChiefPrimer` renders the captured idea + all CLK tool names.
+- `clkChiefPrimer` renders the captured idea + every CLK tool name
+  (`clk_cast`, `clk_subagent`, `clk_subagent_quality`, `clk_consensus`,
+  `clk_autoresearch`, `clk_ralph`, `clk_checkpoint`, `clk_done`).
+- `scoreResponse` flags every documented failure mode (empty / refusal /
+  malformed ACTION / malformed POST / missing outputs / low confidence /
+  needs-review / missing-confidence) and `repairHint` quotes each reason
+  to the worker.
+- `runConsensus` fans out N samples, scores them, picks the winner, caps
+  to `maxParallel`, and captures spawn errors without throwing.
+  `dispatchWithQuality` retries with a repair preamble on recoverable
+  failures and stops on refusal or `maxRetries`.
 - `setIdea`, `setRoster`, `appendProgress`, `markDone`, `isDone`
   round-trip state through `.clk/state/*.json` and `progress.md`.
-- The `git` wrapper does init, checkpoint, branch, merge, and revert
-  correctly against a real `git` binary.
-- The extension's `default` export registers the documented tools
-  (`clk_cast`, `clk_progress`, `clk_checkpoint`, `clk_done`) and the
-  `/clk` slash command, and handles an empty-idea invocation cleanly.
+- The `git` wrapper does init, checkpoint, branch, merge, revert,
+  `hasRemote`, `commitsAhead`, and `pushBestEffort` correctly against a
+  real `git` binary (including the bare-upstream sync, the unreachable-
+  remote failure path, and the no-remote no-op).
+- The extension's `default` export registers every documented tool
+  (`clk_cast`, `clk_progress`, `clk_checkpoint`, `clk_revert`,
+  `clk_branch`, `clk_merge`, `clk_done`, `clk_consensus`,
+  `clk_subagent_quality`, `clk_autoresearch`, `clk_ralph`,
+  `clk_subagent`) and the `/clk` slash command, and handles an
+  empty-idea invocation cleanly.
+- `firstLineShort` returns single-line, capped output so a multi-line
+  idea never bleeds line 2 into the Pi status bar.
 
 ## Customization
 
