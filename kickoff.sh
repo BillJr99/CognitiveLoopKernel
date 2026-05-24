@@ -87,8 +87,14 @@ _clk_setup() {
   }
 
   _sv_confirm() {
-    local prompt="$1" default="${2:-N}" v
-    v="$(_sv_read "$prompt [$default]" "$default")"
+    local prompt="$1" default="${2:-N}" v hint
+    case "${default^^}" in
+      Y|YES) hint="Y/n" ;;
+      *)     hint="y/N" ;;
+    esac
+    printf '%s [%s]: ' "$prompt" "$hint" >&4
+    IFS= read -r v <&3 || v=""
+    v="${v:-$default}"
     case "${v,,}" in y|yes) return 0 ;; *) return 1 ;; esac
   }
 
