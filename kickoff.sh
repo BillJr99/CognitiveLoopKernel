@@ -26,10 +26,33 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
+# Shared helpers — atomic .env writes and tool install/configure registry.
+# Sourced once so _clk_setup, _clk_setup_github, and the TUI all behave
+# the same way.
+# shellcheck source=scripts/lib_env.sh
+. "$SCRIPT_DIR/scripts/lib_env.sh"
+# shellcheck source=scripts/install_tool.sh
+. "$SCRIPT_DIR/scripts/install_tool.sh"
+
 # ===========================================================================
 # Setup wizard — invoked by --setup or offered when config is incomplete.
 # Reads from /dev/tty so it works inside `docker run -it` even when stdin
 # is not a terminal.
+#
+# Design notes — see /root/.claude/plans/recommend-ways-to-make-imperative-wreath.md
+#   * Explain-then-ask: every prompt is preceded by a short block telling
+#     the user what the value does and what reasonable choices are.
+#   * Atomic writes: each answer is persisted to .env immediately through
+#     env_set, so a Ctrl-C mid-wizard does not leave the file half-written
+#     and the next run can resume.
+#   * Per-step resume: `.clk/.setup-progress` records the last completed
+#     step name; the next run offers to skip ahead.
+#   * Tool autopilot: after the provider is chosen, the wizard runs
+#     `check_tool` and, on miss, asks before invoking `install_tool`.
+#     Then `configure_tool` walks the user through auth, upstream route
+#     (for pi), and model picking (including `ollama pull`).
+#   * Always-confirm: every install/push/destructive action prompts y/N
+#     every time. No "remember the answer" shortcut.
 # ===========================================================================
 _clk_setup() {
   { exec 3</dev/tty; } 2>/dev/null || exec 3<&0
@@ -37,8 +60,12 @@ _clk_setup() {
 
   _sv_read() {
     local prompt="$1" default="$2" v
-    printf '%s [%s]: ' "$prompt" "$default" >&4
-    IFS= read -r v <&3
+    if [ -n "$default" ]; then
+      printf '%s [%s]: ' "$prompt" "$default" >&4
+    else
+      printf '%s: ' "$prompt" >&4
+    fi
+    IFS= read -r v <&3 || v=""
     printf '%s' "${v:-$default}"
   }
 
@@ -46,16 +73,31 @@ _clk_setup() {
     local prompt="$1" v
     printf '%s (leave blank to keep): ' "$prompt" >&4
     stty -echo </dev/tty 2>/dev/null || true
-    IFS= read -r v <&3
+    IFS= read -r v <&3 || v=""
     stty echo  </dev/tty 2>/dev/null || true
     printf '\n' >&4
     printf '%s' "$v"
   }
 
-  local env_file="$SCRIPT_DIR/.env"
+  _sv_explain() {
+    # One blank line above, then the explanation, then a separator. The
+    # tone mirrors install_local.sh: tell the user what you're about to
+    # do and why before doing it.
+    printf '\n%s\n' "$1" >&4
+  }
+
+  _sv_confirm() {
+    local prompt="$1" default="${2:-N}" v
+    v="$(_sv_read "$prompt [$default]" "$default")"
+    case "${v,,}" in y|yes) return 0 ;; *) return 1 ;; esac
+  }
+
+  local env_file="${CLK_ENV_FILE:-$SCRIPT_DIR/.env}"
+  export CLK_ENV_FILE="$env_file"
+  local progress_file="$SCRIPT_DIR/.clk/.setup-progress"
+  mkdir -p "$(dirname "$progress_file")"
 
   # Seed defaults from .env.example first, then let an existing .env override.
-  # The wizard always rewrites .env at the end; press Enter to keep a value.
   if [ -f "$SCRIPT_DIR/.env.example" ]; then
     set -a; . "$SCRIPT_DIR/.env.example"; set +a
   fi
@@ -66,195 +108,284 @@ _clk_setup() {
     printf '[setup] %s is empty or missing — using .env.example defaults\n' "$env_file" >&4
   fi
 
-  printf '\n=== CLK Setup Wizard ===\nPress Enter to keep the value shown in [brackets].\n\n' >&4
+  # Per-step resume: each completed step writes its name here. On the
+  # next run, we look at the last name and offer to skip ahead.
+  local last_step=""
+  if [ -s "$progress_file" ]; then
+    last_step="$(tail -n1 "$progress_file" 2>/dev/null || true)"
+  fi
+  local skip_until=""
+  if [ -n "$last_step" ]; then
+    if _sv_confirm "[setup] Resume from after step '$last_step'?" "Y"; then
+      skip_until="$last_step"
+    else
+      : > "$progress_file"
+    fi
+  fi
+
+  printf '\n=== CLK Setup Wizard ===\n' >&4
+  printf 'Press Enter to keep the value shown in [brackets].\n' >&4
+  printf 'Every install, push, and destructive action is confirmed y/N first.\n' >&4
+
+  # Mark a step as complete. Used both for the progress file and to
+  # short-circuit when resuming.
+  _mark_step() { printf '%s\n' "$1" >> "$progress_file"; }
+  _should_run_step() {
+    # Returns 0 (run) unless we're skipping past this step.
+    [ -z "$skip_until" ] && return 0
+    if [ "$1" = "$skip_until" ]; then
+      # Stop skipping after this match — the next step runs normally.
+      skip_until=""
+      return 1
+    fi
+    return 1
+  }
 
   local provider max_iter proj_name run_install no_tui auth_mode
-  local anthropic_key openai_key gemini_key google_key
-  local ollama_ep ollama_model owui_ep owui_key owui_model
-  local pi_model pi_key pi_key_type
-  local git_name git_email new
+  local git_name git_email new tg_setup tg_skip
 
-  provider="$(_sv_read    "Provider (shell|claude|codex|gemini|pi|ollama|openwebui)" "${CLK_PROVIDER:-shell}")"
-  max_iter="$(_sv_read    "Max loop iterations"                                       "${CLK_MAX_ITERATIONS:-10}")"
-  proj_name="$(_sv_read   "Project name"                                              "${CLK_PROJECT_NAME:-clk-app}")"
-  run_install="$(_sv_read "Run install_local.sh (true|false)"                        "${CLK_RUN_INSTALL:-false}")"
-  no_tui="$(_sv_read      "Skip TUI / non-interactive (true|false)"                  "${CLK_NO_TUI:-false}")"
+  # --- provider --------------------------------------------------------
+  if _should_run_step "provider"; then
+    _sv_explain "=== Provider ===
+The provider is the AI that actually writes your code each cycle.
 
+  shell      no AI — useful for smoke tests and the /tutorial walkthrough
+  claude     Anthropic Claude Code CLI (best at writing code, supports tools)
+  codex      OpenAI Codex CLI
+  gemini     Google Gemini CLI
+  pi         Pi terminal harness — routes through OpenRouter/Anthropic/OpenAI/Google
+  ollama     local LLM via the Ollama daemon (no external API, free)
+  openwebui  OpenWebUI server (self-hosted, OpenAI-compatible)"
+    provider="$(_sv_read "Provider" "${CLK_PROVIDER:-shell}")"
+    env_set "$env_file" CLK_PROVIDER "$provider"
+    _mark_step provider
+  else
+    provider="${CLK_PROVIDER:-shell}"
+  fi
+
+  # --- max iterations + project name + flags ---------------------------
+  if _should_run_step "loop_settings"; then
+    _sv_explain "=== Loop settings ===
+\`max iterations\` caps how many refinement cycles the Ralph and
+autoresearch loops can run. \`project name\` becomes the title of the
+captured idea and (optionally) the GitHub repo name. The \`run install\`
+flag triggers .clk/harness/scripts/install_local.sh inside each kickoff
+dir so providers like pi can find PyYAML and other deps. \`no TUI\`
+switches to a non-interactive pipeline — handy for CI."
+    max_iter="$(_sv_read    "Max loop iterations" "${CLK_MAX_ITERATIONS:-10}")"
+    proj_name="$(_sv_read   "Project name"        "${CLK_PROJECT_NAME:-clk-app}")"
+    run_install="$(_sv_read "Run install_local.sh in each kickoff (true|false)" "${CLK_RUN_INSTALL:-false}")"
+    no_tui="$(_sv_read      "Skip TUI / non-interactive (true|false)" "${CLK_NO_TUI:-false}")"
+    env_set "$env_file" CLK_MAX_ITERATIONS "$max_iter"
+    env_set "$env_file" CLK_PROJECT_NAME   "$proj_name"
+    env_set "$env_file" CLK_RUN_INSTALL    "$run_install"
+    env_set "$env_file" CLK_NO_TUI         "$no_tui"
+    _mark_step loop_settings
+  else
+    max_iter="${CLK_MAX_ITERATIONS:-10}"
+    proj_name="${CLK_PROJECT_NAME:-clk-app}"
+    run_install="${CLK_RUN_INSTALL:-false}"
+    no_tui="${CLK_NO_TUI:-false}"
+  fi
+
+  # --- auth mode (CLI providers) ---------------------------------------
   auth_mode="${CLK_AUTH_MODE:-cli}"
   case "$provider" in
     claude|codex|gemini)
-      auth_mode="$(_sv_read "Auth mode (cli=use existing login, apikey=use API key)" "$auth_mode")"
+      if _should_run_step "auth_mode"; then
+        _sv_explain "=== Auth mode ($provider) ===
+'cli'    — use your existing local CLI login (run \`$provider login\` once;
+           best when you already use $provider day-to-day).
+'apikey' — call the provider's HTTP API directly using an API key.
+           No CLI dependency, but you must paste a key below."
+        auth_mode="$(_sv_read "Auth mode" "$auth_mode")"
+        env_set "$env_file" CLK_AUTH_MODE "$auth_mode"
+        _mark_step auth_mode
+      fi
       ;;
   esac
 
-  anthropic_key="${ANTHROPIC_API_KEY:-}"
-  openai_key="${OPENAI_API_KEY:-}"
-  gemini_key="${GEMINI_API_KEY:-}"
-  google_key="${GOOGLE_API_KEY:-}"
-
-  if [ "$auth_mode" = "apikey" ]; then
-    case "$provider" in
-      claude)  new="$(_sv_secret "ANTHROPIC_API_KEY")"; [ -n "$new" ] && anthropic_key="$new" ;;
-      codex)   new="$(_sv_secret "OPENAI_API_KEY")";    [ -n "$new" ] && openai_key="$new" ;;
-      gemini)  new="$(_sv_secret "GEMINI_API_KEY")";    [ -n "$new" ] && gemini_key="$new" ;;
-    esac
-  fi
-
-  ollama_ep="${CLK_OLLAMA_ENDPOINT:-http://localhost:11434}"
-  ollama_model="${CLK_OLLAMA_MODEL:-llama3.1}"
-  owui_ep="${CLK_OPENWEBUI_ENDPOINT:-http://localhost:8080}"
-  owui_key="${CLK_OPENWEBUI_API_KEY:-}"
-  owui_model="${CLK_OPENWEBUI_MODEL:-}"
-  pi_model="${CLK_PI_MODEL:-}"
-  pi_key="${CLK_PI_API_KEY:-}"
-  # No default for key type so the user can leave it blank to skip API key auth.
-  pi_key_type="${CLK_PI_KEY_TYPE:-}"
-
-  case "$provider" in
-    ollama)
-      ollama_ep="$(_sv_read    "Ollama endpoint" "$ollama_ep")"
-      ollama_model="$(_sv_read "Ollama model"    "$ollama_model")"
-      ;;
-    openwebui)
-      owui_ep="$(_sv_read "OpenWebUI endpoint" "$owui_ep")"
-      printf '  (API key is only needed for authenticated OpenWebUI instances.)\n' >&4
-      new="$(_sv_secret   "OpenWebUI API key")"; [ -n "$new" ] && owui_key="$new"
-      # Try to fetch the live model list so the user can pick by number.
-      local models_text=""
-      if [ -n "$owui_ep" ]; then
-        models_text="$(CLK_OPENWEBUI_ENDPOINT="$owui_ep" \
-                       CLK_OPENWEBUI_API_KEY="$owui_key" \
-                       PYTHONPATH="$SCRIPT_DIR" \
-                       python3 - 2>/dev/null <<'PY'
-import os, sys
-sys.path.insert(0, os.environ.get("PYTHONPATH",""))
-try:
-    from clk_harness.providers.openwebui import list_models
-    models = list_models(os.environ["CLK_OPENWEBUI_ENDPOINT"],
-                         os.environ.get("CLK_OPENWEBUI_API_KEY",""))
-except Exception:
-    models = []
-print("\n".join(models))
-PY
-)" || true
-      fi
-      if [ -n "$models_text" ]; then
-        printf '[setup] available models on %s:\n' "$owui_ep" >&4
-        local n=0 m
-        while IFS= read -r m; do
-          n=$((n+1))
-          printf '  %2d) %s\n' "$n" "$m" >&4
-        done <<< "$models_text"
-        printf 'Pick a number, or type a model name [%s]: ' "$owui_model" >&4
-        local pick=""
-        IFS= read -r pick <&3
-        if [[ "${pick:-}" =~ ^[0-9]+$ ]]; then
-          owui_model="$(echo "$models_text" | sed -n "${pick}p")"
-        elif [ -n "${pick:-}" ]; then
-          owui_model="$pick"
-        fi
-        # empty pick → keep current owui_model
+  # --- install + configure the chosen tool -----------------------------
+  if _should_run_step "tool_setup" && [ "$provider" != "shell" ]; then
+    _sv_explain "=== Tool detection ($provider) ===
+Checking whether \`$provider\` is installed and reachable. If it
+isn't, the wizard will suggest an install command and ask before
+running it. After the tool is available, we'll walk through
+first-use config (auth -> route -> model -> verify)."
+    if check_tool "$provider"; then
+      printf '[setup] %s is available on this machine.\n' "$provider" >&4
+    else
+      install_tool "$provider" --prompt || printf '[setup] %s install was skipped or failed; continuing.\n' "$provider" >&4
+    fi
+    if check_tool "$provider"; then
+      if tool_configured "$provider" && ! _sv_confirm "Re-run first-use config for $provider?" "N"; then
+        printf '[setup] %s already configured (per .clk/state/configured-tools.json).\n' "$provider" >&4
       else
-        [ -n "$owui_ep" ] && printf '[setup] could not fetch model list (offline/unauth?)\n' >&4
-        owui_model="$(_sv_read "OpenWebUI model name" "${owui_model:-llama3.1}")"
+        configure_tool "$provider" || printf '[setup] %s configure step exited non-zero; continuing.\n' "$provider" >&4
       fi
-      ;;
-    pi)
-      printf '\n  Examples: openrouter/free  openrouter/auto  anthropic/claude-3-5-sonnet\n' >&4
-      pi_model="$(_sv_read "pi model (leave blank for pi default)" "$pi_model")"
-      if command -v pi >/dev/null 2>&1; then
-        local open_pi
-        open_pi="$(_sv_read "Open a shell to run pi commands (e.g. pi login)? (y/N)" "N")"
-        if [ "${open_pi,,}" = "y" ]; then
-          printf '[setup] Dropping into a shell — run pi commands, then type exit to return.\n' >&4
-          PS1='[pi-setup]$ ' "${SHELL:-bash}" -i </dev/tty >&4 2>&4 || true
-          printf '[setup] Returned from pi setup shell.\n' >&4
-        fi
-      fi
-      printf '  Key type maps which env var receives your API key:\n' >&4
-      printf '    openrouter → OPENROUTER_API_KEY   openai → OPENAI_API_KEY\n' >&4
-      printf '  Leave blank if pi login above already handled auth.\n' >&4
-      pi_key_type="$(_sv_read "Key type (openrouter|openai|anthropic|<provider>, blank to skip)" "$pi_key_type")"
-      if [ -n "$pi_key_type" ]; then
-        new="$(_sv_secret "API key for $pi_key_type")"; [ -n "$new" ] && pi_key="$new"
-      fi
-      ;;
-  esac
-
-  printf '\n--- Telegram bot (two-way chat control) ---\n' >&4
-  local tg_setup tg_skip
-  local default_tg="N"
-  [ "${CLK_TELEGRAM_ENABLED:-false}" = "true" ] && default_tg="y"
-  tg_setup="$(_sv_read "Set up Telegram bot now? (y/N)" "$default_tg")"
-  if [ "${tg_setup,,}" = "y" ]; then
-    tg_skip="false"
-  else
-    tg_skip="true"
-    printf '[setup] Skipping Telegram. CLK_TELEGRAM_SKIP=true will be written to .env.\n' >&4
+    else
+      printf '[setup] %s is still unavailable — provider calls will fail until you install it.\n' "$provider" >&4
+    fi
+    _mark_step tool_setup
+    # Reload .env so values just written by configure_tool become visible
+    # to the rest of the wizard.
+    [ -s "$env_file" ] && { set -a; . "$env_file"; set +a; }
+  elif _should_run_step "tool_setup"; then
+    _mark_step tool_setup
   fi
 
-  printf '\n--- Git identity (used in kickoff commits) ---\n' >&4
-  local cur_name cur_email
-  cur_name="$(git config --global user.name  2>/dev/null || true)"
-  cur_email="$(git config --global user.email 2>/dev/null || true)"
-  printf '  Current global git name:  %s\n' "${cur_name:-<not set>}"  >&4
-  printf '  Current global git email: %s\n' "${cur_email:-<not set>}" >&4
+  # --- telegram --------------------------------------------------------
+  if _should_run_step "telegram"; then
+    _sv_explain "=== Telegram bot (optional) ===
+If enabled, you can drive CLK from your phone: send the bot an idea,
+get progress updates back, /stop or /abort remotely. The dedicated
+wizard at scripts/telegram_setup_wizard.sh walks through BotFather
+token creation and discovers your numeric user ID so we can allowlist
+only you."
+    local default_tg="N"
+    [ "${CLK_TELEGRAM_ENABLED:-false}" = "true" ] && default_tg="y"
+    tg_setup="$(_sv_read "Set up Telegram bot now? (y/N)" "$default_tg")"
+    if [ "${tg_setup,,}" = "y" ]; then
+      tg_skip="false"
+    else
+      tg_skip="true"
+      printf '[setup] Skipping Telegram. CLK_TELEGRAM_SKIP=true will be written to .env.\n' >&4
+    fi
+    env_set "$env_file" CLK_TELEGRAM_SKIP "$tg_skip"
+    _mark_step telegram
+  fi
 
-  git_name="$(_sv_read  "Git user.name  (blank = keep current)" "${CLK_GIT_NAME:-}")"
-  git_email="$(_sv_read "Git user.email (blank = keep current)" "${CLK_GIT_EMAIL:-}")"
+  # --- GitHub ----------------------------------------------------------
+  if _should_run_step "github"; then
+    _clk_setup_github "$env_file" "$proj_name"
+    _mark_step github
+  fi
+
+  # --- git identity ----------------------------------------------------
+  if _should_run_step "git_identity"; then
+    _sv_explain "=== Git identity (used in kickoff commits) ===
+Each kickoff workspace is its own git repo and CLK auto-commits after
+every successful agent run. The author/committer comes from your
+global git config unless you set CLK_GIT_NAME / CLK_GIT_EMAIL here
+(useful inside containers where the global config doesn't propagate)."
+    local cur_name cur_email
+    cur_name="$(git config --global user.name  2>/dev/null || true)"
+    cur_email="$(git config --global user.email 2>/dev/null || true)"
+    printf '  Current global git name:  %s\n' "${cur_name:-<not set>}"  >&4
+    printf '  Current global git email: %s\n' "${cur_email:-<not set>}" >&4
+    git_name="$(_sv_read  "Git user.name  (blank = keep current)" "${CLK_GIT_NAME:-}")"
+    git_email="$(_sv_read "Git user.email (blank = keep current)" "${CLK_GIT_EMAIL:-}")"
+    env_set "$env_file" CLK_GIT_NAME  "$git_name"
+    env_set "$env_file" CLK_GIT_EMAIL "$git_email"
+    _mark_step git_identity
+  fi
 
   exec 3<&- 2>/dev/null || true
 
-  cat > "$env_file" <<ENV
-# Generated by kickoff.sh --setup on $(date)
-CLK_PROVIDER=$provider
-CLK_MAX_ITERATIONS=$max_iter
-CLK_PROJECT_NAME=$proj_name
-CLK_RUN_INSTALL=$run_install
-CLK_NO_TUI=$no_tui
-
-# Auth mode for CLI-driven providers (claude, codex, gemini)
-CLK_AUTH_MODE=$auth_mode
-
-# API keys (only used when CLK_AUTH_MODE=apikey)
-ANTHROPIC_API_KEY=$anthropic_key
-OPENAI_API_KEY=$openai_key
-GEMINI_API_KEY=$gemini_key
-GOOGLE_API_KEY=$google_key
-
-# HTTP-based providers
-CLK_OLLAMA_ENDPOINT=$ollama_ep
-CLK_OLLAMA_MODEL=$ollama_model
-CLK_OPENWEBUI_ENDPOINT=$owui_ep
-CLK_OPENWEBUI_API_KEY=$owui_key
-CLK_OPENWEBUI_MODEL=$owui_model
-
-# Pi provider
-CLK_PI_MODEL=$pi_model
-CLK_PI_API_KEY=$pi_key
-CLK_PI_KEY_TYPE=$pi_key_type
-
-# Git identity for kickoff commits (overrides global git config inside containers)
-CLK_GIT_NAME=$git_name
-CLK_GIT_EMAIL=$git_email
-
-# Telegram bot (populated by scripts/telegram_setup_wizard.sh when enabled)
-CLK_TELEGRAM_BOT_TOKEN=${CLK_TELEGRAM_BOT_TOKEN:-}
-CLK_TELEGRAM_ALLOWED_USERS=${CLK_TELEGRAM_ALLOWED_USERS:-}
-CLK_TELEGRAM_ENABLED=${CLK_TELEGRAM_ENABLED:-false}
-CLK_TELEGRAM_WORKSPACE=${CLK_TELEGRAM_WORKSPACE:-}
-CLK_TELEGRAM_SKIP=$tg_skip
-ENV
-
   printf '\n[setup] saved %s\n' "$env_file" >&4
+  printf '[setup] previous values are in %s.bak\n' "$env_file" >&4
 
-  if [ "${tg_setup,,}" = "y" ]; then
+  if [ "${tg_setup:-N}" = "y" ] || [ "${tg_setup:-N}" = "Y" ]; then
     printf '\n[setup] launching Telegram wizard...\n' >&4
     CLK_ENV_FILE="$env_file" "$SCRIPT_DIR/scripts/telegram_setup_wizard.sh" >&4 2>&4 || \
       printf '[setup] telegram wizard exited non-zero; continuing\n' >&4
   fi
 
+  # Wizard finished cleanly — clear progress so a future --setup starts
+  # at the top instead of asking to resume.
+  rm -f "$progress_file"
+
   exec 4>&- 2>/dev/null || true
+}
+
+# ===========================================================================
+# GitHub connection block — invoked by _clk_setup. Adds a `origin` remote
+# to the local kickoff repo, hardens the .gitignore so secrets can't be
+# pushed, and installs a pre-push hook that greps for obvious key
+# patterns. The caller is responsible for git_init; we only configure
+# the remote. The kickoff dir already gets its own `git init` later in
+# this script, so the wizard records the choice in .env and the run-time
+# kickoff sequence applies it.
+# ===========================================================================
+_clk_setup_github() {
+  local env_file="$1" proj_name="$2"
+  _sv_explain "=== GitHub (optional) ===
+Each kickoff workspace is already a local git repo. You can optionally
+connect it to a GitHub remote so:
+  - every agent commit is checkpointed off your machine
+  - you (or another machine) can resume the work later by cloning
+  - friends/teammates can review the run
+
+  skip       no GitHub — local commits only (default)
+  existing   connect to a repo you already own (paste URL)
+  create     create a brand new private repo under your account
+
+The wizard will write a hardened .gitignore (blocking .env, .env.bak,
+SSH keys, etc.) and install a pre-push hook that aborts when an
+obvious API key pattern appears in the diff."
+
+  local choice
+  choice="$(_sv_read "Connect to GitHub?" "${CLK_GITHUB_MODE:-skip}")"
+  case "$choice" in
+    skip|"")
+      env_set "$env_file" CLK_GITHUB_MODE skip
+      env_set "$env_file" CLK_GITHUB_REMOTE ""
+      env_set "$env_file" CLK_GITHUB_PUSH_ON_COMMIT "false"
+      printf '[setup] GitHub disabled.\n' >&4
+      return 0
+      ;;
+    existing)
+      local url
+      url="$(_sv_read "Existing repo (https://github.com/OWNER/REPO or git@github.com:OWNER/REPO.git)" "${CLK_GITHUB_REMOTE:-}")"
+      if [ -z "$url" ]; then
+        printf '[setup] no URL provided; skipping GitHub.\n' >&4
+        env_set "$env_file" CLK_GITHUB_MODE skip
+        return 0
+      fi
+      env_set "$env_file" CLK_GITHUB_MODE existing
+      env_set "$env_file" CLK_GITHUB_REMOTE "$url"
+      ;;
+    create)
+      if ! _it_has gh; then
+        printf '[setup] gh CLI is required to create a repo from here.\n' >&4
+        if ! install_tool gh --prompt; then
+          printf '[setup] gh unavailable; cannot create. Falling back to "existing" — paste a URL.\n' >&4
+          local url
+          url="$(_sv_read "Existing repo URL" "")"
+          if [ -n "$url" ]; then
+            env_set "$env_file" CLK_GITHUB_MODE existing
+            env_set "$env_file" CLK_GITHUB_REMOTE "$url"
+          else
+            env_set "$env_file" CLK_GITHUB_MODE skip
+          fi
+          return 0
+        fi
+      fi
+      if ! gh auth status >/dev/null 2>&1; then
+        printf '[setup] gh is installed but not authenticated.\n' >&4
+        if _sv_confirm "Run \`gh auth login\` now?" "Y"; then
+          _it_login_shell gh
+        fi
+      fi
+      local owner_repo default_or
+      default_or="$(gh api user --jq .login 2>/dev/null || echo "$USER")"
+      owner_repo="$(_sv_read "owner/repo to create" "${default_or}/${proj_name}-kickoff")"
+      env_set "$env_file" CLK_GITHUB_MODE create
+      env_set "$env_file" CLK_GITHUB_REMOTE "$owner_repo"
+      printf '[setup] GitHub repo "%s" will be created (private) on the first kickoff push.\n' "$owner_repo" >&4
+      ;;
+    *)
+      printf '[setup] unknown GitHub choice "%s"; skipping.\n' "$choice" >&4
+      env_set "$env_file" CLK_GITHUB_MODE skip
+      return 0
+      ;;
+  esac
+
+  if _sv_confirm "Auto-push to GitHub after every CLK commit?" "Y"; then
+    env_set "$env_file" CLK_GITHUB_PUSH_ON_COMMIT "true"
+  else
+    env_set "$env_file" CLK_GITHUB_PUSH_ON_COMMIT "false"
+  fi
 }
 
 # ===========================================================================
@@ -323,15 +454,29 @@ _OVR_NO_TUI=""
 _OVR_RUN_INSTALL=""
 IDEA=""
 
+RESTORE_MODE=false
+LIST_MODE=false
+CLEAN_OLDER_THAN=""
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --setup) SETUP_MODE=true; shift ;;
+    --restore) RESTORE_MODE=true; shift ;;
+    --list) LIST_MODE=true; shift ;;
+    --clean=*) CLEAN_OLDER_THAN="${1#*=}"; shift ;;
+    --clean)
+      [[ $# -lt 2 || "$2" == -* ]] && { printf '[kickoff] --clean requires a value like 7d\n' >&2; exit 2; }
+      CLEAN_OLDER_THAN="$2"; shift 2 ;;
     -h|--help)
       cat <<USAGE
 usage: $(basename "$0") [OPTIONS] ["<idea or problem statement>"]
 
 Options:
   --setup                  Interactive wizard to write or update .env
+  --restore                Restore .env from .env.bak (undo last --setup)
+  --list                   List past kickoff dirs under workspace/
+  --clean DURATION         Delete kickoff dirs older than DURATION (e.g. 7d, 30d)
+                           Always asks y/N before deleting. --clean alone shows --dry-run.
   --provider <p>           Override CLK_PROVIDER
   --max-iterations <n>     Override CLK_MAX_ITERATIONS
   --project-name <name>    Override CLK_PROJECT_NAME
@@ -391,6 +536,74 @@ USAGE
     *) IDEA="$1"; shift ;;
   esac
 done
+
+if $RESTORE_MODE; then
+  env_restore "$SCRIPT_DIR/.env" && \
+    printf '[kickoff] .env restored from .env.bak\n' || \
+    { printf '[kickoff] no .env.bak to restore\n' >&2; exit 1; }
+  exit 0
+fi
+
+if $LIST_MODE; then
+  ws_dir="$(pwd)/workspace"
+  if [ ! -d "$ws_dir" ]; then
+    printf '[kickoff] no workspace/ dir yet — nothing to list.\n'
+    exit 0
+  fi
+  printf '%-32s %-19s %s\n' "kickoff dir" "last activity" "idea"
+  for d in "$ws_dir"/kickoff-*; do
+    [ -d "$d" ] || continue
+    last="$(stat -c "%y" "$d" 2>/dev/null | cut -d. -f1)"
+    idea=""
+    if [ -f "$d/.clk/state/idea.json" ]; then
+      idea="$(python3 -c "import json,sys;print((json.load(open(sys.argv[1])).get('title') or '')[:60])" "$d/.clk/state/idea.json" 2>/dev/null || true)"
+    fi
+    printf '%-32s %-19s %s\n' "$(basename "$d")" "${last:-?}" "$idea"
+  done
+  exit 0
+fi
+
+if [ -n "$CLEAN_OLDER_THAN" ]; then
+  ws_dir="$(pwd)/workspace"
+  if [ ! -d "$ws_dir" ]; then
+    printf '[kickoff] no workspace/ dir; nothing to clean.\n'
+    exit 0
+  fi
+  # Convert e.g. 7d -> 7 (days), 30m -> 30 (minutes); -mtime expects days,
+  # -mmin expects minutes. Anything else aborts.
+  unit="${CLEAN_OLDER_THAN: -1}"
+  qty="${CLEAN_OLDER_THAN%?}"
+  if ! [[ "$qty" =~ ^[0-9]+$ ]]; then
+    printf '[kickoff] --clean expects something like 7d or 30m (got %s)\n' "$CLEAN_OLDER_THAN" >&2
+    exit 2
+  fi
+  case "$unit" in
+    d) find_flag=(-mtime "+$qty") ;;
+    m) find_flag=(-mmin  "+$qty") ;;
+    *) printf '[kickoff] --clean unit must be d (days) or m (minutes)\n' >&2; exit 2 ;;
+  esac
+  mapfile -t targets < <(find "$ws_dir" -mindepth 1 -maxdepth 1 -type d -name "kickoff-*" "${find_flag[@]}" 2>/dev/null)
+  if [ "${#targets[@]}" -eq 0 ]; then
+    printf '[kickoff] no kickoff dirs older than %s.\n' "$CLEAN_OLDER_THAN"
+    exit 0
+  fi
+  printf '[kickoff] would remove %d kickoff dirs older than %s:\n' "${#targets[@]}" "$CLEAN_OLDER_THAN"
+  for t in "${targets[@]}"; do printf '  - %s\n' "$t"; done
+  if { exec 7<>/dev/tty; } 2>/dev/null; then
+    IFS= read -r -p "Delete these? [y/N]: " _ans <&7
+    exec 7>&-
+    if [ "${_ans,,}" = "y" ] || [ "${_ans,,}" = "yes" ]; then
+      for t in "${targets[@]}"; do rm -rf -- "$t"; printf '[kickoff] removed %s\n' "$t"; done
+    else
+      printf '[kickoff] nothing deleted.\n'
+    fi
+  else
+    printf '[kickoff] non-interactive; refusing to delete without confirmation.\n' >&2
+    printf '[kickoff] re-run from a terminal to confirm.\n' >&2
+    exit 2
+  fi
+  exit 0
+fi
 
 if $SETUP_MODE; then
   _clk_setup
@@ -577,13 +790,28 @@ mkdir -p .clk
 
 # Write a kickoff-specific .gitignore. Agents operate at the project root
 # directly; the harness lives entirely under .clk/ and is ignored wholesale.
+# Secrets-by-pattern are blocked too so a pushed remote can't leak them
+# even if an agent accidentally writes one to a file.
 cat > .gitignore <<'GITIGNORE'
 # All harness state lives under .clk/ — ignore it entirely.
 .clk/
+# Secrets
 /.env
 /.env.example
+/.env.bak
+/.env.partial
+.env.local
+*.pem
+*.key
+*_id_rsa*
+/secrets/
+/.secrets/
+# Editor / OS junk
 __pycache__/
 *.pyc
+.DS_Store
+.idea/
+.vscode/
 GITIGNORE
 
 # Give the kickoff dir its OWN git repo. Otherwise, when this directory is
@@ -594,6 +822,65 @@ if command -v git >/dev/null 2>&1; then
     git init -q
     git config user.name  "CLK Kickoff"
     git config user.email "kickoff@local.invalid"
+  fi
+
+  # Install a pre-push hook that aborts on obvious secret patterns so a
+  # leaked .env or key file can't reach GitHub. Pure bash so it ships
+  # with the kickoff bundle. The user can bypass with `git push --no-verify`
+  # when they know better.
+  mkdir -p .git/hooks
+  cat > .git/hooks/pre-push <<'HOOK'
+#!/usr/bin/env bash
+# CLK pre-push secret scan. Bypass with `git push --no-verify` when sure.
+set -eo pipefail
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+  range="$local_sha"
+  if [ "$remote_sha" != "0000000000000000000000000000000000000000" ]; then
+    range="$remote_sha..$local_sha"
+  fi
+  hits=$(git log -p "$range" 2>/dev/null | grep -E \
+    -e 'ANTHROPIC_API_KEY=[A-Za-z0-9_\-]+' \
+    -e 'OPENAI_API_KEY=[A-Za-z0-9_\-]+' \
+    -e 'OPENROUTER_API_KEY=[A-Za-z0-9_\-]+' \
+    -e 'GEMINI_API_KEY=[A-Za-z0-9_\-]+' \
+    -e 'GOOGLE_API_KEY=[A-Za-z0-9_\-]+' \
+    -e 'sk-[A-Za-z0-9]{20,}' \
+    -e 'xoxb-[A-Za-z0-9-]{20,}' \
+    -e 'BEGIN (RSA|OPENSSH|EC|DSA|PGP) PRIVATE KEY' \
+    || true)
+  if [ -n "$hits" ]; then
+    echo "[pre-push] aborting — possible secret(s) in $range:" >&2
+    echo "$hits" | head -n 5 >&2
+    echo "" >&2
+    echo "To override: git push --no-verify  (only when you're sure)." >&2
+    exit 1
+  fi
+done
+HOOK
+  chmod +x .git/hooks/pre-push
+
+  # Connect a GitHub remote if the wizard recorded one.
+  if [ -n "${CLK_GITHUB_REMOTE:-}" ] && [ "${CLK_GITHUB_MODE:-skip}" != "skip" ]; then
+    case "$CLK_GITHUB_MODE" in
+      existing)
+        if ! git remote get-url origin >/dev/null 2>&1; then
+          echo "[kickoff] linking existing GitHub remote: $CLK_GITHUB_REMOTE"
+          git remote add origin "$CLK_GITHUB_REMOTE"
+        fi
+        ;;
+      create)
+        if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+          if ! git remote get-url origin >/dev/null 2>&1; then
+            echo "[kickoff] creating GitHub repo: $CLK_GITHUB_REMOTE (private)"
+            gh repo create "$CLK_GITHUB_REMOTE" --private --source=. --remote=origin \
+              || echo "[kickoff] gh repo create failed (continuing without remote)"
+          fi
+        else
+          echo "[kickoff] CLK_GITHUB_MODE=create but gh CLI is not authenticated; skipping remote."
+        fi
+        ;;
+    esac
   fi
 fi
 
