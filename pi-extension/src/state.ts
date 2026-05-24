@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile, access, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ClkState, Roster, ProgressEntry, ProgressKind } from "./types.js";
 
 const ROOT = ".clk";

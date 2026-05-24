@@ -4,7 +4,7 @@ import { access, appendFile, mkdir, readFile, rm, writeFile } from "node:fs/prom
 import { constants } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { activeSignal, mergeSignals } from "./abort.js";
 import { classifyError, recoveryHint } from "./errors.js";
