@@ -1788,8 +1788,32 @@ class TuiApp:
             return
         try:
             from .providers import available_providers
+            from .config import save_providers_config
             prov_cfg = load_providers_config(self.state.paths)
+            # Snapshot endpoints so we can detect auto-failover (localhost ->
+            # host.docker.internal) inside available_providers and persist
+            # the swap to providers.json.
+            before = {
+                name: (cfg or {}).get("endpoint")
+                for name, cfg in (prov_cfg.get("providers") or {}).items()
+            }
             avail = available_providers(prov_cfg)
+            swapped = []
+            for name, cfg in (prov_cfg.get("providers") or {}).items():
+                new_ep = (cfg or {}).get("endpoint")
+                if new_ep and before.get(name) and new_ep != before[name]:
+                    swapped.append((name, before[name], new_ep))
+            if swapped:
+                try:
+                    save_providers_config(self.state.paths, prov_cfg)
+                except Exception as exc:
+                    log_exception("tui.TuiApp._emit_provider_health.save", exc)
+                for name, old, new in swapped:
+                    self.state.add_log(
+                        f"{name}: {old} unreachable, auto-switched to {new} "
+                        "(host.docker.internal). providers.json updated.",
+                        level="WARN",
+                    )
             active = self.state.provider or prov_cfg.get("active") or ""
             self.state.add_log("provider check:", level="SYSTEM")
             for name, ok in avail.items():
