@@ -128,10 +128,34 @@ def load_json(path: Path, default: Optional[Dict[str, Any]] = None) -> Dict[str,
         return dict(default or {})
 
 
-def save_json(path: Path, data: Dict[str, Any]) -> None:
+def save_json(path: Path, data: Dict[str, Any], *, backup: bool = True) -> None:
+    """Atomically write JSON to ``path``.
+
+    Writes to a sibling tempfile, fsyncs, rotates the previous file to
+    ``path.bak`` (when ``backup``), then renames into place. A Ctrl-C
+    between any two of those steps leaves either the old file or the new
+    file intact — never a torn write.
+    """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        body = json.dumps(data, indent=2, sort_keys=True) + "\n"
+        tmp = path.with_name(path.name + ".tmp")
+        # Use os.open so we can fsync the file descriptor before closing.
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.write(fd, body.encode("utf-8"))
+            try:
+                os.fsync(fd)
+            except OSError:
+                pass
+        finally:
+            os.close(fd)
+        if backup and path.exists():
+            try:
+                path.replace(path.with_name(path.name + ".bak"))
+            except OSError:
+                pass
+        os.replace(str(tmp), str(path))
     except Exception as exc:
         print(f"[config.save_json] failed to write {path}: {exc}", file=sys.stderr)
         traceback.print_exc()

@@ -558,6 +558,120 @@ def cmd_providers(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Health-check every provider, validate .env, surface failures.
+
+    Runs the same checks the TUI's /doctor command runs, but in a
+    plain-stdout shape suitable for CI gating. Exit codes:
+      0  all checks ok
+      1  one or more checks fail (so this slots into CI pipelines)
+      2  not initialized
+    """
+    import os as _os
+    paths = project_paths()
+    if not _ensure_initialized(paths):
+        return 2
+    init_log_file(paths.logs, "doctor")
+    clk_cfg = load_clk_config(paths)
+    prov_cfg = load_providers_config(paths)
+    auth_mode = (clk_cfg.get("auth_mode") or "cli").lower() if isinstance(clk_cfg, dict) else "cli"
+    avail = available_providers(prov_cfg)
+    active = prov_cfg.get("active") or clk_cfg.get("default_provider") or "shell"
+
+    findings: List[tuple] = []  # (level, name, message)
+    for name, ok in sorted(avail.items()):
+        if ok:
+            findings.append(("ok", name, "available"))
+        else:
+            level = "fail" if name == active else "warn"
+            findings.append((level, name, "unavailable"))
+    if active == "claude" and auth_mode == "apikey" and not _os.environ.get("ANTHROPIC_API_KEY"):
+        findings.append(("fail", "anthropic_key", "CLK_AUTH_MODE=apikey but ANTHROPIC_API_KEY is unset"))
+    if active == "codex" and auth_mode == "apikey" and not _os.environ.get("OPENAI_API_KEY"):
+        findings.append(("fail", "openai_key", "CLK_AUTH_MODE=apikey but OPENAI_API_KEY is unset"))
+    if active == "gemini" and auth_mode == "apikey" and not _os.environ.get("GEMINI_API_KEY") and not _os.environ.get("GOOGLE_API_KEY"):
+        findings.append(("fail", "gemini_key", "CLK_AUTH_MODE=apikey but GEMINI_API_KEY/GOOGLE_API_KEY are unset"))
+    if not is_repo(paths.root):
+        findings.append(("warn", "git", "no git repo at project root; auto-commit disabled"))
+
+    print("clk doctor results:")
+    print(f"  project_root:   {paths.root}")
+    print(f"  active_provider: {active}")
+    print(f"  auth_mode:       {auth_mode}")
+    print()
+    fails = 0
+    for level, name, msg in findings:
+        marker = {"ok": "✓ ok  ", "warn": "! warn", "fail": "✗ fail"}.get(level, "?     ")
+        print(f"  {marker}  {name:<14} {msg}")
+        if level == "fail":
+            fails += 1
+
+    if not fails:
+        print("\nAll checks passed.")
+        return 0
+
+    print(f"\n{fails} failing check(s).")
+    if getattr(args, "fix", False):
+        print("Suggested repairs (each requires explicit confirmation in the wizard):")
+        for level, name, _ in findings:
+            if level != "fail":
+                continue
+            if name in ("anthropic_key", "openai_key", "gemini_key"):
+                print(f"  - run ./scripts/install_tool.sh configure {active} to set the missing API key")
+            elif name == active:
+                print(f"  - run ./scripts/install_tool.sh install {name} to install the CLI")
+    else:
+        print("Re-run as `clk doctor --fix` to see the suggested repairs.")
+    return 1
+
+
+def cmd_diag(args: argparse.Namespace) -> int:
+    """Bundle logs + state + redacted .env into a shareable tarball."""
+    import tarfile
+    import time as _time
+    paths = project_paths()
+    if not _ensure_initialized(paths):
+        return 2
+    init_log_file(paths.logs, "diag")
+    ts = _time.strftime("%Y%m%d-%H%M%S")
+    out_path = paths.root / f"clk-diag-{ts}.tar.gz"
+    redacted = None
+    env_path = paths.root / ".env"
+    if env_path.exists():
+        lines = []
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                if any(s in k.upper() for s in ("KEY", "TOKEN", "SECRET", "PASS")):
+                    v = f"<redacted: {len(v)} chars>"
+                lines.append(f"{k}={v}")
+            else:
+                lines.append(line)
+        redacted = paths.state / ".env.redacted"
+        redacted.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        with tarfile.open(out_path, "w:gz") as tf:
+            for sub in ("logs", "state"):
+                d = paths.clk / sub
+                if d.exists():
+                    tf.add(d, arcname=f".clk/{sub}")
+            if paths.runs.exists():
+                runs = sorted([p for p in paths.runs.glob("*") if p.is_dir()], reverse=True)[:3]
+                for r in runs:
+                    tf.add(r, arcname=f".clk/runs/{r.name}")
+            if redacted and redacted.exists():
+                tf.add(redacted, arcname=".env.redacted")
+    finally:
+        if redacted and redacted.exists():
+            try:
+                redacted.unlink()
+            except Exception:
+                pass
+    print(f"clk diag: wrote {out_path}")
+    print("API keys are redacted; share this in your bug report.")
+    return 0
+
+
 def cmd_configure(args: argparse.Namespace) -> int:
     paths = project_paths()
     if not _ensure_initialized(paths):
@@ -655,6 +769,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_conf.add_argument("--set", action="append", default=[], help="key=value (repeatable).")
     p_conf.add_argument("--show", action="store_true")
     p_conf.set_defaults(func=cmd_configure)
+
+    p_doc = sub.add_parser(
+        "doctor",
+        help="Health-check providers and config; exits non-zero on failures.",
+    )
+    p_doc.add_argument("--fix", action="store_true", help="Print suggested repairs (with confirmation).")
+    p_doc.set_defaults(func=cmd_doctor)
+
+    p_diag = sub.add_parser(
+        "diag",
+        help="Bundle logs + state + redacted .env into a tarball for bug reports.",
+    )
+    p_diag.set_defaults(func=cmd_diag)
 
     return p
 

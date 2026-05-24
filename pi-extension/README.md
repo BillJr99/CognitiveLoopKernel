@@ -41,6 +41,37 @@ The extension itself is intentionally thin: orchestration policy lives in the
 chief's prompt, not in TypeScript. To change CLK's behavior, edit
 [`src/prompts.ts`](src/prompts.ts).
 
+## Commands
+
+| Command | What it does |
+|---|---|
+| `/clk <idea>` | Start a CLK run. Casts a team, dispatches them, runs Ralph + autoresearch. |
+| `/clk-abort` | End the current run. State is preserved for resume. |
+| `/clk-help` | List every CLK command and the safety nets active in the workspace. |
+| `/clk-doctor` | Health-check `tmux`, `git`, the `.clk/` layout, `.gitignore`, and the pre-push hook. Pure environment checks; no Pi calls. |
+| `/clk-undo` | Preview the last CLK commit; `/clk-undo confirm` creates a revert commit on top of it. |
+
+## Safety nets
+
+The extension installs the same safety nets the Python harness uses, so
+running CLK from Pi is just as recoverable:
+
+- **Hardened `.gitignore`.** On the first `/clk`, the extension writes a
+  `.gitignore` that blocks `.env`, `.env.bak`, `.env.partial`, `*.pem`,
+  `*.key`, `*_id_rsa*`, `/secrets/`, plus editor / OS junk. Existing
+  `.gitignore` content is never clobbered.
+- **Pre-push secret scanner.** A `.git/hooks/pre-push` hook (pure bash,
+  no extra deps) scans the about-to-be-pushed objects for obvious API
+  key patterns (`ANTHROPIC_API_KEY=…`, `OPENAI_API_KEY=…`, `sk-…`,
+  Slack `xoxb-…`, private-key headers). On a hit it aborts the push.
+  Bypass once with `git push --no-verify`.
+- **Atomic state writes.** Every state file under `.clk/state/`
+  (`clk.json`, `idea.json`, `roster.json`, `done.md`) is written via
+  `tmp+rename` with a `.bak` rotation, so a crash mid-write leaves
+  either the old or the new file intact — never half.
+- **`restoreBackup` primitive.** Exposed from `src/state.ts` so a
+  future "undo last state change" can swap a `.bak` back deterministically.
+
 ## Requirements
 
 - Pi installed and on `PATH` (`pi --version` works).
