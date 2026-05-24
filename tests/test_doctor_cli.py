@@ -38,28 +38,46 @@ def test_clk_doctor_clean_init_returns_zero(tmp_path):
     assert "active_provider: shell" in proc.stdout
 
 
-def test_clk_doctor_reports_unavailable_active_provider(tmp_path):
-    """Switch active to a provider that isn't installed → doctor fails."""
-    _run_clk("init", "--name", "doctest", cwd=tmp_path)
-    # Switch active to "pi" — won't be installed in CI.
-    cfg_path = tmp_path / ".clk" / "config" / "providers.json"
+# A guaranteed-unreachable openwebui endpoint. Port 1 (tcpmux) is
+# almost never bound, and 127.0.0.1 routes locally so we don't wait
+# for a network timeout. OpenWebUIProvider.available() is just a
+# socket.create_connection with timeout=1.0s, so this deterministically
+# returns False on every CI / dev machine regardless of which provider
+# CLIs happen to be installed — that's what makes these tests portable.
+_UNREACHABLE_OPENWEBUI = "http://127.0.0.1:1"
+
+
+def _make_active_provider_unavailable(cfg_path) -> None:
+    """Add an openwebui provider pointing at an unreachable endpoint and
+    make it the active provider. Forces doctor to register an
+    unavailable-active-provider failure regardless of host tooling."""
     data = json.loads(cfg_path.read_text(encoding="utf-8"))
-    data["active"] = "pi"
+    providers = data.setdefault("providers", {})
+    providers["openwebui_unreachable_test"] = {
+        "type": "openwebui",
+        "endpoint": _UNREACHABLE_OPENWEBUI,
+        "model": "test",
+    }
+    data["active"] = "openwebui_unreachable_test"
     cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def test_clk_doctor_reports_unavailable_active_provider(tmp_path):
+    """Active provider that can't reach its endpoint → doctor exits 1."""
+    _run_clk("init", "--name", "doctest", cwd=tmp_path)
+    cfg_path = tmp_path / ".clk" / "config" / "providers.json"
+    _make_active_provider_unavailable(cfg_path)
     proc = _run_clk("doctor", cwd=tmp_path)
-    # Active provider unavailable → exit 1.
     assert proc.returncode == 1, proc.stdout
     assert "fail" in proc.stdout
-    assert "pi" in proc.stdout
+    assert "openwebui_unreachable_test" in proc.stdout
 
 
 def test_clk_doctor_fix_prints_suggestions(tmp_path):
     """--fix surfaces actionable suggestions without executing them."""
     _run_clk("init", cwd=tmp_path)
     cfg_path = tmp_path / ".clk" / "config" / "providers.json"
-    data = json.loads(cfg_path.read_text(encoding="utf-8"))
-    data["active"] = "ollama"
-    cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _make_active_provider_unavailable(cfg_path)
     proc = _run_clk("doctor", "--fix", cwd=tmp_path)
     # Still exit 1, but mentions install_tool.
     assert proc.returncode == 1, proc.stdout
