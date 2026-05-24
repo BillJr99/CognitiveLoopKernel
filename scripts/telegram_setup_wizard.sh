@@ -23,6 +23,15 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
 ENV_FILE="${CLK_ENV_FILE:-$PROJECT_DIR/.env}"
 
+# Source the shared atomic-env-write helper so our writes are
+# atomic + rotated to .bak — same semantics as kickoff.sh's _clk_setup.
+# Falls back to the previous in-file _env_set if lib_env.sh isn't around
+# (older checkouts) so this wizard remains independently runnable.
+if [ -f "$SCRIPT_DIR/lib_env.sh" ]; then
+  # shellcheck source=scripts/lib_env.sh
+  . "$SCRIPT_DIR/lib_env.sh"
+fi
+
 # Open /dev/tty for prompts when stdin is piped (docker run -it). Tests
 # can force stdin via CLK_TELEGRAM_NO_TTY=1.
 if [ "${CLK_TELEGRAM_NO_TTY:-0}" = "1" ]; then
@@ -65,6 +74,14 @@ fi
 
 _env_set() {
   local key="$1" value="$2"
+  # Prefer the shared helper from scripts/lib_env.sh (atomic + .bak
+  # rotation, identical to kickoff.sh's wizard). Falls back to the
+  # original inline awk when lib_env.sh isn't available so this script
+  # remains independently runnable on older checkouts.
+  if declare -F env_set >/dev/null 2>&1; then
+    env_set "$ENV_FILE" "$key" "$value"
+    return
+  fi
   local tmp
   mkdir -p "$(dirname "$ENV_FILE")"
   touch "$ENV_FILE"
@@ -131,9 +148,24 @@ walk(data)
 _say ""
 _say "=== CLK Telegram Bot Setup ==="
 _say ""
-_say "1. Open Telegram and start a chat with @BotFather."
-_say "2. Send /newbot, pick a display name, then a unique username ending in 'bot'."
-_say "3. BotFather will reply with an HTTP API token like 123456:ABC-DEF..."
+_say "What this wizard does:"
+_say "  1. Creates a Telegram bot via @BotFather and validates its token"
+_say "     against the Telegram API (so you know the token is alive)."
+_say "  2. Discovers your numeric Telegram user ID by polling getUpdates"
+_say "     and reading the from.id of any message you've sent the bot."
+_say "  3. Writes CLK_TELEGRAM_BOT_TOKEN, CLK_TELEGRAM_ALLOWED_USERS, and"
+_say "     CLK_TELEGRAM_ENABLED=true into your .env (atomically, with"
+_say "     .env.bak rotation)."
+_say ""
+_say "Why an allowlist? The bot will refuse messages from any user ID not"
+_say "explicitly listed — even if your token leaks, only your account can"
+_say "drive CLK. Add teammates later by editing CLK_TELEGRAM_ALLOWED_USERS."
+_say ""
+_say "Step 1 — create the bot:"
+_say "  1. Open Telegram and start a chat with @BotFather."
+_say "  2. Send /newbot, pick a display name, then a unique username"
+_say "     ending in 'bot'."
+_say "  3. BotFather will reply with an HTTP API token like 123456:ABC-DEF..."
 _say ""
 
 token="${CLK_TELEGRAM_BOT_TOKEN:-}"
