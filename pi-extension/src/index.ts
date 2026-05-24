@@ -14,7 +14,7 @@ import {
   appendProgress,
   isDone,
 } from "./state.js";
-import { ensureRepo } from "./git.js";
+import { ensureRepo, commitsAhead, hasRemote } from "./git.js";
 import { clkChiefPrimer } from "./prompts.js";
 import { registerClkTools } from "./tools.js";
 import { registerSubagentTool, tmuxAvailable } from "./subagent.js";
@@ -22,6 +22,17 @@ import { startRun, endRun, installAbortBridges, activeSignal } from "./abort.js"
 import { classifyError, recoveryHint, withRetry } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Return the first non-empty line of `s`, trimmed and truncated to `max`
+ * characters. Used for status-bar labels where a multi-line idea (or
+ * objective) would otherwise leak a fragment of line 2 into the status
+ * display — the same bug the Python TUI fixed in commit 24f379b.
+ */
+export function firstLineShort(s: string, max = 60): string {
+  const line = s.split("\n").find((l) => l.trim());
+  return (line ?? s).trim().slice(0, max);
+}
 
 export default async function (pi: ExtensionAPI): Promise<void> {
   installAbortBridges(pi);
@@ -49,7 +60,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         "info",
       );
     } else {
-      ctx.ui.setStatus("clk-idea", `idea: ${s.idea.slice(0, 60)}`);
+      ctx.ui.setStatus("clk-idea", `idea: ${firstLineShort(s.idea)}`);
     }
     if (s.roster) {
       ctx.ui.setStatus(
@@ -74,15 +85,26 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         "                   consensus, Ralph refinement, and autoresearch.",
         "  /clk-abort       End the current run. Preserves state for resume.",
         "  /clk-help        Show this list.",
-        "  /clk-doctor      Health-check tmux + git + workspace state.",
+        "  /clk-doctor      Health-check tmux + git + remote + workspace state.",
         "  /clk-undo        Preview the last CLK commit; `/clk-undo confirm`",
         "                   creates a new revert commit on top of it.",
+        "",
+        "Orchestration tools the chief uses (you don't call these directly):",
+        "  clk_cast / clk_subagent          — roster + raw dispatch.",
+        "  clk_subagent_quality             — single dispatch + quality re-roll.",
+        "  clk_consensus                    — N parallel samples, scored, winner returned.",
+        "  clk_autoresearch                 — researcher + critic alternation.",
+        "  clk_ralph                        — branch + consensus fan-out in one call.",
+        "  clk_branch / clk_merge / clk_revert / clk_checkpoint — git plumbing.",
+        "  clk_done                         — completion signal.",
         "",
         "Safety nets active in this workspace:",
         "  - Hardened .gitignore blocks .env / .env.bak / *.pem / id_rsa.",
         "  - .git/hooks/pre-push aborts pushes containing API-key patterns.",
         "  - .clk/state/*.{json,md} are written atomically with .bak rotation.",
         "  - Each completed iteration is checkpointed with `git commit`.",
+        "  - With CLK_GITHUB_PUSH_ON_COMMIT=true, every checkpoint auto-pushes",
+        "    to origin (and falls back to an ↑N ahead counter when it can't).",
         "",
         "Re-read this anytime with /clk-help. If something looks stuck, the",
         "agent_end hook will report it; `/clk-doctor` triages provider and",
@@ -200,7 +222,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       );
 
       const idea = getState().idea;
-      findings.push(idea ? `  ✓ ok    idea: ${idea.slice(0, 60)}` : "  - info  no idea captured yet");
+      findings.push(idea ? `  ✓ ok    idea: ${firstLineShort(idea)}` : "  - info  no idea captured yet");
+
+      // Unpushed-commits check — mirrors the Python TUI's ahead counter
+      // so the user knows when local checkpoints haven't reached origin.
+      if (repoOk && await hasRemote(ctx.cwd)) {
+        const ahead = await commitsAhead(ctx.cwd);
+        if (ahead > 0) {
+          findings.push(`  ! warn  ${ahead} commit(s) ahead of origin (auto-push only fires when CLK_GITHUB_PUSH_ON_COMMIT=true)`);
+        } else {
+          findings.push("  ✓ ok    in sync with origin");
+        }
+      }
 
       ctx.ui.notify(["CLK doctor:", ...findings].join("\n"), "info");
     },
@@ -236,7 +269,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           { kind: "note", message: `idea captured: ${idea}` },
           pi,
         );
-        ctx.ui.setStatus("clk-idea", `idea: ${idea.slice(0, 60)}`);
+        ctx.ui.setStatus("clk-idea", `idea: ${firstLineShort(idea)}`);
         ctx.ui.setStatus("clk-run", "active");
         ctx.ui.notify(
           "CLK run started. The chief is taking over. Esc cancels the current turn; /clk-abort ends the run.",

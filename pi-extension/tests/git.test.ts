@@ -21,6 +21,9 @@ import {
   checkoutBranch,
   mergeBranch,
   saveAndSwitch,
+  hasRemote,
+  commitsAhead,
+  pushBestEffort,
 } from "../src/git.ts";
 
 const execFileAsync = promisify(execFile);
@@ -164,5 +167,98 @@ describe("branching", () => {
     assert.notEqual(junkSha, baseSha);
     await revertTo(dir, baseSha);
     assert.equal(await head(dir), baseSha);
+  });
+});
+
+describe("remote / push / ahead", () => {
+  test("hasRemote is false on a fresh repo with no remote", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "clk-remote-"));
+    try {
+      await ensureRepo(dir);
+      assert.equal(await hasRemote(dir), false);
+      // commitsAhead returns 0 when there's no upstream, never throws.
+      assert.equal(await commitsAhead(dir), 0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("hasRemote is true after `git remote add`", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "clk-remote2-"));
+    try {
+      await ensureRepo(dir);
+      await execFileAsync(
+        "git", ["remote", "add", "origin", "/tmp/nonexistent-bare.git"], { cwd: dir },
+      );
+      assert.equal(await hasRemote(dir), true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("commitsAhead counts local commits not on upstream; pushBestEffort syncs", async () => {
+    const bare = await mkdtemp(join(tmpdir(), "clk-bare-"));
+    const work = await mkdtemp(join(tmpdir(), "clk-work-"));
+    try {
+      await execFileAsync("git", ["init", "--bare", "-q"], { cwd: bare });
+      await ensureRepo(work);
+      await gitConfig(work, "user.name", "test");
+      await gitConfig(work, "user.email", "test@clk.invalid");
+      await disableSigning(work);
+      await writeFile(join(work, "seed.txt"), "seed");
+      await checkpoint(work, "[clk] seed");
+      // Wire the bare as origin and set upstream via the first push.
+      await execFileAsync("git", ["remote", "add", "origin", bare], { cwd: work });
+      const branch = await currentBranch(work);
+      await execFileAsync("git", ["push", "-u", "origin", branch], { cwd: work });
+      assert.equal(await commitsAhead(work), 0);
+
+      // Make a new local commit; ahead becomes 1.
+      await writeFile(join(work, "next.txt"), "more");
+      await checkpoint(work, "[clk] next");
+      assert.equal(await commitsAhead(work), 1);
+
+      // pushBestEffort should sync; ahead returns to 0.
+      const res = await pushBestEffort(work, "origin");
+      assert.equal(res.pushed, true, `expected push to succeed, got ${JSON.stringify(res)}`);
+      assert.equal(await commitsAhead(work), 0);
+    } finally {
+      await rm(bare, { recursive: true, force: true });
+      await rm(work, { recursive: true, force: true });
+    }
+  });
+
+  test("pushBestEffort returns {pushed:false,reason} when the remote is unreachable", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "clk-unreach-"));
+    try {
+      await ensureRepo(dir);
+      await gitConfig(dir, "user.name", "test");
+      await gitConfig(dir, "user.email", "test@clk.invalid");
+      await disableSigning(dir);
+      await writeFile(join(dir, "x.txt"), "x");
+      await checkpoint(dir, "[clk] x");
+      // Bogus path — push must fail, but pushBestEffort must NOT throw.
+      await execFileAsync(
+        "git", ["remote", "add", "origin", "/tmp/definitely-does-not-exist-bare.git"],
+        { cwd: dir },
+      );
+      const res = await pushBestEffort(dir, "origin");
+      assert.equal(res.pushed, false);
+      assert.ok(res.reason && res.reason.length > 0, `expected a reason, got ${JSON.stringify(res)}`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("pushBestEffort returns {pushed:false} cleanly when there is no remote", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "clk-noremote-"));
+    try {
+      await ensureRepo(dir);
+      const res = await pushBestEffort(dir, "origin");
+      assert.equal(res.pushed, false);
+      assert.match(res.reason ?? "", /no remote/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

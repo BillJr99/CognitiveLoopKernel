@@ -14,7 +14,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import clkExtension from "../src/index.ts";
+import clkExtension, { firstLineShort } from "../src/index.ts";
 
 // ---------------------------------------------------------------------------
 // Fake pi.ExtensionAPI -- just enough surface for the extension to register
@@ -73,10 +73,28 @@ describe("clkExtension default export", () => {
     await clkExtension(pi as any);
 
     const toolNames = tools.map((t) => t.name);
-    for (const required of ["clk_cast", "clk_progress", "clk_checkpoint", "clk_done"]) {
+    // Core orchestration + git plumbing tools.
+    const required = [
+      "clk_cast",
+      "clk_progress",
+      "clk_checkpoint",
+      "clk_revert",
+      "clk_branch",
+      "clk_merge",
+      "clk_done",
+      // New code-enforced orchestration loops (ported from the Python
+      // harness's response_quality / consensus / autoresearch / ralph
+      // modules — see src/quality.ts, src/consensus.ts).
+      "clk_consensus",
+      "clk_subagent_quality",
+      "clk_autoresearch",
+      "clk_ralph",
+      "clk_subagent",
+    ];
+    for (const name of required) {
       assert.ok(
-        toolNames.includes(required),
-        `tool ${required} not registered (got ${toolNames.join(", ")})`,
+        toolNames.includes(name),
+        `tool ${name} not registered (got ${toolNames.join(", ")})`,
       );
     }
     assert.ok(commands["clk"], "/clk command was not registered");
@@ -104,6 +122,20 @@ describe("clkExtension default export", () => {
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
+  });
+
+  test("firstLineShort returns only the first non-empty line, trimmed and capped", () => {
+    // Single line — returned verbatim up to the cap.
+    assert.equal(firstLineShort("hello world", 60), "hello world");
+    // Multi-line — the second line must never leak into the status string.
+    assert.equal(firstLineShort("refactor X\n\nbecause Y", 60), "refactor X");
+    // Leading blank lines are skipped so the first *content* line wins.
+    assert.equal(firstLineShort("\n\nactual idea\nmore", 60), "actual idea");
+    // Long single line is truncated to max chars; no newline appears.
+    const long = "a".repeat(120);
+    const out = firstLineShort(long, 60);
+    assert.equal(out.length, 60);
+    assert.equal(out.includes("\n"), false);
   });
 
   test("/clk command rejects empty idea with a warning", async () => {
