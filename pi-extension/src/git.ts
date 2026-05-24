@@ -218,3 +218,67 @@ export async function saveAndSwitch(
   }
   await git(cwd, ["checkout", targetBranch], signal);
 }
+
+/** True when the repo has a remote with the given name. */
+export async function hasRemote(
+  cwd: string,
+  name = "origin",
+  signal?: AbortSignal,
+): Promise<boolean> {
+  try {
+    await git(cwd, ["remote", "get-url", name], signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Count of local commits not yet on the upstream tracked branch. Returns
+ * 0 on any failure (no remote, no upstream, detached HEAD, network down)
+ * so callers can use it directly as a UI counter.
+ */
+export async function commitsAhead(
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<number> {
+  try {
+    await git(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], signal);
+  } catch {
+    return 0;
+  }
+  try {
+    const out = await git(cwd, ["rev-list", "--count", "@{u}..HEAD"], signal);
+    return Number.parseInt(out, 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Best-effort `git push` — never throws. Returns `{ pushed: true }` on
+ * success, otherwise `{ pushed: false, reason }` with stderr-derived
+ * detail so the caller can surface a hint without writing its own
+ * error-handling.
+ */
+export async function pushBestEffort(
+  cwd: string,
+  remote = "origin",
+  branch?: string,
+  signal?: AbortSignal,
+): Promise<{ pushed: boolean; reason?: string }> {
+  if (!(await hasRemote(cwd, remote, signal))) {
+    return { pushed: false, reason: "no remote configured" };
+  }
+  const args = ["push", remote, branch ?? "HEAD"];
+  try {
+    await git(cwd, args, signal);
+    return { pushed: true };
+  } catch (err) {
+    const raw = (err as { stderr?: string }).stderr;
+    const reason = (typeof raw === "string" && raw.trim())
+      ? raw.trim().split("\n").slice(-1)[0]?.slice(0, 200)
+      : (err as Error).message?.slice(0, 200);
+    return { pushed: false, reason: reason || "unknown error" };
+  }
+}

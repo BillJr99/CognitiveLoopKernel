@@ -11,9 +11,47 @@ import {
   checkoutBranch,
   mergeBranch,
   saveAndSwitch,
+  commitsAhead,
+  hasRemote,
+  pushBestEffort,
 } from "./git.js";
 import { activeSignal, mergeSignals, endRun } from "./abort.js";
 import { classifyError, looksRedacted, recoveryHint, withRetry } from "./errors.js";
+
+/**
+ * Push the latest commit to `origin` when the user opted in via
+ * `CLK_GITHUB_PUSH_ON_COMMIT=true` (same env var as the Python TUI). On
+ * success, updates the clk-git status to "synced". On failure (or when
+ * push isn't enabled but a remote exists), surfaces an `↑N` ahead count
+ * so the user knows how many local checkpoints haven't reached origin.
+ * Best-effort throughout — never throws.
+ */
+async function pushIfEnabled(
+  cwd: string,
+  setStatus: (key: string, value: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    if (!(await hasRemote(cwd, "origin", signal))) return;
+    const pushOn = (process.env.CLK_GITHUB_PUSH_ON_COMMIT ?? "false").toLowerCase() === "true";
+    if (pushOn) {
+      const res = await pushBestEffort(cwd, "origin", undefined, signal);
+      if (res.pushed) {
+        setStatus("clk-git", "synced");
+        return;
+      }
+      const ahead = await commitsAhead(cwd, signal);
+      setStatus("clk-git", `↑${ahead} (push failed: ${res.reason ?? "unknown"})`);
+      return;
+    }
+    const ahead = await commitsAhead(cwd, signal);
+    if (ahead > 0) {
+      setStatus("clk-git", `↑${ahead} unpushed (set CLK_GITHUB_PUSH_ON_COMMIT=true to auto-push)`);
+    }
+  } catch {
+    /* best-effort — never block the tool result on push bookkeeping. */
+  }
+}
 
 export function registerClkTools(pi: ExtensionAPI): void {
   pi.registerTool({
@@ -161,6 +199,7 @@ export function registerClkTools(pi: ExtensionAPI): void {
           pi,
         );
         ctx.ui.setStatus("clk-head", `HEAD: ${sha.slice(0, 8)}`);
+        await pushIfEnabled(ctx.cwd, ctx.ui.setStatus.bind(ctx.ui), sig);
       }
       return {
         content: [
@@ -354,6 +393,7 @@ export function registerClkTools(pi: ExtensionAPI): void {
       );
       ctx.ui.setStatus("clk-branch", `merged → ${home}`);
       if (mergeHead) ctx.ui.setStatus("clk-head", `HEAD: ${mergeHead.slice(0, 8)}`);
+      await pushIfEnabled(ctx.cwd, ctx.ui.setStatus.bind(ctx.ui), sig);
       return {
         content: [{ type: "text", text: `merged ${featureBranch} into ${home}` }],
         details: { featureBranch, home, mergeHead },
