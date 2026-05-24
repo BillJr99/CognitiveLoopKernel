@@ -2,6 +2,11 @@
 # scripts/install_tool.sh — single source of truth for "install or
 # configure provider CLI X."
 #
+# This script is about *provider CLIs* (claude, codex, gemini, pi,
+# ollama, openwebui — the LLM backends CLK dispatches to). For
+# installing the CLK harness itself (the Python deps that make the
+# `clk` CLI work) see scripts/install_local.sh.
+#
 # Used by:
 #   * kickoff.sh --setup (after the user picks a provider)
 #   * the TUI's /install and /configure commands
@@ -20,6 +25,12 @@
 #   scripts/install_tool.sh check NAME
 #   scripts/install_tool.sh install NAME [--auto|--prompt|--print-only]
 #   scripts/install_tool.sh configure NAME
+#
+# Related entry points:
+#   * scripts/install_local.sh — install the CLK harness itself
+#   * scripts/clk              — launcher shim for the `clk` CLI
+#   * kickoff.sh               — top-level project bootstrap
+#   * README "Provider and authentication" — user-facing reference
 
 set -euo pipefail
 

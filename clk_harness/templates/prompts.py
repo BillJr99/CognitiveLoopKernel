@@ -17,7 +17,21 @@ from __future__ import annotations
 from typing import Dict
 
 
-_BASE_FOOTER = """
+_CONFIDENCE_BLOCK = """
+Self-assessment footer (read by the harness's response-quality loop)
+End your response with exactly two lines:
+
+  CONFIDENCE: <0..1>          # how confident you are this response is right
+  NEEDS_REVIEW: <true|false>  # set true when a peer should re-check before commit
+
+The harness uses these to decide whether to auto-trigger a stochastic
+consensus re-run on your response. Be honest — low confidence is
+useful signal, not a failure. If your CONFIDENCE is < 0.5, the harness
+will re-dispatch you (or fan out a consensus) with a repair preamble.
+"""
+
+
+_BASE_FOOTER = _CONFIDENCE_BLOCK + """
 Blackboard (shared context with peer agents)
 $blackboard_digest
 
@@ -106,6 +120,8 @@ Blackboard protocol (shared scratchpad workers post to and read from):
 
   POST: <post_type>
   TITLE: <one-line title>                     # optional
+  TO: <agent_name>                            # optional, only for post_type: question
+  URGENCY: blocking|async                     # optional, only for post_type: question
   PRODUCES: <contract_key1, contract_key2>    # optional, satisfies stage outputs
   CONSUMES: <other_post_id1, other_post_id2>  # optional, links provenance
   BODY:
@@ -123,6 +139,25 @@ You receive a $$blackboard_digest in your prompt context, filtered by
 your stage's declared `inputs` (see PROPOSE_WORKFLOW). If a stage
 declares `outputs`, your POST blocks must include each declared key in
 their PRODUCES list — otherwise the runner warns the contract is unmet.
+
+Inter-agent Q&A (when you genuinely need a peer's input mid-task):
+
+  POST: question
+  TO: <peer_agent>            # required for directed Q&A
+  URGENCY: blocking           # the harness will dispatch the peer NOW
+  BODY:
+  <one specific, answerable question — not a casual aside>
+  END_POST
+
+With `URGENCY: blocking`, the harness dispatches `<peer_agent>` to
+answer before your run is finalised; the peer posts a `POST: answer`
+that lists your question id in CONSUMES, and you see it in the next
+$$blackboard_digest. Use this sparingly — only when an answer
+materially changes your work. Default urgency is `async`, in which case
+the question is recorded for the chief to schedule later.
+
+The harness caps Q&A chains at clk.config.json::robustness.max_qa_depth
+(default 3) so peers cannot start a runaway chain of clarifications.
 """
 
 
@@ -635,6 +670,21 @@ Autoresearch objective (Karpathy-style — when the state has open questions):
 
 6. One iteration = one question answered. The next ralph invocation reads
    progress.md, skips closed questions, and picks the next open one.
+
+Plateau & regression awareness
+- The harness records every iteration's outcome and detects plateau
+  (no `improved=True` outcomes in the last `plateau_window` iterations)
+  and regression (last iteration failed after at least one earlier
+  success in the window).
+- When a plateau is signalled in your dispatch context (look for
+  `careful=true` or `loop_adaptive=true` in extra metadata), DO NOT
+  propose another marginal tweak. Propose a qualitatively different
+  approach: a new metric, a different experiment family, or a switch
+  from refinement to autoresearch mode. The harness will fan you out
+  into a consensus of samples on plateau dispatches.
+- When a regression is signalled, the harness has already dispatched
+  the critic to identify what broke; read the critic's most recent
+  POST: critique on the blackboard before choosing the next move.
 """ + _BASE_FOOTER,
 
 }

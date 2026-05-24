@@ -27,6 +27,7 @@ from ..utils.logging_utils import log, log_exception
 from . import casting as _casting
 from . import actions as _actions
 from . import blackboard as _blackboard
+from . import response_quality as _response_quality
 
 
 def _read_recent_casting_rejections(paths: Paths, *, limit: int = 8) -> str:
@@ -195,6 +196,22 @@ class AgentRunner:
             log_exception("orchestration.agent.render_prompt", exc)
             return objective
 
+    # Phases whose dispatches must never re-trigger the auto-consensus or
+    # quality-retry layers. Otherwise consensus coalescing, checkpoint
+    # verdicts, recovery dispatches, and the critic-judge inner loop
+    # would all recurse into themselves.
+    _META_PHASES = frozenset({
+        "consensus_sample",
+        "consensus",
+        "checkpoint",
+        "recovery",
+        "draft_dispatch_prompt",
+        "draft_role_prompt",
+        "qa_answer",
+        "refine_critic",
+        "refine_worker",
+    })
+
     def run(
         self,
         agent_name: str,
@@ -203,6 +220,253 @@ class AgentRunner:
         extra: Optional[Dict[str, Any]] = None,
         dry_run: Optional[bool] = None,
     ) -> AgentRun:
+        """Public dispatch entry point.
+
+        Wraps :meth:`_dispatch_once` with two robustness layers:
+
+        * **Proactive auto-consensus** (`robustness.auto_consensus`) —
+          stages marked ``careful: true`` (or all stages, when set to
+          ``"always"``) fan into N stochastic samples and a chief
+          coalescing pass instead of a single dispatch.
+        * **Quality-driven re-dispatch** — after a normal dispatch, the
+          response is scored against ``response_quality``; recoverable
+          failures (empty, malformed, contract-missing, low-confidence)
+          trigger a re-run with a repair preamble, escalating to
+          consensus on the final retry.
+
+        Both layers are gated by ``clk.config.json::robustness`` and
+        bypassed for dispatches whose ``extra.phase`` indicates a
+        meta-path (consensus coalescing, recovery, checkpoint, etc.) so
+        the harness never loops on itself.
+        """
+        extra_dict: Dict[str, Any] = dict(extra or {})
+        phase = str(extra_dict.get("phase") or "")
+        in_meta = phase in self._META_PHASES
+        is_dry = self.clk_cfg.get("dry_run", False) if dry_run is None else dry_run
+
+        if not in_meta and not is_dry and self._should_auto_consensus(agent_name, extra_dict):
+            return self._dispatch_auto_consensus(
+                agent_name,
+                objective,
+                extra=extra_dict,
+                dry_run=dry_run,
+                reason="auto_consensus_proactive",
+            )
+
+        if in_meta or is_dry:
+            return self._dispatch_once(agent_name, objective, extra=extra_dict, dry_run=dry_run)
+
+        return self._dispatch_with_quality_loop(
+            agent_name, objective, extra=extra_dict, dry_run=dry_run
+        )
+
+    def _dispatch_with_quality_loop(
+        self,
+        agent_name: str,
+        objective: str,
+        *,
+        extra: Dict[str, Any],
+        dry_run: Optional[bool],
+    ) -> AgentRun:
+        """Quality-validated dispatch wrapper.
+
+        Runs :meth:`_dispatch_once`, scores the response, and re-runs
+        the worker with a repair preamble when the verdict is
+        recoverable. Escalates to ``_dispatch_auto_consensus`` on the
+        final retry when ``auto_consensus`` is not ``"off"``.
+        """
+        cfg = self.clk_cfg.get("robustness") or {}
+        max_retries = int(cfg.get("max_quality_retries") or 0)
+        min_chars = int(cfg.get("min_response_chars") or 40)
+        auto_consensus_mode = str(cfg.get("auto_consensus") or "off").lower()
+        expected_outputs = list(extra.get("stage_outputs") or [])
+
+        attempt = 0
+        current_objective = objective
+        last_run: Optional[AgentRun] = None
+        while True:
+            attempt += 1
+            attempt_extra = dict(extra)
+            attempt_extra["quality_attempt"] = attempt
+            run = self._dispatch_once(
+                agent_name, current_objective, extra=attempt_extra, dry_run=dry_run
+            )
+            last_run = run
+            if not run.response.ok:
+                return run
+            try:
+                q = _response_quality.score(
+                    run.response.text,
+                    min_chars=min_chars,
+                    expected_outputs=expected_outputs,
+                )
+            except Exception as exc:
+                log_exception("orchestration.agent._dispatch_with_quality_loop.score", exc)
+                return run
+            if q.ok or not q.recoverable or attempt > max_retries:
+                if not q.ok:
+                    log_event(
+                        self.paths,
+                        "agent_quality_final",
+                        agent=agent_name,
+                        attempt=attempt,
+                        ok=q.ok,
+                        recoverable=q.recoverable,
+                        flags=list(q.flags),
+                        reasons=list(q.reasons),
+                        score=q.score,
+                        confidence=q.confidence,
+                        needs_review=q.needs_review,
+                    )
+                return run
+            log_event(
+                self.paths,
+                "agent_quality_retry",
+                agent=agent_name,
+                attempt=attempt,
+                next_attempt=attempt + 1,
+                max_attempts=max_retries + 1,
+                flags=list(q.flags),
+                reasons=list(q.reasons),
+                score=q.score,
+                confidence=q.confidence,
+                needs_review=q.needs_review,
+            )
+            self._observer_log(
+                f"quality :: {agent_name} :: retry {attempt}/{max_retries} "
+                f"flags={','.join(q.flags) or '?'} score={q.score:.2f}"
+            )
+            # On the final retry, optionally escalate to a consensus
+            # fan-out rather than another single-shot retry — that way
+            # we get sub-sub-agents on actually-shaky outputs even when
+            # the stage isn't marked careful.
+            if attempt == max_retries and auto_consensus_mode != "off":
+                return self._dispatch_auto_consensus(
+                    agent_name,
+                    objective,
+                    extra=extra,
+                    dry_run=dry_run,
+                    reason=f"quality_escalation:{','.join(q.flags)}",
+                )
+            current_objective = q.repair_hint() + "\n\nOriginal objective:\n" + objective
+        return last_run  # unreachable
+
+    def _should_auto_consensus(self, agent_name: str, extra: Dict[str, Any]) -> bool:
+        """Proactive auto-consensus trigger check."""
+        cfg = self.clk_cfg.get("robustness") or {}
+        mode = str(cfg.get("auto_consensus") or "off").lower()
+        if mode in ("", "off", "false", "0"):
+            return False
+        # Never fan-out the chief on its own meta-paths.
+        if agent_name == "chief":
+            return False
+        if mode == "always":
+            return True
+        # on_careful: only when the stage explicitly opted in.
+        if mode == "on_careful":
+            return bool(extra.get("careful"))
+        return False
+
+    def _dispatch_auto_consensus(
+        self,
+        agent_name: str,
+        objective: str,
+        *,
+        extra: Dict[str, Any],
+        dry_run: Optional[bool],
+        reason: str = "auto_consensus",
+    ) -> AgentRun:
+        """Fan-out a single dispatch into N stochastic samples + coalesce.
+
+        Reuses :meth:`_run_consensus_sample` (same code path as
+        ``PROPOSE_CONSENSUS``) so the sampling, logging, and parallelism
+        behavior is identical. The chief is invoked to coalesce.
+        """
+        cfg = self.clk_cfg.get("consensus") or {}
+        sample_count = max(1, min(int(cfg.get("max_samples") or 3), 6))
+        max_parallel = max(1, int(cfg.get("max_parallel") or 4))
+        name = f"auto_{agent_name}_{datetime.now().strftime('%H%M%S%f')}"
+        log_event(
+            self.paths,
+            "consensus_started",
+            agent=agent_name,
+            name=name,
+            objective=objective,
+            agents=[agent_name] * sample_count,
+            samples=sample_count,
+            max_parallel=max_parallel,
+            trigger=reason,
+        )
+        self._observer_log(
+            f"consensus :: auto/{agent_name} :: starting {sample_count} samples "
+            f"(reason={reason})"
+        )
+        results: List[Dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=min(max_parallel, sample_count)) as pool:
+            futs = {
+                pool.submit(self._run_consensus_sample, name, idx + 1, agent_name, objective): idx + 1
+                for idx in range(sample_count)
+            }
+            for fut in as_completed(futs):
+                idx = futs[fut]
+                try:
+                    results.append(fut.result())
+                except Exception as exc:
+                    log_exception("orchestration.agent._dispatch_auto_consensus.sample", exc)
+                    results.append({
+                        "sample": idx, "agent": agent_name, "ok": False,
+                        "error": str(exc), "text": "",
+                    })
+        results.sort(key=lambda r: int(r.get("sample") or 0))
+        log_event(
+            self.paths,
+            "consensus_samples_completed",
+            agent=agent_name,
+            name=name,
+            results=results,
+            trigger=reason,
+        )
+        coalesce_objective = self._consensus_coalesce_objective(name, objective, results)
+        coalesced = self._dispatch_once(
+            "chief",
+            coalesce_objective,
+            extra={
+                "phase": "consensus",
+                "consensus_name": name,
+                "consensus_trigger": reason,
+                "stage_id": extra.get("stage_id"),
+                "workflow": extra.get("workflow"),
+            },
+            dry_run=dry_run,
+        )
+        log_event(
+            self.paths,
+            "consensus_coalesced",
+            agent="chief",
+            name=name,
+            ok=coalesced.response.ok,
+            response_text=coalesced.response.text or "",
+            error=coalesced.response.error,
+            trigger=reason,
+        )
+        # Re-label so downstream logging shows the auto path, not "chief".
+        coalesced.agent = agent_name
+        return coalesced
+
+    def _dispatch_once(
+        self,
+        agent_name: str,
+        objective: str,
+        *,
+        extra: Optional[Dict[str, Any]] = None,
+        dry_run: Optional[bool] = None,
+    ) -> AgentRun:
+        """Single provider dispatch with provider-level retry only.
+
+        This was the body of :meth:`run` before the robustness layers
+        wrapped it. Keep it self-contained so consensus / refine /
+        recovery paths can call it without re-entering the wrappers.
+        """
         agent = self.get_agent(agent_name)
         provider = self.get_provider(agent.provider)
         prompt = self.render_prompt(agent, objective, extra)
@@ -789,6 +1053,13 @@ class AgentRunner:
         Stage_id / workflow are taken from ``extra`` so a post made
         during a workflow stage records its provenance and the workflow
         runner can verify the stage's declared outputs against it.
+
+        When a question post carries a ``target_agent`` and
+        ``urgency=blocking``, the harness dispatches the named agent to
+        answer the question synchronously before this run returns.
+        That makes the asker's worker effectively block on the answer,
+        which gets posted back to the blackboard with ``post_type:
+        answer`` and ``consumes: [<question_id>]``.
         """
         text = (run.response.text or "")
         if not text or "POST:" not in text:
@@ -807,6 +1078,109 @@ class AgentRunner:
         for p in posted:
             if p.id and p.id not in run.posts:
                 run.posts.append(p.id)
+        # Route blocking questions: dispatch the target agent inline so
+        # the asker effectively sees the answer in subsequent rounds.
+        try:
+            self._route_blocking_questions(run, posted, extra)
+        except Exception as exc:
+            log_exception("orchestration.agent._apply_posts.route_qa", exc)
+
+    def _route_blocking_questions(
+        self,
+        run: AgentRun,
+        posted: List["_blackboard.Post"],
+        extra: Dict[str, Any],
+    ) -> None:
+        """Dispatch peer agents to answer ``POST: question`` blocks.
+
+        Skipped entirely when there are no question posts targeted at a
+        peer, when we're already inside a Q&A chain that has exhausted
+        its depth budget, or when the dispatcher is itself in a meta-
+        phase (consensus, recovery, etc.).
+        """
+        questions = [
+            p for p in posted
+            if (p.post_type or "").lower() == "question"
+            and (p.target_agent or "").strip()
+            and (p.urgency or "blocking").lower() == "blocking"
+        ]
+        if not questions:
+            return
+        if str(extra.get("phase") or "") in self._META_PHASES:
+            return
+        cfg = self.clk_cfg.get("robustness") or {}
+        max_depth = int(cfg.get("max_qa_depth") or 3)
+        chain: List[str] = list(extra.get("qa_chain") or [])
+        if len(chain) >= max_depth:
+            log_event(
+                self.paths,
+                "qa_chain_capped",
+                agent=run.agent,
+                depth=len(chain),
+                max_depth=max_depth,
+                chain=list(chain),
+            )
+            return
+        agents_known = set((self.agents_cfg.get("agents") or {}).keys())
+        for q in questions:
+            target = q.target_agent.strip()
+            if not target or target not in agents_known:
+                log_event(
+                    self.paths,
+                    "qa_target_unknown",
+                    agent=run.agent,
+                    target=target,
+                    question_id=q.id,
+                )
+                continue
+            if target == run.agent:
+                # Self-questions don't need routing.
+                continue
+            if target in chain:
+                log_event(
+                    self.paths,
+                    "qa_chain_cycle",
+                    agent=run.agent,
+                    target=target,
+                    chain=list(chain),
+                )
+                continue
+            next_chain = chain + [run.agent]
+            answer_objective = (
+                f"Peer question routed by the harness.\n\n"
+                f"Asker: `{run.agent}` (stage `{extra.get('stage_id') or '?'}`)\n"
+                f"Question id: `{q.id}`\n\n"
+                f"Question:\n{q.body}\n\n"
+                "Answer this directly. Emit a POST: answer block whose\n"
+                f"CONSUMES list contains `{q.id}`. Keep the body focused "
+                "on what the asker needs to make progress — do not start "
+                "a new sub-thread of questions of your own."
+            )
+            log_event(
+                self.paths,
+                "qa_dispatch",
+                agent=run.agent,
+                target=target,
+                question_id=q.id,
+                chain=next_chain,
+                urgency=q.urgency or "blocking",
+            )
+            self._observer_log(
+                f"qa :: {run.agent} → {target} :: {q.id[:32]}"
+            )
+            self._dispatch_once(
+                target,
+                answer_objective,
+                extra={
+                    "phase": "qa_answer",
+                    "qa_chain": next_chain,
+                    "qa_question_id": q.id,
+                    "qa_asker": run.agent,
+                    "stage_id": extra.get("stage_id"),
+                    "workflow": extra.get("workflow"),
+                },
+                dry_run=self.clk_cfg.get("dry_run", False),
+            )
 
     def _apply_actions(self, run: AgentRun) -> None:
         """Execute ACTION blocks; merge harness-written files back into the run."""

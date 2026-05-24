@@ -176,8 +176,10 @@ The provider is the AI that actually writes your code each cycle.
 autoresearch loops can run. \`project name\` becomes the title of the
 captured idea and (optionally) the GitHub repo name. The \`run install\`
 flag triggers .clk/harness/scripts/install_local.sh inside each kickoff
-dir so providers like pi can find PyYAML and other deps. \`no TUI\`
-switches to a non-interactive pipeline — handy for CI."
+dir so providers like pi can find PyYAML and other deps — leave it
+\`false\` (the default) when running inside Docker, because the image
+already has all Python dependencies installed at build time.
+\`no TUI\` switches to a non-interactive pipeline — handy for CI."
     max_iter="$(_sv_read    "Max loop iterations" "${CLK_MAX_ITERATIONS:-10}")"
     proj_name="$(_sv_read   "Project name"        "${CLK_PROJECT_NAME:-clk-app}")"
     run_install="$(_sv_read "Run install_local.sh in each kickoff (true|false)" "${CLK_RUN_INSTALL:-false}")"
@@ -919,6 +921,112 @@ fi
 
 echo "[kickoff] clk init"
 "$CLK" init --name "$CLK_PROJECT_NAME"
+
+# ---------------------------------------------------------------------------
+# Apply CLK_* env-var overrides into .clk/config/clk.config.json.
+#
+# The harness ships sane defaults in DEFAULT_CLK_CONFIG (see
+# clk_harness/config.py). This block lets the user override any of them
+# from the environment without hand-editing the JSON. Recognised vars:
+#
+#   Robustness loops (see README "Robustness loops" section):
+#     CLK_ROBUSTNESS_AUTO_CONSENSUS         off | on_careful | always
+#     CLK_ROBUSTNESS_AUTO_REFINE            off | careful_only | all
+#     CLK_ROBUSTNESS_MAX_QUALITY_RETRIES    int >= 0
+#     CLK_ROBUSTNESS_MIN_RESPONSE_CHARS     int > 0
+#     CLK_ROBUSTNESS_REFINE_MAX_ROUNDS      int >= 1
+#     CLK_ROBUSTNESS_REFINE_ACCEPT_THRESHOLD  float 0..1
+#     CLK_ROBUSTNESS_QA_PARALLEL_JUDGES     int >= 1
+#     CLK_ROBUSTNESS_MAX_QA_DEPTH           int >= 1
+#     CLK_ROBUSTNESS_PLATEAU_WINDOW         int >= 2
+#     CLK_ROBUSTNESS_PLATEAU_ACTION         off | escalate_only |
+#                                           reframe_only | escalate_then_reframe
+#
+#   Prior knobs (already supported, surfaced here for parity):
+#     CLK_PROVIDER_TIMEOUT_S                int seconds, 0 = harness default
+#     CLK_PROVIDER_NO_OUTPUT_TIMEOUT_S      int seconds
+#     CLK_PROVIDER_RETRY_MAX_RETRIES        int
+#     CLK_PROVIDER_RETRY_BACKOFF_S          float seconds
+#     CLK_PROVIDER_RETRY_STAGE_MAX_RETRIES  int
+#     CLK_PROVIDER_RETRY_STAGE_BACKOFF_S    float seconds
+#     CLK_SUPERVISE_MAX_CYCLES              int
+#     CLK_CONSENSUS_MAX_SAMPLES             int
+#     CLK_CONSENSUS_MAX_PARALLEL            int
+#     CLK_CASTING_MAX_DYNAMIC_ROLES         int
+#     CLK_AUTO_COMMIT                       true | false
+#     CLK_VALIDATION_MAX_FILES_PER_BATCH    int
+#     CLK_VALIDATION_WARN_FILES_PER_BATCH   int
+#     CLK_META_PROMPT_DISPATCH              off | careful_only | always
+#     CLK_META_PROMPT_ROLE                  off | careful_only | always
+#     CLK_REVIEW_PER_STAGE                  true | false
+#     CLK_RECOVERY_MAX_PER_STAGE            int
+#
+# Any unset variable falls through to the harness's default. We don't
+# touch keys we didn't see — so a partially-set env still gets the rest
+# from DEFAULT_CLK_CONFIG.
+# ---------------------------------------------------------------------------
+echo "[kickoff] applying CLK_* env-var overrides to .clk/config/clk.config.json"
+python3 - <<'PY'
+import json, os
+from pathlib import Path
+
+p = Path(".clk/config/clk.config.json")
+if not p.exists():
+    raise SystemExit(0)  # nothing to override
+cfg = json.loads(p.read_text(encoding="utf-8"))
+
+
+def _set(env_var, *path, cast=str):
+    raw = os.environ.get(env_var)
+    if raw is None or raw == "":
+        return
+    try:
+        val = cast(raw)
+    except (TypeError, ValueError):
+        return
+    cur = cfg
+    for key in path[:-1]:
+        cur = cur.setdefault(key, {})
+    cur[path[-1]] = val
+
+
+def _bool(s):
+    return str(s).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+# Robustness block
+_set("CLK_ROBUSTNESS_AUTO_CONSENSUS", "robustness", "auto_consensus")
+_set("CLK_ROBUSTNESS_AUTO_REFINE", "robustness", "auto_refine")
+_set("CLK_ROBUSTNESS_MAX_QUALITY_RETRIES", "robustness", "max_quality_retries", cast=int)
+_set("CLK_ROBUSTNESS_MIN_RESPONSE_CHARS", "robustness", "min_response_chars", cast=int)
+_set("CLK_ROBUSTNESS_REFINE_MAX_ROUNDS", "robustness", "refine_max_rounds", cast=int)
+_set("CLK_ROBUSTNESS_REFINE_ACCEPT_THRESHOLD", "robustness", "refine_accept_threshold", cast=float)
+_set("CLK_ROBUSTNESS_QA_PARALLEL_JUDGES", "robustness", "qa_parallel_judges", cast=int)
+_set("CLK_ROBUSTNESS_MAX_QA_DEPTH", "robustness", "max_qa_depth", cast=int)
+_set("CLK_ROBUSTNESS_PLATEAU_WINDOW", "robustness", "plateau_window", cast=int)
+_set("CLK_ROBUSTNESS_PLATEAU_ACTION", "robustness", "plateau_action")
+
+# Prior knobs
+_set("CLK_PROVIDER_TIMEOUT_S", "provider_timeout_s", cast=int)
+_set("CLK_PROVIDER_NO_OUTPUT_TIMEOUT_S", "provider_no_output_timeout_s", cast=int)
+_set("CLK_PROVIDER_RETRY_MAX_RETRIES", "provider_retry", "max_retries", cast=int)
+_set("CLK_PROVIDER_RETRY_BACKOFF_S", "provider_retry", "backoff_s", cast=float)
+_set("CLK_PROVIDER_RETRY_STAGE_MAX_RETRIES", "provider_retry", "stage_max_retries", cast=int)
+_set("CLK_PROVIDER_RETRY_STAGE_BACKOFF_S", "provider_retry", "stage_backoff_s", cast=float)
+_set("CLK_SUPERVISE_MAX_CYCLES", "supervise", "max_cycles", cast=int)
+_set("CLK_CONSENSUS_MAX_SAMPLES", "consensus", "max_samples", cast=int)
+_set("CLK_CONSENSUS_MAX_PARALLEL", "consensus", "max_parallel", cast=int)
+_set("CLK_CASTING_MAX_DYNAMIC_ROLES", "casting", "max_dynamic_roles", cast=int)
+_set("CLK_AUTO_COMMIT", "auto_commit", cast=_bool)
+_set("CLK_VALIDATION_MAX_FILES_PER_BATCH", "validation", "max_files_per_batch", cast=int)
+_set("CLK_VALIDATION_WARN_FILES_PER_BATCH", "validation", "warn_files_per_batch", cast=int)
+_set("CLK_META_PROMPT_DISPATCH", "meta_prompt", "dispatch")
+_set("CLK_META_PROMPT_ROLE", "meta_prompt", "role")
+_set("CLK_REVIEW_PER_STAGE", "review", "per_stage", cast=_bool)
+_set("CLK_RECOVERY_MAX_PER_STAGE", "recovery", "max_per_stage", cast=int)
+
+p.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
 
 echo "[kickoff] activating provider: $CLK_PROVIDER"
 CLK_PROVIDER="$CLK_PROVIDER" \
