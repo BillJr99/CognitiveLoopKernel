@@ -21,7 +21,6 @@ dependency on ``requests``.
 from __future__ import annotations
 
 import json
-import socket
 import sys
 import time
 import traceback
@@ -29,7 +28,6 @@ import urllib.error
 import urllib.request
 import uuid
 from typing import Any, Dict, List, Tuple
-from urllib.parse import urlparse
 
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens
 
@@ -87,14 +85,15 @@ class OpenWebUIProvider(AgentProvider):
         return self.config.get("model") or "llama3.1"
 
     def available(self) -> bool:
-        try:
-            url = urlparse(self._endpoint())
-            host = url.hostname or "localhost"
-            port = url.port or (443 if url.scheme == "https" else 80)
-            with socket.create_connection((host, port), timeout=1.0):
-                return True
-        except Exception:
-            return False
+        endpoint = self._endpoint()
+        from ._endpoint_fallback import maybe_docker_host_fallback, probe_endpoint
+        if probe_endpoint(endpoint):
+            return True
+        swapped = maybe_docker_host_fallback(endpoint, label="openwebui")
+        if swapped:
+            self.config["endpoint"] = swapped
+            return True
+        return False
 
     def invoke(self, req: AgentRequest) -> AgentResponse:
         progress = req.on_progress or (lambda kind, msg: None)

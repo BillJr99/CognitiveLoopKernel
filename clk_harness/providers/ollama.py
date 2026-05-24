@@ -8,14 +8,13 @@ reports unavailable.
 from __future__ import annotations
 
 import json
-import socket
 import sys
 import traceback
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
 
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens
+from ._endpoint_fallback import maybe_docker_host_fallback, probe_endpoint
 
 
 class OllamaProvider(AgentProvider):
@@ -24,18 +23,21 @@ class OllamaProvider(AgentProvider):
     def _endpoint(self) -> str:
         return (self.config.get("endpoint") or "http://localhost:11434").rstrip("/")
 
+    def available(self) -> bool:
+        endpoint = self._endpoint()
+        if probe_endpoint(endpoint):
+            return True
+        # Container-on-host rescue: if the configured localhost endpoint
+        # is dead but host.docker.internal answers, mutate our config so
+        # subsequent calls (invoke, list_models, …) use the working URL.
+        swapped = maybe_docker_host_fallback(endpoint, label="ollama")
+        if swapped:
+            self.config["endpoint"] = swapped
+            return True
+        return False
+
     def _model(self) -> str:
         return self.config.get("model") or "llama3.1"
-
-    def available(self) -> bool:
-        try:
-            url = urlparse(self._endpoint())
-            host = url.hostname or "localhost"
-            port = url.port or (443 if url.scheme == "https" else 80)
-            with socket.create_connection((host, port), timeout=1.0):
-                return True
-        except Exception:
-            return False
 
     def invoke(self, req: AgentRequest) -> AgentResponse:
         progress = req.on_progress or (lambda kind, msg: None)

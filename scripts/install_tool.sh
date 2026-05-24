@@ -101,6 +101,63 @@ _it_platform() {
 _it_has() { command -v "$1" >/dev/null 2>&1; }
 
 # ---------------------------------------------------------------------------
+# Endpoint reachability + host.docker.internal fallback.
+#
+# When CLK runs inside a Docker container, a localhost URL points at the
+# container, not the host machine — so a user's ollama / openwebui running
+# on the host shows up as UNAVAILABLE. Docker exposes the host at
+# `host.docker.internal` (Linux needs --add-host=host.docker.internal:host-gateway).
+# These helpers probe both, and if only the host.docker.internal variant
+# answers, offer to rewrite the env file.
+# ---------------------------------------------------------------------------
+_it_probe_endpoint() {
+  local endpoint="$1" host port code
+  host="$(printf '%s' "$endpoint" | sed -E 's|^https?://||; s|/.*||; s|:.*||')"
+  port="$(printf '%s' "$endpoint" | sed -nE 's|^https?://[^:/]+:([0-9]+).*|\1|p')"
+  if [ -z "$port" ]; then
+    case "$endpoint" in https://*) port=443 ;; *) port=80 ;; esac
+  fi
+  [ -n "$host" ] || return 1
+  if _it_has curl; then
+    code="$(curl -sS -o /dev/null -m 3 -w '%{http_code}' "$endpoint" 2>/dev/null)" || code="000"
+    [ -n "$code" ] && [ "$code" != "000" ] && return 0
+  fi
+  (echo > "/dev/tcp/$host/$port") 2>/dev/null
+}
+
+# offer_docker_host_fallback LABEL VAR_NAME CURRENT_URL
+#   If CURRENT_URL targets localhost/127.0.0.1 and isn't reachable, but
+#   the host.docker.internal equivalent IS reachable, warn and ask to switch.
+#   On accept, rewrites env file + exports the var. Returns 0 if switched.
+_it_offer_docker_host_fallback() {
+  local label="$1" var_name="$2" current="$3"
+  [ -n "$current" ] || return 1
+  case "$current" in
+    *://localhost*|*://127.0.0.1*) ;;
+    *) return 1 ;;
+  esac
+  if _it_probe_endpoint "$current"; then
+    return 1
+  fi
+  local candidate
+  candidate="$(printf '%s' "$current" | sed -E 's#(://)(localhost|127\.0\.0\.1)#\1host.docker.internal#')"
+  [ "$candidate" = "$current" ] && return 1
+  _it_probe_endpoint "$candidate" || return 1
+  _it_say ""
+  _it_warn "$label endpoint $current is unreachable from here,"
+  _it_warn "but $candidate IS reachable. This is the usual sign that CLK is"
+  _it_warn "running inside a container while $label is on the host —"
+  _it_warn "'localhost' inside the container does not reach the host."
+  if _it_confirm "Switch $var_name to $candidate?" "Y"; then
+    env_set "$_IT_ENV_FILE" "$var_name" "$candidate"
+    export "$var_name=$candidate"
+    _it_say "[install_tool] updated $var_name -> $candidate"
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # Installer registry — one function per supported tool. Each one echoes
 # the canonical install command (so the caller can print it before
 # running), and the matching `_install_run_<tool>` actually executes it.
@@ -246,6 +303,13 @@ install_tool() {
     if check_tool openwebui; then
       _it_say "[install_tool] openwebui reachable at $_ow_endpoint — skipping install."
       return 0
+    fi
+    if _it_offer_docker_host_fallback "OpenWebUI" CLK_OPENWEBUI_ENDPOINT "$_ow_endpoint"; then
+      _ow_endpoint="$CLK_OPENWEBUI_ENDPOINT"
+      if check_tool openwebui; then
+        _it_say "[install_tool] openwebui reachable at $_ow_endpoint — skipping install."
+        return 0
+      fi
     fi
     _it_warn "still no openwebui server at $_ow_endpoint."
   fi
@@ -463,6 +527,13 @@ _configure_ollama() {
   local endpoint
   endpoint="$(_it_read "Ollama endpoint" "${CLK_OLLAMA_ENDPOINT:-http://localhost:11434}")"
   env_set "$_IT_ENV_FILE" CLK_OLLAMA_ENDPOINT "$endpoint"
+  export CLK_OLLAMA_ENDPOINT="$endpoint"
+
+  # Container-on-host rescue: localhost from inside Docker doesn't reach
+  # the host's ollama daemon; try host.docker.internal before giving up.
+  if _it_offer_docker_host_fallback "Ollama" CLK_OLLAMA_ENDPOINT "$endpoint"; then
+    endpoint="$CLK_OLLAMA_ENDPOINT"
+  fi
 
   # If the server isn't reachable, offer to start it.
   if ! check_tool ollama; then
@@ -524,6 +595,10 @@ _configure_openwebui() {
   local endpoint key model
   endpoint="$(_it_read "OpenWebUI endpoint" "${CLK_OPENWEBUI_ENDPOINT:-http://localhost:8080}")"
   env_set "$_IT_ENV_FILE" CLK_OPENWEBUI_ENDPOINT "$endpoint"
+  export CLK_OPENWEBUI_ENDPOINT="$endpoint"
+  if _it_offer_docker_host_fallback "OpenWebUI" CLK_OPENWEBUI_ENDPOINT "$endpoint"; then
+    endpoint="$CLK_OPENWEBUI_ENDPOINT"
+  fi
   if _it_confirm "Set OpenWebUI API key now? (only needed for authenticated instances)" "N"; then
     key="$(_it_secret "Paste OpenWebUI API key")"
     [ -n "$key" ] && env_set "$_IT_ENV_FILE" CLK_OPENWEBUI_API_KEY "$key"
