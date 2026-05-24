@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# CLK launcher.
+# CLK launcher shim.
+#
+# This is the thin wrapper that resolves where the CLK harness is
+# installed and invokes `python -m clk_harness.cli` against the right
+# interpreter. For the canonical install procedure, see
+# scripts/install_local.sh (which is what populates .clk/venv).
 #
 # Resolves two anchors:
 #   * HARNESS_HOME  - directory holding clk_harness/, scripts/, pyproject.toml
@@ -12,6 +17,12 @@
 #
 # Prefers the project's local .clk/venv interpreter if present, falls back
 # to the system python3. Always invokes clk_harness.cli as a module.
+#
+# Related entry points:
+#   * scripts/install_local.sh — creates .clk/venv (canonical install)
+#   * scripts/install_tool.sh  — installs provider CLIs on demand
+#   * scripts/run_loop.sh      — convenience wrapper around `clk loop`
+#   * kickoff.sh               — top-level project bootstrap
 
 set -euo pipefail
 

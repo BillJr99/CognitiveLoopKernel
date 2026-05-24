@@ -20,6 +20,21 @@ committed automatically.
 
 If you've used CLK before, the highlights of this release:
 
+- **Robustness loops by default.** Every meaningful dispatch is now
+  scored after the provider returns; empty / malformed / contract-
+  violating / low-confidence responses are re-dispatched with a repair
+  preamble, escalating to a stochastic consensus fan-out on the final
+  retry. Stages marked `careful: true` fan into N parallel samples
+  proactively (configurable via `robustness.auto_consensus`). The
+  critic-judge inner loop (`refine:` stage attribute, or default-on
+  for careful stages) drives draft → critic → revise until the critic
+  signs off. Ralph and autoresearch detect plateau / regression and
+  escalate-then-reframe instead of burning the full iteration budget.
+  Agents can ask peers directed clarifying questions via
+  `POST: question TO: <peer> URGENCY: blocking` and the harness
+  routes the answer inline. Everything is gated by
+  `clk.config.json::robustness.*` (or `CLK_ROBUSTNESS_*` env vars) so
+  you can throttle cost — see **Robustness loops** below.
 - **The setup wizard explains itself.** `kickoff.sh --setup` is now a
   series of explain-then-ask blocks (provider, loop settings, tool
   detection, telegram, GitHub, git identity) — every question is
@@ -938,6 +953,46 @@ Or per model:
 provider is eating the budget. Updated lazily from the same numbers
 the title bar shows.
 
+### Robustness-loop multipliers
+
+The robustness loops (see **Robustness loops**) trade tokens for
+quality. Use this table to pick a regime:
+
+| Knob                                   | Worst-case multiplier per affected dispatch                              | Recommended starting point |
+|----------------------------------------|--------------------------------------------------------------------------|----------------------------|
+| `robustness.auto_consensus`            | `off` → ×1; `on_careful` → ×(N+1) on careful stages only; `always` → ×(N+1) on every dispatch (where N = `consensus.max_samples`, default 6) | `on_careful` (default)     |
+| `robustness.auto_refine`               | `off` → ×1; `careful_only` → ×(1 + 1 worker revision + 1 critic) on careful stages; `all` → that on every stage | `careful_only` (default)   |
+| `robustness.max_quality_retries`       | At most this many extra dispatches when a response fails the quality check; 0 disables | 2 (default)                |
+| `robustness.refine_max_rounds`         | Cap on critic↔worker round-trips inside a refine loop                    | 3 (default)                |
+| `robustness.max_qa_depth`              | Cap on inter-agent Q&A chain depth (each peer answer can ask one peer)   | 3 (default)                |
+| `robustness.plateau_window`            | How many no-improvement Ralph/autoresearch iterations before escalation  | 3 (default)                |
+| `robustness.plateau_action`            | `off` disables adaptive loop termination entirely                        | `escalate_then_reframe`    |
+
+Cost-minimal regime (closest to legacy CLK behavior, no extra tokens):
+
+```jsonc
+"robustness": {
+  "auto_consensus": "off",
+  "auto_refine": "off",
+  "max_quality_retries": 0,
+  "plateau_action": "off"
+}
+```
+
+Cost-maximal "lean into the loop" regime (every dispatch fans out,
+critic gates every careful stage, plateau detection on, Q&A protocol
+fully open):
+
+```jsonc
+"robustness": {
+  "auto_consensus": "always",
+  "auto_refine": "all",
+  "max_quality_retries": 3,
+  "refine_max_rounds": 4,
+  "plateau_action": "escalate_then_reframe"
+}
+```
+
 ## Pi extension
 
 A native [pi.dev](https://pi.dev) extension that brings the full CLK
@@ -1300,6 +1355,14 @@ Type `/cast` in the TUI to force a re-cast at any time, or run
 `clk cast` from the CLI. To inspect or edit by hand:
 `clk roles list|add --name X --role "..."|remove --name X`.
 
+Agents communicate via a **blackboard** at `.clk/blackboard/` — short
+markdown POST blocks each agent emits at the end of its run, filtered
+into peers' prompts based on each stage's `inputs:` selectors.
+Directed clarifying questions are a special POST type
+(`POST: question TO: <peer> URGENCY: blocking`) routed inline by the
+harness — see **Robustness loops** for the protocol details and depth
+caps.
+
 ## Action protocol
 
 Agents drive real changes by emitting `ACTION:` blocks the harness
@@ -1326,6 +1389,11 @@ validation output) and asks them to either re-cast the workflow,
 emit `ACTION` blocks that fix the upstream failure, or `PROPOSE_ROLE`
 a specialist that can. Capped at 3 recovery passes per stage
 (configurable via `clk.config.json::recovery::max_per_stage`).
+
+This section is about *dependency* failures. *Content* failures —
+empty, malformed, or low-confidence agent output that nonetheless
+returned `ok=True` — are handled by the response-quality re-dispatch
+loop documented in **Robustness loops** above.
 
 ## Workflows
 
@@ -1369,7 +1437,260 @@ or forced via `/loop`):
   a small experiment, and records the learning regardless of pass/fail.
 
 Both modes respect `max_iterations` and stop early when
-`.clk/state/done.md` is created.
+`.clk/state/done.md` is created. Both also auto-detect plateau and
+regression and adapt — see **Robustness loops** below.
+
+## Robustness loops
+
+CLK leans into the loop: every dispatch is wrapped in self-correcting
+behavior so the harness does not just accept the first thing a
+sub-agent returns. This section is a single index of every loop the
+harness runs — old and new — with the config knob that tunes each
+one and the activity-log event you can grep for in `.clk/logs/`.
+
+All knobs live under `clk.config.json::robustness.*` (and the
+parallel `CLK_ROBUSTNESS_*` env-var family — see `.env.example`).
+Every layer has an off-switch so you can throttle cost.
+
+### 1. Provider retry (existing)
+
+Transient provider errors (rate limits, timeouts, "no endpoints
+available", HTTP 429) are retried with exponential backoff before the
+response surfaces at the workflow layer.
+
+- Code: `clk_harness/orchestration/agent.py::AgentRunner._should_retry_provider`
+- Config: `clk.config.json::provider_retry.{max_retries, backoff_s}`
+- Logged events: `provider_attempt`, `provider_retry`
+- Kill switch: set `provider_retry.max_retries: 0`
+
+### 2. Stage retry (existing)
+
+When a workflow stage fails with a retryable provider error after the
+inner provider-retry budget is exhausted, the workflow runner retries
+the entire stage with a larger backoff before giving up on the stage.
+
+- Code: `workflow.py::WorkflowRunner._is_retryable_stage_error`
+- Config: `clk.config.json::provider_retry.{stage_max_retries, stage_backoff_s}`
+- Logged events: `workflow_stage_retry`
+- Kill switch: set `provider_retry.stage_max_retries: 0`
+
+### 3. Supervise cycles (existing)
+
+The chief's `supervise` stage decides whether the user's prompt has
+been fully addressed; if not, it emits a `PROPOSE_WORKFLOW` and the
+whole workflow re-runs. See **Chief supervisor loop** for the full
+description.
+
+- Config: `clk.config.json::supervise.max_cycles` (default 20)
+- Kill switch: set `supervise.max_cycles: 1`
+
+### 4. Recovery on unmet deps (existing)
+
+When a stage's dependencies fail, the chief is dispatched in recovery
+mode to re-cast, remediate, or accept the gap. See **Self-healing on
+unmet deps**. This handles *dependency* failures; *content* failures
+are handled by Layer 6 below.
+
+- Config: `clk.config.json::recovery.max_per_stage` (default 3)
+
+### 5. Review & checkpoint stages (existing)
+
+Stages marked `phase: review` automatically receive a chief-authored
+review prompt containing the upstream stages' POST blocks, and the
+chief emits a verdict (continue / redirect / abort). Stages marked
+`careful: true` add a post-stage checkpoint and (when configured)
+trigger meta-prompt drafting on dispatch.
+
+Example:
+
+```yaml
+- id: design_spec
+  agent: architect
+  careful: true
+  outputs: [design_brief]
+  objective: Draft the API contract.
+- id: review_design
+  agent: chief
+  phase: review
+  depends_on: [design_spec]
+```
+
+- Config: `clk.config.json::review.per_stage` (apply to *every* stage)
+- Logged events: `workflow_checkpoint`, `consensus_coalesced`
+
+### 6. Auto-quality re-dispatch (new)
+
+After every dispatch, the response is scored against
+`response_quality`:
+
+- empty / sub-threshold text
+- malformed `ACTION:` or `POST:` blocks
+- missing declared `outputs` (the stage's contract keys)
+- self-reported low confidence (`CONFIDENCE: <0..1>` parsed from the
+  response)
+- refusal patterns (treated as not-recoverable — surfaces to the
+  chief instead of retrying blindly)
+
+Recoverable failures are re-dispatched with a repair preamble that
+quotes the specific reasons back to the worker, up to
+`robustness.max_quality_retries`. On the final retry, when
+`auto_consensus` is not `"off"`, the dispatch escalates to a
+stochastic consensus fan-out rather than another single-shot retry.
+
+- Code: `orchestration/response_quality.py`, `agent.py::_dispatch_with_quality_loop`
+- Config: `robustness.{max_quality_retries, min_response_chars}`
+- Logged events: `agent_quality_retry`, `agent_quality_final`
+- Kill switch: `robustness.max_quality_retries: 0`
+
+### 7. Stochastic consensus, opt-in + automatic (existing + new)
+
+Any agent can emit `PROPOSE_CONSENSUS` to fan a question into N
+independent samples; the harness runs them in parallel, logs them,
+and dispatches the chief to coalesce. New in this release:
+`robustness.auto_consensus` makes the fan-out automatic.
+
+| `auto_consensus`         | Behavior                                                                 |
+|--------------------------|--------------------------------------------------------------------------|
+| `off`                    | Only `PROPOSE_CONSENSUS` triggers fan-out (legacy behavior).             |
+| `on_careful` *(default)* | Stages marked `careful: true` fan out automatically.                     |
+| `always`                 | Every non-chief dispatch fans out (×N samples — most expensive setting). |
+
+Cost: a fan-out costs roughly N + 1 dispatches (N samples + 1 chief
+coalescing). Caps at `consensus.max_samples` (default 6) and
+`consensus.max_parallel` (default 4).
+
+- Logged events: `consensus_started`, `consensus_sample_dispatch`,
+  `consensus_samples_completed`, `consensus_coalesced`
+- Kill switch: `robustness.auto_consensus: "off"`
+
+### 8. Inter-agent clarifying Q&A (new)
+
+Agents emit:
+
+```
+POST: question
+TO: architect
+URGENCY: blocking
+BODY:
+Are user IDs opaque strings or integers?
+END_POST
+```
+
+With `URGENCY: blocking`, the harness dispatches the target peer
+immediately to answer; the peer's `POST: answer` lists the question
+id in its `CONSUMES`, and the asker sees the answer in the next
+blackboard digest. `URGENCY: async` records the question for the
+chief to schedule in a later cycle.
+
+Chain depth is capped at `robustness.max_qa_depth` (default 3) so a
+question can't trigger an unbounded chain of clarifications.
+
+- Code: `agent.py::_route_blocking_questions`, `blackboard.py`
+- Config: `robustness.{max_qa_depth, qa_parallel_judges}`
+- Logged events: `qa_dispatch`, `qa_chain_capped`, `qa_chain_cycle`,
+  `qa_target_unknown`
+- Kill switch: omit the `TO:` field in your `POST: question` blocks;
+  no protocol-level off-switch (Q&A is opt-in per post).
+
+### 9. Critic-judge refinement (new)
+
+Stages may declare a refinement loop that threads a critic between
+worker rounds. The critic scores the worker's output 0..1; if below
+the accept threshold, the worker is re-dispatched with the critic's
+feedback until accept or `max_rounds` is reached.
+
+```yaml
+- id: design_spec
+  agent: architect
+  refine:
+    critic: critic
+    max_rounds: 4
+    accept_threshold: 0.8
+  objective: Draft the spec.
+```
+
+When the stage has no explicit `refine:` block, `robustness.auto_refine`
+decides whether one round runs anyway:
+
+| `auto_refine`              | Behavior                                                |
+|----------------------------|---------------------------------------------------------|
+| `off`                      | Only stages with `refine:` use the inner loop.          |
+| `careful_only` *(default)* | Stages marked `careful: true` get one critic pass.      |
+| `all`                      | Every non-chief, non-qa, non-critic stage gets one pass.|
+
+The critic's last two lines must be:
+
+```
+VERDICT: accept   # or `revise`
+SCORE: <0..1>
+```
+
+- Code: `workflow.py::WorkflowRunner._refine_loop`
+- Config: `robustness.{auto_refine, refine_max_rounds,
+  refine_accept_threshold}`
+- Logged events: `refine_critic_verdict`
+- Kill switch: `robustness.auto_refine: "off"` AND remove any
+  `refine:` blocks from your workflow YAML.
+
+### 10. Adaptive Ralph & autoresearch (new)
+
+Both loops record every iteration's outcome to
+`.clk/state/experiments.jsonl`. After `robustness.plateau_window`
+consecutive iterations without measurable improvement, the loop:
+
+1. **Escalates** — the next iteration's dispatches carry
+   `careful=true` in their extra, which (via Layer 7) fans them into
+   stochastic consensus.
+2. **Reframes** — the chief is dispatched with a "plateau dispatch"
+   prompt asking it to re-cast roles or re-author the workflow with a
+   qualitatively different approach (new metric, new experiment
+   family) rather than another marginal tweak.
+3. **Terminates gracefully** — if escalation + reframe fail to break
+   the plateau across two more iterations, `done.md` is written with
+   reason "plateau" rather than burning the full iteration budget.
+
+Regression (last iteration failed after at least one earlier success
+in the window) triggers an additional critic dispatch on the failing
+diff before the next plan, so the next iteration starts from an
+informed view of what broke.
+
+Autoresearch additionally gains an evaluator gate (previously only in
+Ralph): if the analyst's writes break the build, the working tree is
+reverted rather than committed.
+
+Both loops also short-circuit when a planner or surveyor returns
+empty / unrecoverable output; rather than commit garbage, the
+iteration is recorded with `improved=False`.
+
+- Code: `ralph_loop.py::RalphLoop`, `autoresearch_loop.py::AutoresearchLoop`
+- Config: `robustness.{plateau_window, plateau_action}`
+  (`escalate_then_reframe` | `escalate_only` | `reframe_only` | `off`)
+- Logged events: `ralph_plateau_detected`, `ralph_plateau_escalate`,
+  `ralph_plateau_terminated`, `ralph_regression_detected`,
+  `ralph_iteration_skipped_low_quality`,
+  `autoresearch_step_skipped_low_quality`, `autoresearch_revert`
+- Kill switch: `robustness.plateau_action: "off"`
+
+### Putting it together
+
+A typical "careful" engineering stage now runs:
+
+1. Stage dispatched with `careful: true`.
+2. `auto_consensus=on_careful` → N samples fan out in parallel.
+3. Chief coalesces the samples.
+4. `auto_refine=careful_only` → critic scores the coalesced output;
+   the worker is revised until critic accepts or `max_rounds`.
+5. Stage validation runs.
+6. Checkpoint (if enabled) — chief CONTINUE / REDIRECT / ABORT
+   verdict.
+7. Outputs contract check; warn if any declared key was not posted.
+
+Tracing this in `.clk/logs/`:
+
+```
+grep -E '^(consensus_|refine_|workflow_checkpoint|agent_quality_)' \
+    .clk/logs/activity.jsonl | jq .
+```
 
 ## Completion criteria
 

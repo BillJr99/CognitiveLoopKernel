@@ -1,19 +1,83 @@
 #!/usr/bin/env bash
 # Local-only install for CLK.
 #
-# Strategy (in order):
-#   1. Create `.clk/venv` with pip and `pip install -e .` into it. This is the
-#      preferred path - it picks up every dep declared in pyproject.toml plus
-#      any extras and exposes the `clk` console script inside the venv.
-#   2. If the venv has no pip (ensurepip missing), install just the runtime
-#      dependencies parsed from pyproject.toml into `.clk/site-packages` via
-#      system pip's `--target`. The launcher (`scripts/clk`) adds that dir to
-#      PYTHONPATH; the package itself runs from the source tree.
-#   3. If neither works, print the apt one-liner and exit cleanly. The
-#      harness still runs via its mini-YAML fallback.
+# WHAT THIS SCRIPT DOES
+#   Installs the Python harness into a project-local virtual environment
+#   so the `clk` CLI and the in-process FastAPI / TUI work without
+#   polluting the user's system Python. After it finishes, the
+#   project's `.clk/venv/bin/clk` is the canonical entry point (and
+#   `scripts/clk` is a shim that finds it).
 #
-# Optional first arg picks an extras group from pyproject.toml:
-#   ./scripts/install_local.sh dev   # also installs pytest
+#   The script is idempotent — re-running it upgrades pip and
+#   reinstalls the package in editable mode. It does NOT delete the
+#   existing venv so cached deps persist between runs.
+#
+# DIRECTORY LAYOUT (in a kickoff'd project)
+#   <project>/                          ← your code + the harness state
+#       .clk/                           ← all harness state (recoverable)
+#           harness/                    ← copy of the CLK source tree
+#               scripts/install_local.sh ← THIS SCRIPT
+#               pyproject.toml          ← deps declared here
+#           venv/                       ← preferred install path (1)
+#               bin/clk                 ← the console script callers use
+#               bin/python              ← matched against pyproject.toml deps
+#           site-packages/              ← fallback when venv has no pip (2)
+#           config/                     ← clk.config.json, providers.json, …
+#           state/                      ← agent memory, casting log, …
+#           logs/, runs/, backups/, blackboard/
+#
+#   `CLK_PROJECT_ROOT` (set by the kickoff shim) lets this script find
+#   the project root from `.clk/harness/`. When unset, this script
+#   assumes it's running from a plain checkout and uses its own parent.
+#
+# INSTALL STRATEGY (tried in order)
+#   1. Create `.clk/venv` with pip and `pip install -e .` into it. This
+#      is the preferred path — it picks up every dep declared in
+#      pyproject.toml plus any extras and exposes the `clk` console
+#      script inside the venv. The launcher `scripts/clk` picks up
+#      `.clk/venv/bin/clk` automatically.
+#   2. If the venv has no pip (ensurepip missing — common on
+#      stripped-down distros), install just the runtime dependencies
+#      parsed from pyproject.toml into `.clk/site-packages` via
+#      system pip's `--target`. The launcher then adds that directory
+#      to PYTHONPATH; the package itself runs from the source tree.
+#   3. If neither works, print the apt one-liner and exit cleanly.
+#      The harness still runs via its mini-YAML fallback (no PyYAML)
+#      but lacks the optional FastAPI / Telegram extras.
+#
+# OPTIONAL EXTRAS
+#   The first positional argument picks an extras group from
+#   pyproject.toml:
+#     ./scripts/install_local.sh           # runtime deps only
+#     ./scripts/install_local.sh dev       # adds pytest, pytest-asyncio
+#     ./scripts/install_local.sh api       # adds FastAPI + uvicorn for REST API
+#     ./scripts/install_local.sh "api,dev" # both
+#
+# WHAT THIS SCRIPT DOES *NOT* INSTALL
+#   * Provider CLIs (claude, codex, gemini, pi) — those are installed by
+#     `kickoff.sh --setup` and by `/install` from inside the TUI; see
+#     the README "Provider and authentication" section.
+#   * Telegram-bot dependencies — handled by
+#     scripts/telegram_setup_wizard.sh; see README "Telegram Bot".
+#   * Docker — the test orchestrator at scripts/run_all_tests.sh uses
+#     Docker if available but falls back to --local mode; see README
+#     "Testing" for the breakdown.
+#   * GitHub integration — handled by kickoff.sh's GitHub block; see
+#     README "GitHub integration".
+#
+# RELATED ENTRY POINTS
+#   * scripts/clk                — launcher shim that resolves `.clk/venv`
+#                                  or `.clk/site-packages` automatically
+#   * scripts/install_tool.sh    — installs a provider CLI on demand
+#                                  (claude, codex, gemini, ollama, pi)
+#   * scripts/run_loop.sh        — convenience wrapper around `clk loop`
+#   * scripts/run_all_tests.sh   — full test orchestrator (Docker or local)
+#   * kickoff.sh                 — top-level project bootstrap; calls this
+#                                  script when CLK_RUN_INSTALL=true
+#
+# See the README "Robustness loops" and "Cost guardrails" sections for
+# the runtime config knobs (CLK_ROBUSTNESS_*, provider retry, etc.)
+# this script writes — they're tuned via `.env` / kickoff.sh, not here.
 
 set -euo pipefail
 
