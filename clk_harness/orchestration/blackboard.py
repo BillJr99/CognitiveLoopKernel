@@ -87,6 +87,13 @@ class Post:
     stage_id: str = ""
     workflow: str = ""
     ts: str = ""
+    # Inter-agent Q&A routing. When ``target_agent`` is set on a
+    # ``post_type: "question"`` post, the harness dispatches the named
+    # agent to answer it before the asker's run returns (when
+    # ``urgency == "blocking"``) or surfaces it to the chief on the
+    # next supervise cycle (when ``urgency == "async"``).
+    target_agent: str = ""
+    urgency: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -99,6 +106,8 @@ class Post:
             "produces": list(self.produces),
             "body": self.body,
             "ts": self.ts,
+            "target_agent": self.target_agent,
+            "urgency": self.urgency,
         }
 
     @classmethod
@@ -113,6 +122,8 @@ class Post:
             stage_id=str(raw.get("stage_id") or ""),
             workflow=str(raw.get("workflow") or ""),
             ts=str(raw.get("ts") or ""),
+            target_agent=str(raw.get("target_agent") or ""),
+            urgency=str(raw.get("urgency") or ""),
         )
 
 
@@ -147,6 +158,8 @@ def post(
     stage_id: str = "",
     workflow: str = "",
     slug_hint: str = "",
+    target_agent: str = "",
+    urgency: str = "",
 ) -> Post:
     """Persist a new post and return it. Always succeeds (best-effort logging).
 
@@ -166,6 +179,8 @@ def post(
         stage_id=stage_id or "",
         workflow=workflow or "",
         ts=datetime.now().isoformat(timespec="seconds"),
+        target_agent=target_agent or "",
+        urgency=urgency or "",
     )
     target = bb / f"{pid}.json"
     try:
@@ -335,6 +350,31 @@ def find_outputs_satisfied(
     return missing
 
 
+def find_unanswered_questions(
+    paths: Paths,
+    *,
+    target_agent: Optional[str] = None,
+) -> List[Post]:
+    """Return question posts that have no matching answer.
+
+    A ``post_type="question"`` post is treated as answered when some
+    later ``post_type="answer"`` post lists the question's id in its
+    ``consumes``. When ``target_agent`` is given, only questions
+    targeted at that agent are returned.
+    """
+    posts = list_posts(paths)
+    questions = [p for p in posts if p.post_type == "question"]
+    if target_agent:
+        questions = [p for p in questions if (p.target_agent or "") == target_agent]
+    answered_ids: set = set()
+    for p in posts:
+        if p.post_type != "answer":
+            continue
+        for qid in (p.consumes or []):
+            answered_ids.add(str(qid))
+    return [q for q in questions if q.id not in answered_ids]
+
+
 def digest(
     paths: Paths,
     *,
@@ -380,7 +420,7 @@ def digest(
 _POST_HEAD_RE = re.compile(r"^\s*POST\s*:\s*(?P<type>[A-Za-z][A-Za-z0-9_\-]*)\s*$", re.MULTILINE)
 _POST_END_RE = re.compile(r"^\s*END_POST\s*$", re.IGNORECASE)
 _POST_FIELD_RE = re.compile(
-    r"^(PRODUCES|CONSUMES|TITLE|SLUG)\s*:\s*(.*)$", re.IGNORECASE
+    r"^(PRODUCES|CONSUMES|TITLE|SLUG|TO|URGENCY)\s*:\s*(.*)$", re.IGNORECASE
 )
 _POST_BODY_RE = re.compile(r"^\s*BODY\s*:\s*$", re.IGNORECASE)
 
@@ -415,6 +455,8 @@ def parse_post_blocks(text: str) -> List[Dict[str, Any]]:
             "produces": [],
             "consumes": [],
             "body": "",
+            "target_agent": "",
+            "urgency": "",
         }
         i += 1
         body_lines: List[str] = []
@@ -441,6 +483,14 @@ def parse_post_blocks(text: str) -> List[Dict[str, Any]]:
                         block["consumes"] = [
                             x.strip() for x in re.split(r"[,\s]+", val) if x.strip()
                         ]
+                    elif key == "TO":
+                        block["target_agent"] = re.sub(r"[^A-Za-z0-9_\-]", "", val)
+                    elif key == "URGENCY":
+                        u = val.strip().lower()
+                        if u in {"blocking", "block", "sync"}:
+                            block["urgency"] = "blocking"
+                        elif u in {"async", "background", "deferred"}:
+                            block["urgency"] = "async"
                     i += 1
                     continue
                 if _POST_BODY_RE.match(line):
@@ -481,6 +531,8 @@ def apply_post_blocks(
                 stage_id=stage_id,
                 workflow=workflow,
                 slug_hint=slug_hint,
+                target_agent=b.get("target_agent") or "",
+                urgency=b.get("urgency") or "",
             )
             out.append(p)
         except Exception as exc:

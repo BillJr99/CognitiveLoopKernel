@@ -194,6 +194,28 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         "max_dynamic_roles": 12,
         "auto_cast_on_idea": True,
     },
+    "robustness": {
+        # Sub-sub-agent fan-out on dispatch.
+        # off | on_careful (fan out only stages marked careful=true) | always.
+        "auto_consensus": "on_careful",
+        # Critic-judge inner refinement loop.
+        # off | careful_only (default) | all
+        "auto_refine": "careful_only",
+        # Cap on automatic re-dispatch attempts after a quality failure.
+        "max_quality_retries": 2,
+        # Below this, responses are treated as suspect and may be re-run.
+        "min_response_chars": 40,
+        # Critic-judge loop bounds.
+        "refine_max_rounds": 3,
+        "refine_accept_threshold": 0.8,
+        # Inter-agent Q&A bounds.
+        "qa_parallel_judges": 1,
+        "max_qa_depth": 3,
+        # Ralph / autoresearch plateau detection.
+        "plateau_window": 3,
+        # escalate_then_reframe | escalate_only | reframe_only | off
+        "plateau_action": "escalate_then_reframe",
+    },
 }
 
 DEFAULT_PROVIDERS: Dict[str, Any] = {

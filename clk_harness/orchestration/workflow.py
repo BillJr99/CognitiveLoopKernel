@@ -274,6 +274,13 @@ class WorkflowStage:
     # chief checkpoint after the stage completes (CONTINUE / REDIRECT /
     # ABORT) AND uses meta-prompt drafting on dispatch when configured.
     careful: bool = False
+    # Critic-judge inner refinement loop. When present, after the
+    # worker's first response the harness dispatches the named critic
+    # agent to score the response 0..1; if below
+    # ``accept_threshold`` the worker is re-dispatched with the critic's
+    # feedback, up to ``max_rounds`` total worker dispatches. ``None``
+    # means "use the default policy from clk.config.json::robustness".
+    refine: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -331,6 +338,13 @@ def load_workflow(path: Path) -> Workflow:
             rounds = int(raw.get("rounds") or 1)
         except (TypeError, ValueError):
             rounds = 1
+        refine_raw = raw.get("refine")
+        if isinstance(refine_raw, dict):
+            refine_cfg: Optional[Dict[str, Any]] = dict(refine_raw)
+        elif refine_raw in (True, "true", "yes", 1):
+            refine_cfg = {}
+        else:
+            refine_cfg = None
         stages.append(
             WorkflowStage(
                 id=str(raw.get("id") or raw.get("agent") or "stage"),
@@ -344,6 +358,7 @@ def load_workflow(path: Path) -> Workflow:
                 phase=str(raw.get("phase") or "").strip().lower(),
                 rounds=max(1, rounds),
                 careful=bool(raw.get("careful") or False),
+                refine=refine_cfg,
                 metadata=dict(raw.get("metadata") or {}),
             )
         )
@@ -700,6 +715,18 @@ class WorkflowRunner:
                 break
 
         assert run is not None  # the loop runs at least once
+
+        # Critic-judge refinement loop. When the stage opts in
+        # (explicit ``refine:`` block or careful=true under the default
+        # auto_refine policy), dispatch a critic agent to score the
+        # response; if the critic says revise, re-dispatch the worker
+        # with the critic's feedback until accept or max_rounds.
+        if not dry_run and run.response.ok and self._refine_enabled(stage):
+            try:
+                run = self._refine_loop(workflow, stage, run, cycle_context, dry_run)
+            except Exception as exc:
+                log_exception("orchestration.workflow._run_stage.refine", exc)
+
         ok = run.response.ok
         if dry_run:
             v_ok, v_out = True, "(dry-run: validation skipped)"
@@ -870,6 +897,201 @@ class WorkflowRunner:
             return True
         # default mode "careful_only"
         return bool(stage.careful)
+
+    # -- critic-judge refinement (Layer 3 robustness loop) ---------------
+
+    def _refine_enabled(self, stage: WorkflowStage) -> bool:
+        """Decide whether the critic-judge refinement loop should run.
+
+        Explicit ``refine:`` on the stage always wins. Otherwise we
+        fall back to ``robustness.auto_refine`` (off | careful_only |
+        all). ``chief`` and ``qa`` agents are skipped to avoid the
+        critic critiquing its own coalescing output or the validator.
+        """
+        if stage.agent in ("chief", "qa", "critic"):
+            return False
+        if stage.refine is not None:
+            return True
+        cfg = (self.runner.clk_cfg.get("robustness") or {})
+        mode = str(cfg.get("auto_refine") or "off").lower()
+        if mode in ("", "off", "false", "0"):
+            return False
+        if mode == "all":
+            return True
+        # default mode "careful_only"
+        return bool(stage.careful)
+
+    def _refine_loop(
+        self,
+        workflow: "Workflow",
+        stage: WorkflowStage,
+        first_run: AgentRun,
+        cycle_context: str,
+        dry_run: Optional[bool],
+    ) -> AgentRun:
+        """Run draft → critic → revise until accept or max_rounds.
+
+        Reuses the runner's existing dispatch path for both the critic
+        and the revised worker. The critic is dispatched in a ``phase:
+        refine_critic`` extra so the wrapper's auto-consensus and
+        quality-retry layers don't recurse.
+
+        Returns the final worker run — either the revised one or the
+        original when the critic accepts immediately.
+        """
+        defaults = (self.runner.clk_cfg.get("robustness") or {})
+        cfg = dict(stage.refine or {})
+        critic_name = str(cfg.get("critic") or "critic")
+        try:
+            max_rounds = int(cfg.get("max_rounds") or defaults.get("refine_max_rounds") or 3)
+        except (TypeError, ValueError):
+            max_rounds = 3
+        try:
+            threshold = float(cfg.get("accept_threshold") or defaults.get("refine_accept_threshold") or 0.8)
+        except (TypeError, ValueError):
+            threshold = 0.8
+
+        # If the named critic isn't in the roster, fall back to the
+        # `critic` baseline; if even that is missing, skip silently.
+        agents_cfg = (self.runner.agents_cfg.get("agents") or {})
+        if critic_name not in agents_cfg:
+            critic_name = "critic" if "critic" in agents_cfg else ""
+        if not critic_name:
+            return first_run
+
+        current_run = first_run
+        for round_idx in range(1, max_rounds + 1):
+            verdict, judge_score, feedback = self._dispatch_critic(
+                workflow, stage, current_run, critic_name, round_idx, max_rounds, dry_run,
+            )
+            log_event(
+                self.paths,
+                "refine_critic_verdict",
+                agent=stage.agent,
+                critic=critic_name,
+                workflow=workflow.name,
+                stage_id=stage.id,
+                round=round_idx,
+                max_rounds=max_rounds,
+                verdict=verdict,
+                score=judge_score,
+                accept_threshold=threshold,
+            )
+            self.runner._observer_log(
+                f"refine :: {stage.id} :: round {round_idx}/{max_rounds} "
+                f"{critic_name}→ verdict={verdict} score={judge_score:.2f}"
+            )
+            if verdict == "accept" or judge_score >= threshold:
+                return current_run
+            if round_idx == max_rounds:
+                # Out of budget — keep the latest worker output even
+                # though the critic isn't satisfied.
+                return current_run
+            revise_objective = (
+                f"Refinement round {round_idx + 1}/{max_rounds} of stage "
+                f"`{stage.id}`. The critic (`{critic_name}`) scored your "
+                f"previous response {judge_score:.2f}/1.0 and asked for "
+                "revisions:\n\n"
+                f"{feedback}\n\n"
+                "Revise the response so the critic's points are addressed. "
+                "Keep what already works; rewrite only what was flagged. "
+                "Re-emit POST and ACTION blocks the same way you did the "
+                "first time so the harness can record the updated work.\n\n"
+                f"Original objective:\n{stage.objective}"
+            )
+            current_run = self.runner.run(
+                stage.agent,
+                revise_objective,
+                extra={
+                    "phase": "refine_worker",
+                    "stage_id": stage.id,
+                    "workflow": workflow.name,
+                    "cycle_context": cycle_context,
+                    "blackboard_inputs": list(stage.inputs),
+                    "stage_outputs": list(stage.outputs),
+                    "refine_round": round_idx + 1,
+                    "refine_max_rounds": max_rounds,
+                },
+                dry_run=dry_run,
+            )
+            if not current_run.response.ok:
+                return current_run
+        return current_run
+
+    _REFINE_VERDICT_RE = re.compile(
+        r"^\s*VERDICT\s*:\s*(accept|revise|reject)\b", re.IGNORECASE | re.MULTILINE,
+    )
+    _REFINE_SCORE_RE = re.compile(
+        r"^\s*SCORE\s*:\s*([0-9]*\.?[0-9]+)", re.IGNORECASE | re.MULTILINE,
+    )
+
+    def _dispatch_critic(
+        self,
+        workflow: "Workflow",
+        stage: WorkflowStage,
+        worker_run: AgentRun,
+        critic_name: str,
+        round_idx: int,
+        max_rounds: int,
+        dry_run: Optional[bool],
+    ) -> Tuple[str, float, str]:
+        """Run one critic pass; return ``(verdict, score, feedback)``.
+
+        ``verdict`` is normalised to ``"accept"`` or ``"revise"``.
+        ``score`` is parsed from the critic's ``SCORE: <0..1>`` line and
+        defaults to 0.0 (i.e. "revise") when missing.
+        ``feedback`` is the critic's full response text, used verbatim
+        in the revision objective.
+        """
+        worker_text = (worker_run.response.text or "").strip()
+        if len(worker_text) > 4000:
+            worker_text = worker_text[:4000].rstrip() + "\n…(truncated)"
+        outputs_text = (
+            ", ".join(stage.outputs) if stage.outputs else "(no declared outputs)"
+        )
+        critic_objective = (
+            f"Refinement-loop critic pass for workflow `{workflow.name}` "
+            f"stage `{stage.id}` (round {round_idx}/{max_rounds}).\n\n"
+            f"Worker: `{stage.agent}`\n"
+            f"Worker's objective:\n{stage.objective}\n\n"
+            f"Declared output contract keys: {outputs_text}\n\n"
+            f"Worker's response:\n---\n{worker_text}\n---\n\n"
+            "Score the response 0..1 against the objective and the "
+            "declared output contract. List concrete, specific "
+            "revisions the worker should make. Be brief — three to six "
+            "bullets is plenty. End your response with exactly two "
+            "lines:\n"
+            "VERDICT: accept   # or `revise` if any item must change\n"
+            "SCORE: <0..1>\n"
+        )
+        critic_run = self.runner.run(
+            critic_name,
+            critic_objective,
+            extra={
+                "phase": "refine_critic",
+                "stage_id": stage.id,
+                "workflow": workflow.name,
+                "refine_round": round_idx,
+            },
+            dry_run=dry_run,
+        )
+        text = critic_run.response.text or ""
+        verdict_m = self._REFINE_VERDICT_RE.search(text)
+        verdict = (verdict_m.group(1).lower() if verdict_m else "revise")
+        if verdict not in ("accept", "revise"):
+            verdict = "revise"
+        score_m = self._REFINE_SCORE_RE.search(text)
+        try:
+            score_val = float(score_m.group(1)) if score_m else 0.0
+        except (TypeError, ValueError):
+            score_val = 0.0
+        score_val = max(0.0, min(1.0, score_val))
+        # When the critic accepted but didn't post a score, treat it as
+        # a confident pass; when it asked to revise but didn't score,
+        # treat as a moderate-low score so the loop continues.
+        if score_m is None:
+            score_val = 1.0 if verdict == "accept" else 0.4
+        return verdict, score_val, text.strip()
 
     def _dispatch_checkpoint(
         self,

@@ -20,11 +20,13 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..config import Paths
-from ..git_ops import add_all, commit as git_commit, has_changes
+from ..git_ops import add_all, commit as git_commit, has_changes, head_sha, revert_to
+from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
+from . import response_quality as _response_quality
 from .agent import AgentRunner
 from .evaluator import Evaluator
 
@@ -63,14 +65,42 @@ class AutoresearchLoop:
                 break
         return out
 
+    def _robustness_cfg(self) -> Dict[str, Any]:
+        return dict(self.runner.clk_cfg.get("robustness") or {})
+
     def _step(self, idx: int, *, dry_run: bool) -> Experiment:
         started = datetime.now().isoformat(timespec="seconds")
+        before = head_sha(self.paths.root)
+        min_chars = int(self._robustness_cfg().get("min_response_chars") or 40)
         survey = self.runner.run(
             "ralph",
             f"Autoresearch step #{idx}: survey state and propose next experiment.",
             extra={"iteration": idx, "loop": "autoresearch"},
             dry_run=dry_run,
         )
+        survey_quality = _response_quality.score(survey.response.text, min_chars=min_chars)
+        if not survey_quality.ok and not survey_quality.recoverable:
+            log_event(
+                self.paths,
+                "autoresearch_step_skipped_low_quality",
+                agent="ralph",
+                iteration=idx,
+                survey_quality=survey_quality.summary(),
+                flags=list(survey_quality.flags),
+            )
+            log(
+                f"autoresearch #{idx}: skipping — survey returned no usable text",
+                level="WARN",
+            )
+            finished = datetime.now().isoformat(timespec="seconds")
+            return Experiment(
+                index=idx,
+                started_at=started,
+                finished_at=finished,
+                question="(survey produced no question; step skipped)",
+                finding="",
+                committed=False,
+            )
         question_lines = (survey.response.text or "").strip().splitlines()
         question = next(
             (l for l in question_lines if l.strip().startswith(("Q:", "Question:", "Hypothesis:"))),
@@ -92,17 +122,38 @@ class AutoresearchLoop:
 
         finding_preview = (analyst.response.text or "")[:400]
         committed = False
+        # Evaluator gate: if the analyst's writes broke the build,
+        # revert to the pre-step HEAD rather than committing a broken
+        # state. Same protocol Ralph already uses.
         if not dry_run and has_changes(self.paths.root) and analyst.response.ok:
-            if add_all(self.paths.root):
-                committed = git_commit(
-                    self.paths.root,
+            eval_result = self.evaluator.run()
+            if eval_result.ok:
+                if add_all(self.paths.root):
+                    committed = git_commit(
+                        self.paths.root,
+                        agent="autoresearch",
+                        objective=question,
+                        files_changed=analyst.files_written,
+                        validation=f"critic ok={critic.response.ok}; "
+                                   f"eval={eval_result.summary()[:200]}",
+                        next_step="select next question",
+                        body_extra=finding_preview,
+                    )
+            elif before:
+                log_event(
+                    self.paths,
+                    "autoresearch_revert",
                     agent="autoresearch",
-                    objective=question,
-                    files_changed=analyst.files_written,
-                    validation=f"critic ok={critic.response.ok}",
-                    next_step="select next question",
-                    body_extra=finding_preview,
+                    iteration=idx,
+                    eval_summary=eval_result.summary()[:400],
+                    sha_before=before,
                 )
+                log(
+                    f"autoresearch #{idx}: evaluator failed; reverting to "
+                    f"{before[:8]}",
+                    level="WARN",
+                )
+                revert_to(self.paths.root, before)
         finished = datetime.now().isoformat(timespec="seconds")
         return Experiment(
             index=idx,
