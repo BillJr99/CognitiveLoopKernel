@@ -71,8 +71,15 @@ _it_secret() {
 }
 
 _it_confirm() {
-  local prompt="$1" default="${2:-N}" v
-  v="$(_it_read "$prompt [$default]" "$default")"
+  local prompt="$1" default="${2:-N}" v hint
+  case "${default^^}" in
+    Y|YES) hint="Y/n" ;;
+    *)     hint="y/N" ;;
+  esac
+  _it_open_tty
+  printf '%s [%s]: ' "$prompt" "$hint" >&4
+  IFS= read -r v <&3 || v=""
+  v="${v:-$default}"
   case "${v,,}" in
     y|yes) return 0 ;;
     *) return 1 ;;
@@ -196,6 +203,33 @@ install_tool() {
   if check_tool "$name"; then
     _it_say "[install_tool] $name already available — skipping install."
     return 0
+  fi
+
+  # openwebui is an HTTP service, not a CLI — before assuming it isn't
+  # installed, give the user a chance to point us at a non-default URL
+  # (e.g. they're running the official Docker image on a different port).
+  if [ "$name" = "openwebui" ]; then
+    _it_say ""
+    _it_say "[install_tool] openwebui not reachable at the default URL."
+    _it_say "[install_tool] If you already have OpenWebUI running (e.g. via Docker on a non-standard port),"
+    _it_say "[install_tool] enter its URL now and we'll re-check before suggesting install."
+    local _ow_endpoint
+    _ow_endpoint="$(_it_read "OpenWebUI endpoint" "${CLK_OPENWEBUI_ENDPOINT:-http://localhost:8080}")"
+    export CLK_OPENWEBUI_ENDPOINT="$_ow_endpoint"
+    env_set "$_IT_ENV_FILE" CLK_OPENWEBUI_ENDPOINT "$_ow_endpoint"
+    if _it_confirm "Set OpenWebUI API key now? (only needed for authenticated instances)" "N"; then
+      local _ow_key
+      _ow_key="$(_it_secret "Paste OpenWebUI API key")"
+      if [ -n "$_ow_key" ]; then
+        export CLK_OPENWEBUI_API_KEY="$_ow_key"
+        env_set "$_IT_ENV_FILE" CLK_OPENWEBUI_API_KEY "$_ow_key"
+      fi
+    fi
+    if check_tool openwebui; then
+      _it_say "[install_tool] openwebui reachable at $_ow_endpoint — skipping install."
+      return 0
+    fi
+    _it_warn "still no openwebui server at $_ow_endpoint."
   fi
 
   # Resolve the install command for this tool.
