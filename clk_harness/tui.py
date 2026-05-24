@@ -56,7 +56,15 @@ from .config import (
     project_paths,
     save_json,
 )
-from .git_ops import add_all, commit as git_commit, has_changes, is_repo
+from .git_ops import (
+    add_all,
+    commit as git_commit,
+    commits_ahead,
+    has_changes,
+    has_remote,
+    is_repo,
+    push as git_push,
+)
 from .orchestration import (
     AgentObserver,
     AgentRunner,
@@ -1619,7 +1627,7 @@ class Worker(threading.Thread):
                 return
             if not add_all(self.paths.root):
                 return
-            git_commit(
+            ok = git_commit(
                 self.paths.root,
                 agent=agent,
                 objective=objective,
@@ -1627,6 +1635,30 @@ class Worker(threading.Thread):
                 validation=validation,
                 next_step="continue conversation",
             )
+            if not ok:
+                return
+            # Push to GitHub if the user opted in (CLK_GITHUB_PUSH_ON_COMMIT=true)
+            # and there's actually a remote. Errors are non-fatal — the
+            # commit is local-only until the user can push themselves.
+            import os
+            push_on_commit = os.environ.get("CLK_GITHUB_PUSH_ON_COMMIT", "false").lower() == "true"
+            if push_on_commit and has_remote(self.paths.root):
+                self.state.add_log("pushing commit to origin…", level="SYSTEM")
+                if git_push(self.paths.root):
+                    self.state.add_log("push succeeded.", level="SYSTEM")
+                else:
+                    self.state.add_log(
+                        "push failed — commit is still saved locally. /github to re-check the remote.",
+                        level="WARN",
+                    )
+            # Refresh the title-bar ahead counter either way so the user
+            # can see at a glance how many unpushed commits they have.
+            try:
+                ahead = commits_ahead(self.paths.root)
+                with self.state.lock:
+                    self.state.github_ahead = ahead
+            except Exception:
+                pass
         except Exception as exc:
             log_exception("tui.Worker._maybe_commit", exc)
 

@@ -190,6 +190,71 @@ def head_sha(root: Path) -> Optional[str]:
         return None
 
 
+def has_remote(root: Path, name: str = "origin") -> bool:
+    """Return True if the repo has a remote with the given name."""
+    try:
+        r = subprocess.run(
+            ["git", "remote", "get-url", name],
+            cwd=root, capture_output=True, text=True, check=False,
+        )
+        return r.returncode == 0
+    except Exception as exc:
+        log_exception("git_ops.has_remote", exc)
+        return False
+
+
+def commits_ahead(root: Path, remote: str = "origin") -> int:
+    """How many local commits are not yet on ``remote``'s tracked branch.
+
+    Returns 0 on any error (no remote, no upstream, network failure)
+    so the caller can use this directly in a UI count.
+    """
+    try:
+        # First check there is an upstream — without it `git rev-list`
+        # below would fail noisily.
+        r = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            cwd=root, capture_output=True, text=True, check=False,
+        )
+        if r.returncode != 0:
+            return 0
+        r = subprocess.run(
+            ["git", "rev-list", "--count", "@{u}..HEAD"],
+            cwd=root, capture_output=True, text=True, check=False,
+        )
+        if r.returncode != 0:
+            return 0
+        return int(r.stdout.strip() or "0")
+    except Exception as exc:
+        log_exception("git_ops.commits_ahead", exc)
+        return 0
+
+
+def push(root: Path, remote: str = "origin", branch: Optional[str] = None) -> bool:
+    """Best-effort push to ``remote``. Returns True on success.
+
+    Used by the harness when ``CLK_GITHUB_PUSH_ON_COMMIT=true`` is set
+    — failures are logged but never raise. The harness keeps working
+    locally even when the network is down.
+    """
+    if not is_repo(root) or not has_remote(root, remote):
+        return False
+    args = ["git", "push", remote]
+    if branch:
+        args.append(branch)
+    else:
+        args.append("HEAD")
+    try:
+        r = subprocess.run(args, cwd=root, capture_output=True, text=True, check=False)
+        if r.returncode == 0:
+            return True
+        log(f"push failed: rc={r.returncode} stderr={r.stderr.strip()[:200]}", level="WARN")
+        return False
+    except Exception as exc:
+        log_exception("git_ops.push", exc)
+        return False
+
+
 def revert_to(root: Path, sha: str) -> bool:
     try:
         subprocess.run(

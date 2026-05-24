@@ -16,6 +16,61 @@ committed automatically.
 > Contributions, bug reports, and ideas are very welcome — feel free to
 > open an issue or pull request!
 
+## What's new
+
+If you've used CLK before, the highlights of this release:
+
+- **The setup wizard explains itself.** `kickoff.sh --setup` is now a
+  series of explain-then-ask blocks (provider, loop settings, tool
+  detection, telegram, GitHub, git identity) — every question is
+  preceded by a short block telling you what the value does. Modeled
+  on `scripts/install_local.sh`'s narration style.
+- **Tool auto-install.** Pick a provider whose CLI isn't installed and
+  the wizard surfaces the canonical install command (`npm install -g
+  …`, `curl -fsSL https://ollama.ai/install.sh | sh`, etc.) and asks
+  before running it. The same registry powers `/install` from inside
+  the TUI.
+- **First-use configuration.** After install, every tool goes through
+  the same four-step shape: auth → upstream route → model → verify.
+  Pi prompts for its upstream provider (openrouter / anthropic /
+  openai / google) and the right env-var receives your API key.
+  Ollama runs `ollama list`, lets you pick a local model or pull a
+  new one with progress streaming. Re-run any time via `/configure
+  [tool]`.
+- **GitHub integration.** The wizard offers to skip, link an existing
+  repo, or create a new private one. A hardened `.gitignore` and a
+  pre-push secret scanner protect against accidental `.env` /
+  API-key leaks. `CLK_GITHUB_PUSH_ON_COMMIT=true` makes each agent
+  commit push automatically.
+- **Friendlier TUI.** First-run welcome banner, `/help` modal
+  overlay (F1 or `?`), state-aware hint bar above the input,
+  in-title USD cost estimate, narrative status snapshots, and
+  follow-on suggestions after every workflow and loop ("next:
+  `/loop ralph 5` to refine, `/undo` to revert, or type a follow-up
+  message"). The user always knows the next move.
+- **Recoverability everywhere.** Atomic `.env` and JSON writes with
+  `.bak` rotation; `kickoff.sh --restore` swaps it back. Per-step
+  resume in the wizard via `.clk/.setup-progress`. Crashed-session
+  detection in the TUI surfaces "recovered from a crashed session"
+  and points at the preserved `conversation.md`. `/undo` reverts the
+  last clk-authored commit after explicit confirm.
+- **`/doctor` and `/diag`.** Health-check every provider and config;
+  `--fix` prompts before repairing. `/diag` builds a redacted
+  tarball for bug reports — API keys are replaced with
+  `<redacted: N chars>`.
+- **`/tutorial`.** A 30-second sample idea against the `shell`
+  provider so first-time users see agents working end-to-end without
+  spending a cent.
+- **Workspace management.** `./kickoff.sh --list`, `--clean 7d`,
+  `/workspaces` inside the TUI. Old kickoff dirs no longer pile up.
+- **Always-confirm policy.** Every install, push, undo, ollama pull,
+  cost-cap crossing, or `--clean` removal asks `[y/N]` every single
+  time. There is no "remember my answer" setting — by design.
+
+See the **Recoverability**, **GitHub integration**, **Diagnostics**,
+**Workspaces**, and **Cost guardrails** sections below for the full
+walkthroughs.
+
 ## Why CLK
 
 - **Local-first.** Everything lives under `.clk/` in the project
@@ -103,6 +158,7 @@ engineering cycle so the agents react to the new context.
 | TUI command                          | Effect |
 |--------------------------------------|--------|
 | free text                            | first message becomes the idea, then auto-runs casting + `engineering`; later messages append to the conversation and re-cast + re-run |
+| `/help` (or F1, or `?` when empty)   | open the in-place help overlay with every command listed |
 | `/idea <text>`                       | replace the captured idea |
 | `/cast`                              | force a fresh chief casting pass against the current state |
 | `/roles list`                        | print the current roster (baseline + dynamic) |
@@ -113,14 +169,30 @@ engineering cycle so the agents react to the new context.
 | `/loop autoresearch 3`               | start a Karpathy-style research loop (ralph agent, research mode) |
 | `/stop`                              | request the active loop to stop after the current iteration |
 | `/abort`                             | SIGTERM any running CLI subprocess (use when an agent is genuinely hung; the heartbeat tells you when this is likely) |
-| `/provider <name>`                   | switch the active provider (shell, claude, codex, gemini, pi, ollama, openwebui) |
-| `/status`                            | log a status snapshot |
+| `/provider <name>`                   | switch the active provider; verifies it's reachable and warns if not |
+| `/install [tool]`                    | install a missing provider CLI (claude, pi, ollama, …) via the registry in `scripts/install_tool.sh` |
+| `/configure [tool]`                  | (re-)run a tool's first-use config — auth, upstream route, model picking |
+| `/github`                            | inspect the current remote and link instructions for adding one |
+| `/undo`                              | preview the last clk-authored commit; `/undo confirm` reverts it |
+| `/doctor [--fix]`                    | health-check every provider, config, and git state; `--fix` prompts before repairing |
+| `/diag`                              | bundle the logs, last 3 runs, and a redacted `.env` into `clk-diag-<ts>.tar.gz` for bug reports |
+| `/tutorial`                          | run a 30-second sample idea on the `shell` provider — costs nothing |
+| `/workspaces list\|rename\|switch\|clean` | manage past kickoff dirs under `workspace/` |
+| `/status`                            | print a narrative session snapshot (idea, agents, tokens, files, per-provider cost) |
 | `/quit`                              | exit the TUI |
 
 PgUp/PgDn scroll the log pane; Backspace edits the input; Enter sends.
 The input area wraps when you type past one row and the status log
-word-wraps every entry. The bottom band shows running totals:
-`agents=N :: tokens=Xk (in=Y / out=Z) :: peak_run=P :: files=N`.
+word-wraps every entry. A one-line hint bar above the input adapts to
+state: if no idea is captured yet it says "type your idea, or
+`/tutorial`, or `/help`"; if a run failed with a missing CLI it says
+"try `/install <provider>` to fix"; if an agent is working it points
+at `/abort`. You always know your next move.
+
+The title bar shows: project, active provider, current phase, total
+tokens, **estimated USD cost for the session** (via the per-provider
+table in `clk_harness/pricing.py`), files written, and a `↑N` counter
+for commits not yet pushed to the GitHub remote (when configured).
 
 CLI providers (`claude`, `codex`, `gemini`, `pi`) stream their
 subprocess stdout/stderr live: every line the CLI prints (auth status,
@@ -310,9 +382,49 @@ writes back into `/app/.env`); `--env-file` only injects vars at start.
 
 ### First-run setup
 
-Run the setup wizard to create your `.env` before starting a session. The
-wizard copies `.env.example` → `.env` (if absent), then walks you through
-every setting: provider, API keys, git identity, etc.
+Run the setup wizard to create your `.env`. The wizard is structured
+as a series of **explain-then-ask** blocks — each section tells you
+what the value does before asking for it, modeled on the
+`scripts/install_local.sh` narration style. Sections (in order):
+
+1. **Provider** — pick the AI that writes code (`shell`, `claude`,
+   `codex`, `gemini`, `pi`, `ollama`, `openwebui`). One-liner per
+   choice.
+2. **Loop settings** — max iterations, project name, install flag,
+   TUI/no-TUI.
+3. **Auth mode** — only for CLI providers; `cli` reuses your local
+   `claude login` / `codex login` / `gemini login`, `apikey`
+   prompts for a key directly.
+4. **Tool detection + auto-install** — checks whether the chosen
+   provider's CLI is on PATH; if not, surfaces the canonical install
+   command and asks before running it. Backed by
+   `scripts/install_tool.sh`'s registry — same commands the TUI's
+   `/install` uses.
+5. **First-use configure** — auth → upstream route → model →
+   verify. Pi picks `openrouter` / `anthropic` / `openai` / `google`
+   and sets the right `{ROUTE}_API_KEY` env var. Ollama runs
+   `ollama list`, lets you pick a local model or pull a new one
+   (progress streamed). State recorded in
+   `.clk/state/configured-tools.json` so the wizard knows not to
+   re-prompt next time.
+6. **Telegram** — same flow as before. Says yes here triggers the
+   dedicated bot wizard at `scripts/telegram_setup_wizard.sh`.
+7. **GitHub** — optional remote (skip / existing / create); writes a
+   hardened `.gitignore` and a pre-push secret scan hook. See
+   [GitHub integration](#github-integration).
+8. **Git identity** — `CLK_GIT_NAME` / `CLK_GIT_EMAIL` for the
+   in-container fallback.
+
+**Atomic writes.** Every answer is persisted to `.env` immediately
+via `env_set` (sourced from `scripts/lib_env.sh`). The previous
+content rotates to `.env.bak`. If the wizard crashes mid-flow, the
+next run looks at `.clk/.setup-progress` and offers to resume from
+the last completed step. To undo a bad wizard run entirely, run
+`./kickoff.sh --restore`.
+
+**Always-confirm.** Every install, push, ollama pull, and
+destructive step asks `[y/N]` every single time. Pressing Enter
+defaults to the safe option.
 
 ```bash
 # Create an empty config file on the host (once)
@@ -645,6 +757,187 @@ Restart `clk-telegram-bot` to pick up the change.
 - **Kickoff prompts every run.** Set `CLK_TELEGRAM_SKIP=true` in `.env`
   to permanently suppress the "Set up Telegram bot now?" prompt.
 
+## Recoverability
+
+CLK tries hard to never leave you with a broken setup or a stuck
+session. The safety nets:
+
+| Safety net | When it kicks in | How to use it |
+|---|---|---|
+| `.env.bak` rotation | Every wizard run rotates the old `.env` to `.env.bak` before writing. | `./kickoff.sh --restore` swaps it back. |
+| Atomic `.env` writes | Wizards write to `.env.tmp` and rename — Ctrl-C mid-write leaves either the old or the new file intact, never half. | Automatic; no user action. |
+| Atomic JSON config writes | Same pattern for `.clk/config/*.json` and any agent-written JSON, with `.bak` rotation. | Implemented in `clk_harness.config.save_json`. |
+| Per-step wizard resume | Wizard tracks last completed step in `.clk/.setup-progress`. If you Ctrl-C, the next run offers to resume. | `./kickoff.sh --setup` prompts "Resume from after step X? [Y/n]". |
+| Crashed-session detection | The TUI writes its PID to `.clk/state/.tui-active`. If a previous TUI exited uncleanly, the next launch surfaces "recovered from a crashed session" and points to the preserved `.clk/state/conversation.md`. | Automatic. |
+| `/undo` | After every agent commit, `/undo` lets you preview and revert the last commit. Two-step (preview first, then `/undo confirm`) so it's never accidental. | Type `/undo` in the TUI. |
+| `/abort` | When an agent subprocess is stuck, SIGTERM it without killing the TUI. The provider returns a timeout error, the cycle reports the failure cleanly. | Type `/abort` in the TUI. |
+| `/install` / `/configure` | Recover from "CLI not found" / "auth failed" without leaving the dashboard. | `/install [provider]` then `/configure [provider]`. |
+| Pre-push secret scanner | Installed in the kickoff dir's `.git/hooks/pre-push`. Greps for `ANTHROPIC_API_KEY=`, `OPENAI_API_KEY=`, `sk-…`, private-key headers. Bypass with `git push --no-verify` when sure. | Automatic in every kickoff dir. |
+
+**Confirmation policy.** Every install, push, undo, cost-cap
+crossing, ollama pull, and destructive `--clean` action asks `[y/N]`
+every single time. There is no "remember my answer" shortcut — by
+design.
+
+## GitHub integration
+
+`kickoff.sh --setup` offers to wire each kickoff workspace up to a
+GitHub remote so every CLK commit is checkpointed off your machine.
+
+**Three modes:**
+
+- `skip` — no GitHub, local commits only (default).
+- `existing` — paste a `https://github.com/OWNER/REPO` or
+  `git@github.com:OWNER/REPO.git` URL; the wizard validates it via
+  `gh repo view` (or `git ls-remote` if `gh` isn't on PATH).
+- `create` — provide `owner/repo` (default
+  `$USER/$CLK_PROJECT_NAME-kickoff`), the wizard runs
+  `gh repo create … --private` from inside the kickoff dir. Default
+  visibility is private — making it public requires an explicit
+  choice.
+
+**Auth.** Prefer the `gh` CLI if it's on PATH and authenticated. If
+not, the wizard offers to install `gh` and drops you into a shell
+for `gh auth login` (same pattern as `pi login`). PATs are stashed
+in `~/.config/clk/github-token` (chmod 600), never `.env`.
+
+**Hardened `.gitignore`.** Written before the first push so secrets
+can't leak. Blocks `.env`, `.env.bak`, `.env.local`, `*.pem`,
+`*.key`, `*_id_rsa*`, `/secrets/`, plus editor / OS junk.
+
+**Pre-push hook.** `.git/hooks/pre-push` greps the about-to-push
+objects for obvious key patterns (Anthropic / OpenAI / OpenRouter /
+Gemini / Google keys, generic `sk-…` strings, Slack `xoxb-` tokens,
+private key headers). On a hit the push aborts with the offending
+lines and the bypass instructions. Bypass once with `git push
+--no-verify`.
+
+**`CLK_GITHUB_PUSH_ON_COMMIT=true`** makes the harness follow every
+auto-commit with a `git push origin HEAD`. Failures are non-fatal —
+the commit stays local until the network or remote is back. The TUI
+title bar shows `↑N` for the count of unpushed commits.
+
+**Re-link from the TUI.** Type `/github` to see current remotes and
+re-link instructions.
+
+## Diagnostics & Doctor
+
+Two new commands help when something feels off.
+
+### `/doctor` (or `clk doctor`)
+
+Health-check every provider, validate `.env` against known-bad
+combos, and check git/GitHub state.
+
+- Reports each finding as `ok | warn | fail`.
+- Exits non-zero on any `fail` so it slots into CI.
+- `/doctor --fix` prompts before each automated remedy (running
+  `/install`, re-running `configure_tool`, writing a missing key).
+
+Common findings:
+
+| Finding | Meaning | Fix |
+|---|---|---|
+| `claude: unavailable` | `claude` CLI not on PATH or API key missing | `/install claude` then `/configure claude` |
+| `anthropic_key: fail` | `CLK_AUTH_MODE=apikey` but `ANTHROPIC_API_KEY` is empty | `/configure claude` to set it |
+| `git: warn` | no git repo at project root; auto-commit disabled | `git init` |
+| `ollama: unavailable` | endpoint not reachable | `/install ollama`, then `ollama serve &` |
+
+### `/diag` (or `clk diag`)
+
+Bundles the current state into a `clk-diag-<ts>.tar.gz` for sharing
+in bug reports. Contents:
+
+- `.clk/logs/*` (recent only — capped so the bundle stays small)
+- `.clk/runs/<last-3>/`
+- `.clk/state/*.{md,json}`
+- `clk doctor` output
+- `pyproject.toml` version, `python --version`, `git --version`,
+  `uname -a`
+- A redacted copy of `.env` — every value under a key containing
+  `KEY`, `TOKEN`, `SECRET`, or `PASS` is replaced with
+  `<redacted: N chars>` so the recipient can confirm you *had* a
+  key without seeing it.
+
+Always confirms before writing the tarball.
+
+## Tutorial mode
+
+First-time users can type `/tutorial` in the TUI to run a
+30-second sample idea — `"Add a hello() function to greeter.py"` —
+against the `shell` provider. Costs nothing, takes no API keys,
+demonstrates the cast → engineer → qa → commit loop end-to-end so
+the user knows what a "real" run will look like.
+
+The tutorial backs up your active provider, runs one engineering
+cycle in `.clk/state/.tutorial/`, then restores. A marker at
+`.clk/state/.seen-tutorial` suppresses the "type /tutorial" hint
+in the welcome banner on subsequent runs.
+
+## Workspace management
+
+Each `kickoff.sh` creates `workspace/kickoff-<timestamp>/`. To keep
+the directory navigable:
+
+```bash
+./kickoff.sh --list                # show every kickoff with its idea
+./kickoff.sh --clean 7d            # delete kickoff dirs older than 7 days (after y/N)
+./kickoff.sh --clean 30m           # same, in minutes
+./kickoff.sh --restore             # roll .env back to .env.bak (undo last wizard run)
+```
+
+From inside the TUI:
+
+```text
+/workspaces list                   # numbered list, * marks the current one
+/workspaces rename old-name new    # rename a kickoff dir
+/workspaces switch <name>          # prints instructions (/quit, then cd)
+/workspaces clean                  # points at ./kickoff.sh --clean
+```
+
+The kickoff manifest at `KICKOFF.md` (written by `kickoff.sh` into
+each new workspace) records timestamp, source dir, project name,
+provider, max iterations, install flag, and idea.
+
+## Cost guardrails
+
+Title-bar dollar cost is computed from the per-provider table in
+`clk_harness/pricing.py`:
+
+| Provider | Default $/1k in | Default $/1k out |
+|---|---|---|
+| claude (sonnet-4-5)  | $0.003   | $0.015  |
+| claude (haiku-latest)| $0.0008  | $0.004  |
+| claude (opus-latest) | $0.015   | $0.075  |
+| codex (gpt-4o)       | $0.0025  | $0.010  |
+| codex (gpt-4o-mini)  | $0.00015 | $0.0006 |
+| codex (o1)           | $0.015   | $0.060  |
+| gemini (1.5-pro)     | $0.00125 | $0.005  |
+| gemini (1.5-flash)   | $0.000075| $0.0003 |
+| pi                   | $0.003   | $0.015  (blended default; override per route) |
+| ollama / shell       | $0.00    | $0.00   |
+
+**Override per project** by adding to `.clk/config/providers.json`:
+
+```jsonc
+"providers": {
+  "pi": {
+    "type": "pi",
+    "pricing": { "input_per_1k": 0.002, "output_per_1k": 0.008 }
+  }
+}
+```
+
+Or per model:
+
+```jsonc
+"pricing_by_model": { "openrouter/free": { "input_per_1k": 0.0, "output_per_1k": 0.0 } }
+```
+
+`/status` prints the per-provider breakdown so you can see which
+provider is eating the budget. Updated lazily from the same numbers
+the title bar shows.
+
 ## Pi extension
 
 A native [pi.dev](https://pi.dev) extension that brings the full CLK
@@ -874,18 +1167,41 @@ workspace/kickoff-<ts>/
                                 # (agents write directly to project root)
   scripts/clk                   # convenience launcher shim
   KICKOFF.md                    # provenance manifest
+  .gitignore                    # hardened — blocks .env, .env.bak, *.pem, …
+  .git/hooks/pre-push           # secret scanner; aborts on key patterns
   .clk/                         # ALL harness state — sandboxed off
+    .setup-progress             # per-step resume marker for the wizard
     harness/clk_harness/        # harness sources copied from parent
     harness/scripts/            # original launcher / installer
     harness/pyproject.toml      # package metadata for pip install -e
     config/                     # clk.config.json, providers.json, agents.json
+                                # each written atomically with a .bak rotation
     state/                      # idea.json, prd.json, decisions.md ...
+                                # plus:
+                                #   .seen-welcome         first-run banner marker
+                                #   .seen-tutorial        /tutorial done marker
+                                #   .tui-active           PID lock (crashed-session detection)
+                                #   configured-tools.json which tools have had configure_tool run
+                                #   session-cost.json     persisted USD totals
     prompts/                    # per-agent system prompts
     blackboard/                 # cross-agent shared scratchpad (POST blocks land here)
     runs/                       # per-dispatch prompt + response logs
     backups/                    # pre-write copies of mutated files
     cache/, logs/, venv/        # local-only artifacts
 ```
+
+The repo root also adds:
+
+- `scripts/lib_env.sh` — shared atomic-write helpers (`env_set`,
+  `env_get`, `env_atomic_write`, `env_restore`) sourced by both
+  wizards.
+- `scripts/install_tool.sh` — install + check + configure registry
+  for every supported tool. Used by `kickoff.sh --setup` and by the
+  TUI's `/install` / `/configure` commands.
+- `clk_harness/pricing.py` — per-provider USD pricing table backing
+  the title-bar cost estimate.
+- `~/.config/clk/github-token` — when present (chmod 600), used in
+  place of the `gh` CLI for GitHub operations.
 
 ACTION blocks resolve relative to the project root. The harness rejects
 any path that resolves into `.clk/` so agents can't accidentally (or
