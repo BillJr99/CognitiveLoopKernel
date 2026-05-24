@@ -75,6 +75,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         "  /clk-abort       End the current run. Preserves state for resume.",
         "  /clk-help        Show this list.",
         "  /clk-doctor      Health-check tmux + git + workspace state.",
+        "  /clk-undo        Preview the last CLK commit; `/clk-undo confirm`",
+        "                   creates a new revert commit on top of it.",
         "",
         "Safety nets active in this workspace:",
         "  - Hardened .gitignore blocks .env / .env.bak / *.pem / id_rsa.",
@@ -87,6 +89,48 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         "tooling problems independently.",
       ];
       ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  // /clk-undo — revert the last CLK-authored commit. Two-step (preview
+  // then `/clk-undo confirm`) so it's never accidental. Same UX shape
+  // as the Python TUI's /undo command.
+  pi.registerCommand("clk-undo", {
+    description: "Revert the last CLK commit. `/clk-undo confirm` actually reverts.",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const confirm = (args ?? "").trim().toLowerCase() === "confirm";
+      try {
+        // Refuse if there are uncommitted changes so the revert doesn't
+        // lose in-progress work.
+        const { stdout: statusOut } = await execFileAsync(
+          "git", ["status", "--porcelain"], { cwd: ctx.cwd },
+        );
+        if (statusOut.trim()) {
+          ctx.ui.notify(
+            "/clk-undo refused: there are uncommitted changes. " +
+              "Commit or stash them first.",
+            "warning",
+          );
+          return;
+        }
+        const { stdout: head } = await execFileAsync(
+          "git", ["log", "-1", "--stat"], { cwd: ctx.cwd },
+        );
+        if (!confirm) {
+          ctx.ui.notify(
+            "Last commit (HEAD):\n" + head.split("\n").slice(0, 30).join("\n") +
+              "\n\nType `/clk-undo confirm` to revert this commit (creates a new revert commit).",
+            "info",
+          );
+          return;
+        }
+        await execFileAsync(
+          "git", ["revert", "--no-edit", "HEAD"], { cwd: ctx.cwd },
+        );
+        ctx.ui.notify("/clk-undo: HEAD reverted with a new commit.", "info");
+      } catch (err) {
+        ctx.ui.notify(`/clk-undo failed: ${(err as Error).message}`, "error");
+      }
     },
   });
 
