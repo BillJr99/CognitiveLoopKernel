@@ -240,6 +240,26 @@ first-use config (auth -> route -> model -> verify)."
     _mark_step tool_setup
   fi
 
+  # --- docker host fallback for local LLM endpoints --------------------
+  # Catches the common Docker-in-container case where CLK_OLLAMA_ENDPOINT
+  # or CLK_OPENWEBUI_ENDPOINT default to http://localhost:... but the
+  # actual server is on the host. We probe both the configured URL and
+  # the host.docker.internal equivalent; if only the latter answers,
+  # we offer to rewrite .env — even if the user picked a different
+  # provider as active (the TUI's health check surfaces all of them).
+  if _should_run_step "docker_host_fallback"; then
+    _sv_explain "=== Local LLM endpoint check ===
+If you have ollama or OpenWebUI running on the host but CLK is in a
+container, 'localhost' won't reach them. We'll probe each configured
+endpoint and, when only host.docker.internal works, offer to switch."
+    _it_offer_docker_host_fallback "Ollama" CLK_OLLAMA_ENDPOINT \
+      "${CLK_OLLAMA_ENDPOINT:-http://localhost:11434}" || true
+    _it_offer_docker_host_fallback "OpenWebUI" CLK_OPENWEBUI_ENDPOINT \
+      "${CLK_OPENWEBUI_ENDPOINT:-http://localhost:8080}" || true
+    _mark_step docker_host_fallback
+    [ -s "$env_file" ] && { set -a; . "$env_file"; set +a; }
+  fi
+
   # --- telegram --------------------------------------------------------
   if _should_run_step "telegram"; then
     _sv_explain "=== Telegram bot (optional) ===
