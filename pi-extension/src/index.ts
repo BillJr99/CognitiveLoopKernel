@@ -2,6 +2,10 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@mariozechner/pi-coding-agent";
+import { execFile } from "node:child_process";
+import { access } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   loadFromFiles,
   reset,
@@ -16,6 +20,8 @@ import { registerClkTools } from "./tools.js";
 import { registerSubagentTool, tmuxAvailable } from "./subagent.js";
 import { startRun, endRun, installAbortBridges, activeSignal } from "./abort.js";
 import { classifyError, recoveryHint, withRetry } from "./errors.js";
+
+const execFileAsync = promisify(execFile);
 
 export default async function (pi: ExtensionAPI): Promise<void> {
   installAbortBridges(pi);
@@ -32,7 +38,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     }
     await loadFromFiles(ctx.cwd);
     const s = getState();
-    if (s.idea) {
+    // First-run welcome — keyed off the absence of any captured idea.
+    // Tells the user what /clk does and where the safety nets live, so
+    // they're never staring at a blank Pi prompt wondering "now what?".
+    if (!s.idea) {
+      ctx.ui.notify(
+        "CLK is loaded. Type `/clk <your idea>` to start a run, or " +
+          "`/clk-help` for the full command list. Commits are auto-checkpointed; " +
+          "a pre-push hook scans for API keys before they leave your machine.",
+        "info",
+      );
+    } else {
       ctx.ui.setStatus("clk-idea", `idea: ${s.idea.slice(0, 60)}`);
     }
     if (s.roster) {
@@ -44,6 +60,106 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (await isDone(ctx.cwd)) {
       ctx.ui.setStatus("clk-done", `done: ${s.doneReason ?? "marked"}`);
     }
+  });
+
+  // /clk-help — the empowerment command. Lists every CLK command and
+  // its purpose so the user always knows the next move.
+  pi.registerCommand("clk-help", {
+    description: "List every CLK command and its purpose.",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      const lines = [
+        "CLK commands inside Pi:",
+        "  /clk <idea>      Start a new CLK run. The chief casts a team and",
+        "                   drives it to a working implementation via dispatch,",
+        "                   consensus, Ralph refinement, and autoresearch.",
+        "  /clk-abort       End the current run. Preserves state for resume.",
+        "  /clk-help        Show this list.",
+        "  /clk-doctor      Health-check tmux + git + workspace state.",
+        "",
+        "Safety nets active in this workspace:",
+        "  - Hardened .gitignore blocks .env / .env.bak / *.pem / id_rsa.",
+        "  - .git/hooks/pre-push aborts pushes containing API-key patterns.",
+        "  - .clk/state/*.{json,md} are written atomically with .bak rotation.",
+        "  - Each completed iteration is checkpointed with `git commit`.",
+        "",
+        "Re-read this anytime with /clk-help. If something looks stuck, the",
+        "agent_end hook will report it; `/clk-doctor` triages provider and",
+        "tooling problems independently.",
+      ];
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  // /clk-doctor — quick triage. Checks the conditions CLK needs to work:
+  // tmux on PATH, a git repo, the .clk/ layout, and any captured state.
+  pi.registerCommand("clk-doctor", {
+    description: "Health-check tmux + git + workspace state.",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      const findings: string[] = [];
+      async function checkBin(name: string): Promise<boolean> {
+        try {
+          await execFileAsync("command", ["-v", name], { shell: "/bin/bash" });
+          return true;
+        } catch {
+          try {
+            await execFileAsync(name, ["--version"]);
+            return true;
+          } catch {
+            return false;
+          }
+        }
+      }
+      async function fileOk(path: string): Promise<boolean> {
+        try {
+          await access(path);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      const tmuxOk = await tmuxAvailable();
+      findings.push(
+        tmuxOk
+          ? "  ✓ ok    tmux available"
+          : "  ✗ fail  tmux NOT installed (install: brew install tmux / apt install tmux)",
+      );
+      const gitOk = await checkBin("git");
+      findings.push(
+        gitOk
+          ? "  ✓ ok    git available"
+          : "  ✗ fail  git NOT installed",
+      );
+      const repoOk = await fileOk(join(ctx.cwd, ".git"));
+      findings.push(
+        repoOk
+          ? "  ✓ ok    cwd is a git repo"
+          : "  ! warn  cwd is NOT a git repo (CLK will git init on the first /clk)",
+      );
+      const clkOk = await fileOk(join(ctx.cwd, ".clk", "state"));
+      findings.push(
+        clkOk
+          ? "  ✓ ok    .clk/state/ exists"
+          : "  ! warn  .clk/state/ missing (will be created on the first /clk)",
+      );
+      const ignoreOk = await fileOk(join(ctx.cwd, ".gitignore"));
+      findings.push(
+        ignoreOk
+          ? "  ✓ ok    .gitignore exists"
+          : "  ! warn  .gitignore missing (will be written on first /clk)",
+      );
+      const hookOk = await fileOk(join(ctx.cwd, ".git", "hooks", "pre-push"));
+      findings.push(
+        hookOk
+          ? "  ✓ ok    pre-push secret scanner installed"
+          : "  ! warn  pre-push hook missing (will be installed on first /clk)",
+      );
+
+      const idea = getState().idea;
+      findings.push(idea ? `  ✓ ok    idea: ${idea.slice(0, 60)}` : "  - info  no idea captured yet");
+
+      ctx.ui.notify(["CLK doctor:", ...findings].join("\n"), "info");
+    },
   });
 
   pi.registerCommand("clk", {
