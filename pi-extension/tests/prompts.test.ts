@@ -15,7 +15,16 @@ describe("clkChiefPrimer", () => {
 
   test("mentions the core CLK tools", () => {
     const out = clkChiefPrimer("anything");
-    for (const tool of ["clk_cast", "clk_subagent", "clk_checkpoint", "clk_done"]) {
+    for (const tool of [
+      "clk_cast",
+      "clk_subagent",
+      "clk_subagent_quality",
+      "clk_consensus",
+      "clk_autoresearch",
+      "clk_ralph",
+      "clk_checkpoint",
+      "clk_done",
+    ]) {
       assert.ok(out.includes(tool), `primer should reference ${tool}`);
     }
   });

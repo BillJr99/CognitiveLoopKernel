@@ -86,7 +86,7 @@ export async function killAllSubagentSessions(): Promise<void> {
   );
 }
 
-interface SpawnOptions {
+export interface SpawnOptions {
   agent: string;
   task: string;
   preferredModel?: string;
@@ -95,7 +95,7 @@ interface SpawnOptions {
   onUpdate?: (text: string) => void;
 }
 
-async function spawnSubagent(opts: SpawnOptions): Promise<{ output: string; sessionId: string }> {
+export async function spawnSubagent(opts: SpawnOptions): Promise<{ output: string; sessionId: string }> {
   const sessionId = `clk-${randomUUID().slice(0, 8)}`;
   const dirPath = join(opts.cwd, ".clk", "subagents", sessionId);
   const taskPath = resolve(join(dirPath, "task.md"));

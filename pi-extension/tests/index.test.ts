@@ -73,10 +73,28 @@ describe("clkExtension default export", () => {
     await clkExtension(pi as any);
 
     const toolNames = tools.map((t) => t.name);
-    for (const required of ["clk_cast", "clk_progress", "clk_checkpoint", "clk_done"]) {
+    // Core orchestration + git plumbing tools.
+    const required = [
+      "clk_cast",
+      "clk_progress",
+      "clk_checkpoint",
+      "clk_revert",
+      "clk_branch",
+      "clk_merge",
+      "clk_done",
+      // New code-enforced orchestration loops (ported from the Python
+      // harness's response_quality / consensus / autoresearch / ralph
+      // modules — see src/quality.ts, src/consensus.ts).
+      "clk_consensus",
+      "clk_subagent_quality",
+      "clk_autoresearch",
+      "clk_ralph",
+      "clk_subagent",
+    ];
+    for (const name of required) {
       assert.ok(
-        toolNames.includes(required),
-        `tool ${required} not registered (got ${toolNames.join(", ")})`,
+        toolNames.includes(name),
+        `tool ${name} not registered (got ${toolNames.join(", ")})`,
       );
     }
     assert.ok(commands["clk"], "/clk command was not registered");

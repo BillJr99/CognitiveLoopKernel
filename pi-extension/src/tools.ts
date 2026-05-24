@@ -17,6 +17,9 @@ import {
 } from "./git.js";
 import { activeSignal, mergeSignals, endRun } from "./abort.js";
 import { classifyError, looksRedacted, recoveryHint, withRetry } from "./errors.js";
+import { dispatchWithQuality, runConsensus } from "./consensus.js";
+import { tmuxAvailable } from "./subagent.js";
+import { summarise } from "./quality.js";
 
 /**
  * Push the latest commit to `origin` when the user opted in via
@@ -398,6 +401,431 @@ export function registerClkTools(pi: ExtensionAPI): void {
         content: [{ type: "text", text: `merged ${featureBranch} into ${home}` }],
         details: { featureBranch, home, mergeHead },
       };
+    },
+  });
+
+  // ---------------------------------------------------------------------
+  // clk_consensus — stochastic auto-consensus fan-out
+  // ---------------------------------------------------------------------
+  pi.registerTool({
+    name: "clk_consensus",
+    label: "CLK Consensus",
+    description:
+      "Fan-out N parallel subagent samples for the SAME task; score each via the harness's " +
+      "quality detector and return the highest-scoring one (plus all candidates for traceability). " +
+      "Use this instead of clk_subagent whenever an answer is high-stakes (a design choice, a " +
+      "validation verdict, a non-trivial code edit), or whenever the chief is uncertain. Default " +
+      "samples=3; clamp 1..6.",
+    promptSnippet:
+      "Fan-out N stochastic samples for one task; quality-scored winner returned. " +
+      "Use liberally for high-stakes or uncertain dispatches.",
+    parameters: Type.Object({
+      agent: Type.String({
+        description: "Short role label (e.g. 'engineer', 'designer'). Embed the full persona in the task.",
+      }),
+      task: Type.String({
+        description: "Complete task description, including role persona and context.",
+      }),
+      samples: Type.Optional(
+        Type.Integer({ minimum: 1, maximum: 6, description: "How many samples to draw. Default 3." }),
+      ),
+      preferredModel: Type.Optional(
+        Type.String({
+          description:
+            "Short alias (claude-opus, claude-sonnet, claude-haiku, gpt-4o, gpt-4o-mini) " +
+            "or a provider/model string. Omit to use pi's default.",
+        }),
+      ),
+      minChars: Type.Optional(
+        Type.Integer({ minimum: 0, description: "Override minimum-response-length flag threshold (default 40)." }),
+      ),
+    }),
+    async execute(_id, params, signal, onUpdate, ctx) {
+      if (signal?.aborted || activeSignal()?.aborted) {
+        return { content: [{ type: "text", text: "clk_consensus cancelled before start." }], details: {} };
+      }
+      if (!(await tmuxAvailable())) {
+        return {
+          content: [{
+            type: "text",
+            text: "clk_consensus unavailable: tmux is not installed. Install it with: brew install tmux / apt install tmux",
+          }],
+          details: {},
+        };
+      }
+      if (looksRedacted(params.task)) {
+        return {
+          content: [{ type: "text", text: `clk_consensus skipped: 'task' appears redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
+      const sig = mergeSignals(signal, activeSignal());
+      const samples = Math.max(1, Math.min(6, params.samples ?? 3));
+      try {
+        const result = await runConsensus({
+          agent: params.agent,
+          task: params.task,
+          preferredModel: params.preferredModel,
+          cwd: ctx.cwd,
+          signal: sig,
+          samples,
+          scoreOpts: params.minChars !== undefined ? { minChars: params.minChars } : {},
+          onSample: (idx, message) =>
+            onUpdate?.({
+              content: [{ type: "text", text: `[consensus #${idx}] ${message}` }],
+              details: {},
+            }),
+        });
+        await appendProgress(
+          ctx.cwd,
+          {
+            kind: "consensus",
+            message: `${samples} samples for '${params.agent}': ${result.reason}`,
+          },
+          pi,
+        );
+        ctx.ui.setStatus("clk-last", `consensus: ${result.reason.slice(0, 80)}`);
+        const recap = result.all
+          .map((s) =>
+            s.error
+              ? `  #${s.index} error: ${s.error}`
+              : `  #${s.index} score=${s.quality.score.toFixed(2)} ` +
+                `(${summarise(s.quality)}) sessionId=${s.sessionId}`,
+          )
+          .join("\n");
+        const body =
+          `Consensus winner (sample #${result.best.index}, score ${result.best.quality.score.toFixed(2)}):\n\n` +
+          (result.best.output || "(winner produced no output)") +
+          `\n\n---\nAll samples:\n${recap}`;
+        return {
+          content: [{ type: "text", text: body }],
+          details: {
+            samples,
+            winnerIndex: result.best.index,
+            winnerScore: result.best.quality.score,
+            allScores: result.all.map((s) => ({ index: s.index, score: s.quality.score, flags: s.quality.flags })),
+          },
+        };
+      } catch (err) {
+        const cls = classifyError(err);
+        return {
+          content: [{ type: "text", text: `clk_consensus failed: ${(err as Error).message}. ${recoveryHint(cls)}` }],
+          details: { error: String(err) },
+        };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------
+  // clk_subagent_quality — single subagent + quality re-dispatch loop
+  // ---------------------------------------------------------------------
+  pi.registerTool({
+    name: "clk_subagent_quality",
+    label: "CLK Subagent (quality-validated)",
+    description:
+      "Dispatch ONE subagent and gate its output through the quality detector. On a recoverable " +
+      "failure (empty / malformed / low-confidence), re-runs with a repair preamble up to " +
+      "`maxRetries` extra times. Cheaper than clk_consensus when the task is simple but you still " +
+      "want a quality gate. Default maxRetries=1.",
+    promptSnippet: "Single subagent dispatch with automatic quality scoring + repair-preamble re-rolls.",
+    parameters: Type.Object({
+      agent: Type.String({ description: "Short role label." }),
+      task: Type.String({ description: "Complete task description, including persona." }),
+      preferredModel: Type.Optional(Type.String()),
+      maxRetries: Type.Optional(
+        Type.Integer({ minimum: 0, maximum: 4, description: "Extra dispatches on quality failures. Default 1." }),
+      ),
+      minChars: Type.Optional(Type.Integer({ minimum: 0 })),
+    }),
+    async execute(_id, params, signal, onUpdate, ctx) {
+      if (signal?.aborted || activeSignal()?.aborted) {
+        return { content: [{ type: "text", text: "clk_subagent_quality cancelled before start." }], details: {} };
+      }
+      if (!(await tmuxAvailable())) {
+        return {
+          content: [{ type: "text", text: "tmux not installed; cannot dispatch." }],
+          details: {},
+        };
+      }
+      if (looksRedacted(params.task)) {
+        return {
+          content: [{ type: "text", text: `clk_subagent_quality skipped: 'task' appears redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
+      const sig = mergeSignals(signal, activeSignal());
+      try {
+        const result = await dispatchWithQuality({
+          agent: params.agent,
+          task: params.task,
+          preferredModel: params.preferredModel,
+          cwd: ctx.cwd,
+          signal: sig,
+          maxRetries: params.maxRetries ?? 1,
+          scoreOpts: params.minChars !== undefined ? { minChars: params.minChars } : {},
+          onRetry: (attempt, q) =>
+            onUpdate?.({
+              content: [{
+                type: "text",
+                text: `quality retry ${attempt}: ${summarise(q)} — re-rolling with repair preamble`,
+              }],
+              details: {},
+            }),
+        });
+        ctx.ui.setStatus("clk-last", `quality: ${summarise(result.quality)}`);
+        const body =
+          (result.output || "(subagent produced no output)") +
+          `\n\n---\nquality: ${summarise(result.quality)} after ${result.attempts} attempt(s).`;
+        return {
+          content: [{ type: "text", text: body }],
+          details: {
+            attempts: result.attempts,
+            score: result.quality.score,
+            ok: result.quality.ok,
+            flags: result.quality.flags,
+            sessionId: result.sessionId,
+          },
+        };
+      } catch (err) {
+        const cls = classifyError(err);
+        return {
+          content: [{ type: "text", text: `clk_subagent_quality failed: ${(err as Error).message}. ${recoveryHint(cls)}` }],
+          details: { error: String(err) },
+        };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------
+  // clk_autoresearch — survey → investigate → critique loop
+  // ---------------------------------------------------------------------
+  pi.registerTool({
+    name: "clk_autoresearch",
+    label: "CLK Autoresearch",
+    description:
+      "Karpathy-style autoresearch loop: spawn a researcher subagent to investigate the question, " +
+      "then a critic subagent to review the finding. Repeat for `iterations` cycles. Each finding " +
+      "and critique is appended to the progress log. Use BEFORE non-trivial implementation work to " +
+      "ground the chief in real findings rather than priors.",
+    promptSnippet:
+      "Iteratively investigate an open question via researcher + critic subagents.",
+    parameters: Type.Object({
+      question: Type.String({ description: "The open question or hypothesis to investigate." }),
+      iterations: Type.Optional(
+        Type.Integer({ minimum: 1, maximum: 5, description: "Number of investigate-then-critique cycles. Default 2." }),
+      ),
+      preferredModel: Type.Optional(Type.String()),
+    }),
+    async execute(_id, params, signal, onUpdate, ctx) {
+      if (signal?.aborted || activeSignal()?.aborted) {
+        return { content: [{ type: "text", text: "clk_autoresearch cancelled before start." }], details: {} };
+      }
+      if (!(await tmuxAvailable())) {
+        return {
+          content: [{ type: "text", text: "tmux not installed; cannot dispatch." }],
+          details: {},
+        };
+      }
+      if (looksRedacted(params.question)) {
+        return {
+          content: [{ type: "text", text: `clk_autoresearch skipped: 'question' appears redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
+      const sig = mergeSignals(signal, activeSignal());
+      const iterations = Math.max(1, Math.min(5, params.iterations ?? 2));
+      const log: Array<{ iteration: number; finding: string; critique: string; findingScore: number; critiqueScore: number }> = [];
+
+      for (let i = 1; i <= iterations; i++) {
+        if (sig?.aborted) break;
+        onUpdate?.({
+          content: [{ type: "text", text: `autoresearch #${i}/${iterations}: investigating` }],
+          details: {},
+        });
+        const researcherTask =
+          `You are a researcher dispatched for autoresearch iteration #${i}. ` +
+          `Investigate this question deeply and report findings:\n\n${params.question}\n\n` +
+          (log.length > 0
+            ? `Prior findings so far:\n${log.map((l) => `[iter ${l.iteration}] ${l.finding.slice(0, 300)}`).join("\n\n")}\n\n`
+            : "") +
+          "Produce concrete findings (cite files, measurements, logs). " +
+          "End your response with a single line: CONFIDENCE: <0..1>";
+        const research = await dispatchWithQuality({
+          agent: "researcher",
+          task: researcherTask,
+          preferredModel: params.preferredModel,
+          cwd: ctx.cwd,
+          signal: sig,
+          maxRetries: 1,
+        });
+        if (sig?.aborted) break;
+        onUpdate?.({
+          content: [{ type: "text", text: `autoresearch #${i}/${iterations}: critiquing` }],
+          details: {},
+        });
+        const criticTask =
+          `You are a critic for autoresearch iteration #${i}. The researcher reported:\n\n` +
+          (research.output || "(empty)") +
+          `\n\nOriginal question:\n${params.question}\n\n` +
+          "Identify gaps, weak evidence, contradicting facts. Be specific. " +
+          "End with: CONFIDENCE: <0..1>";
+        const critic = await dispatchWithQuality({
+          agent: "critic",
+          task: criticTask,
+          preferredModel: params.preferredModel,
+          cwd: ctx.cwd,
+          signal: sig,
+          maxRetries: 1,
+        });
+        log.push({
+          iteration: i,
+          finding: research.output,
+          critique: critic.output,
+          findingScore: research.quality.score,
+          critiqueScore: critic.quality.score,
+        });
+        await appendProgress(
+          ctx.cwd,
+          {
+            kind: "autoresearch",
+            message:
+              `iter ${i}: research score=${research.quality.score.toFixed(2)} ` +
+              `critic score=${critic.quality.score.toFixed(2)}`,
+          },
+          pi,
+        );
+      }
+      const body =
+        `Autoresearch on: ${params.question}\n\n` +
+        log.map((l) =>
+          `=== iteration ${l.iteration} ===\n` +
+          `FINDING (score ${l.findingScore.toFixed(2)}):\n${l.finding}\n\n` +
+          `CRITIQUE (score ${l.critiqueScore.toFixed(2)}):\n${l.critique}`,
+        ).join("\n\n");
+      ctx.ui.setStatus("clk-last", `autoresearch: ${iterations} iter(s) on ${params.question.slice(0, 40)}`);
+      return {
+        content: [{ type: "text", text: body || "(autoresearch produced no iterations — aborted?)" }],
+        details: {
+          question: params.question,
+          iterations: log.length,
+          findings: log.map((l) => ({ iteration: l.iteration, findingScore: l.findingScore, critiqueScore: l.critiqueScore })),
+        },
+      };
+    },
+  });
+
+  // ---------------------------------------------------------------------
+  // clk_ralph — branch / dispatch / evaluate / commit-or-revert iteration
+  // ---------------------------------------------------------------------
+  pi.registerTool({
+    name: "clk_ralph",
+    label: "CLK Ralph Iteration",
+    description:
+      "One Ralph iteration: create a feature branch, dispatch a consensus fan-out of N samples, " +
+      "let the chief inspect the winning output (returned to it), then EITHER keep the branch " +
+      "(clk_merge) OR abandon it (clk_revert) based on the chief's verdict. The branch creation " +
+      "and dispatch are enforced in code so the chief can't skip the Ralph protocol. The chief " +
+      "still drives the accept/reject decision via subsequent clk_merge or clk_revert calls.",
+    promptSnippet:
+      "Branch + consensus dispatch one iteration; chief reviews winner and accepts via clk_merge or rejects via clk_revert.",
+    parameters: Type.Object({
+      iterationName: Type.String({
+        description:
+          "Short kebab-case branch suffix, e.g. 'iter-3-optimize-db'. Will be prefixed with 'ralph/'.",
+      }),
+      agent: Type.String({ description: "Role label for the dispatched worker." }),
+      task: Type.String({ description: "Full task description for the worker, including persona." }),
+      samples: Type.Optional(
+        Type.Integer({ minimum: 1, maximum: 6, description: "Consensus samples per iteration. Default 3." }),
+      ),
+      preferredModel: Type.Optional(Type.String()),
+    }),
+    async execute(_id, params, signal, onUpdate, ctx) {
+      if (signal?.aborted || activeSignal()?.aborted) {
+        return { content: [{ type: "text", text: "clk_ralph cancelled before start." }], details: {} };
+      }
+      if (!(await tmuxAvailable())) {
+        return {
+          content: [{ type: "text", text: "tmux not installed; cannot dispatch." }],
+          details: {},
+        };
+      }
+      if (looksRedacted(params.task) || looksRedacted(params.iterationName)) {
+        return {
+          content: [{ type: "text", text: `clk_ralph skipped: parameters appear redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
+      const sig = mergeSignals(signal, activeSignal());
+      const branchName = params.iterationName.startsWith("ralph/")
+        ? params.iterationName
+        : `ralph/${params.iterationName}`;
+      let home = getHomeBranch();
+      try {
+        if (!home) {
+          home = await currentBranch(ctx.cwd, sig);
+          await setHomeBranch(ctx.cwd, home, pi);
+        }
+        await withRetry(() => createAndCheckoutBranch(ctx.cwd, branchName, sig), { signal: sig });
+      } catch (err) {
+        const cls = classifyError(err);
+        return {
+          content: [{ type: "text", text: `clk_ralph failed to create branch '${branchName}': ${(err as Error).message}. ${recoveryHint(cls)}` }],
+          details: { error: String(err) },
+        };
+      }
+      onUpdate?.({
+        content: [{ type: "text", text: `ralph: on branch ${branchName}, dispatching ${params.samples ?? 3} samples` }],
+        details: {},
+      });
+
+      try {
+        const consensus = await runConsensus({
+          agent: params.agent,
+          task: params.task,
+          preferredModel: params.preferredModel,
+          cwd: ctx.cwd,
+          signal: sig,
+          samples: params.samples ?? 3,
+          onSample: (idx, message) =>
+            onUpdate?.({
+              content: [{ type: "text", text: `[ralph/${branchName} #${idx}] ${message}` }],
+              details: {},
+            }),
+        });
+        await appendProgress(
+          ctx.cwd,
+          {
+            kind: "ralph",
+            message: `iteration ${branchName}: ${consensus.reason}`,
+          },
+          pi,
+        );
+        ctx.ui.setStatus("clk-branch", `ralph: ${branchName}`);
+        const body =
+          `Ralph iteration on branch ${branchName} — home=${home}.\n\n` +
+          `Winning sample (#${consensus.best.index}, score ${consensus.best.quality.score.toFixed(2)}):\n\n` +
+          (consensus.best.output || "(no output)") +
+          "\n\n---\nReview the winner above. If it advances the goal, accept it with " +
+          "`clk_merge({message: '<summary>'})`. If it doesn't, abandon the branch with " +
+          "`clk_revert({reason: '<why>'})` (the branch will be preserved for review).";
+        return {
+          content: [{ type: "text", text: body }],
+          details: {
+            branch: branchName,
+            home,
+            winnerIndex: consensus.best.index,
+            winnerScore: consensus.best.quality.score,
+            allScores: consensus.all.map((s) => ({ index: s.index, score: s.quality.score, flags: s.quality.flags })),
+          },
+        };
+      } catch (err) {
+        const cls = classifyError(err);
+        return {
+          content: [{ type: "text", text: `clk_ralph dispatch failed on ${branchName}: ${(err as Error).message}. ${recoveryHint(cls)}` }],
+          details: { error: String(err), branch: branchName },
+        };
+      }
     },
   });
 
