@@ -35,10 +35,15 @@ def test_setup_invokes_wizard_only_on_yes():
 
 def test_setup_persists_skip_and_existing_values():
     body = KICKOFF.read_text()
-    # Declining the prompt writes CLK_TELEGRAM_SKIP=true (variable
-    # interpolated from $tg_skip in the heredoc).
-    assert "CLK_TELEGRAM_SKIP=$tg_skip" in body
-    # Pre-existing Telegram values survive a --setup re-run.
-    assert "CLK_TELEGRAM_BOT_TOKEN=${CLK_TELEGRAM_BOT_TOKEN:-}" in body
-    assert "CLK_TELEGRAM_ALLOWED_USERS=${CLK_TELEGRAM_ALLOWED_USERS:-}" in body
-    assert "CLK_TELEGRAM_ENABLED=${CLK_TELEGRAM_ENABLED:-false}" in body
+    # Declining the prompt writes CLK_TELEGRAM_SKIP=true atomically via
+    # env_set (sourced from scripts/lib_env.sh). Pre-existing Telegram
+    # values survive a --setup re-run because env_set only touches the
+    # specific key it's told about — every other line in .env is
+    # preserved verbatim by the awk pass inside lib_env.sh.
+    assert 'env_set "$env_file" CLK_TELEGRAM_SKIP "$tg_skip"' in body
+    # The wizard sources .env up top so existing values become defaults
+    # for any prompt that uses them.
+    assert ". \"$env_file\"" in body or '. "$env_file"' in body
+    # And the shared env helper is sourced so atomic writes + .bak
+    # rotation are in effect.
+    assert "scripts/lib_env.sh" in body

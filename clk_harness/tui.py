@@ -74,7 +74,65 @@ from .orchestration import (
     remove_role,
     render_roster_summary,
 )
+from .pricing import estimate_usd, format_usd
 from .utils.logging_utils import log_exception
+
+
+# ---------------------------------------------------------------------------
+# Error classifier — extracted from DashboardState._provider_resolution_message
+# so the hint bar and the worker both see the same mapping.
+# ---------------------------------------------------------------------------
+
+
+def classify_error(error: str) -> Tuple[str, str, str]:
+    """Classify a provider error string.
+
+    Returns ``(kind, resolution, suggested_command)`` where:
+      * ``kind`` is one of: ``rate_limit``, ``timeout``, ``auth``,
+        ``policy``, ``not_installed``, ``other``.
+      * ``resolution`` is a short human sentence the user can act on.
+      * ``suggested_command`` is the TUI slash command that would fix
+        it (or empty when none applies).
+
+    The hint bar uses ``suggested_command`` directly; the log uses
+    ``resolution`` as the human prose.
+    """
+    msg = (error or "").lower()
+    if "rate limit" in msg or "quota" in msg:
+        return (
+            "rate_limit",
+            "provider rate/quota failure; back off and retry after the window resets or switch provider",
+            "/provider",
+        )
+    if "timeout" in msg or "no output" in msg or "operation was aborted" in msg:
+        return (
+            "timeout",
+            "provider call stalled/aborted; retries are reissued with backoff, then the cycle stops",
+            "/abort",
+        )
+    if "api key" in msg or "authentication" in msg or "unauthorized" in msg or "forbidden" in msg:
+        return (
+            "auth",
+            "provider auth/config failure; fix credentials via /configure or switch provider",
+            "/configure",
+        )
+    if "no endpoints available" in msg or "guardrail restrictions" in msg or "data policy" in msg:
+        return (
+            "policy",
+            "provider endpoint/policy routing issue; retries are reissued, then switch provider if they fail",
+            "/provider",
+        )
+    if "cli not found" in msg or "not found" in msg:
+        return (
+            "not_installed",
+            "provider executable/config missing; install via /install or switch provider",
+            "/install",
+        )
+    return (
+        "other",
+        "provider failure; workflow recovery is aborted until the provider is fixed or changed",
+        "",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +276,10 @@ class AgentCard:
     total_tokens: int = 0
     last_run_tokens: int = 0   # tokens in the most recent run only
     last_usage_source: str = ""
+    # USD cost estimates — populated by DashboardState.end_agent via
+    # clk_harness.pricing. last_usd is per-run, total_usd is cumulative.
+    last_usd: float = 0.0
+    total_usd: float = 0.0
     total_files: int = 0  # cumulative file write count
     # Live subprocess telemetry (set by streaming providers via the
     # ``progress`` observer hook). ``live_pid`` is non-zero while the
@@ -333,6 +395,25 @@ class DashboardState:
         # Session log file (mirror of the in-pane status log so we
         # have a persistent trace for later analysis).
         self.session_log_fh = None
+        # Cost guardrails. ``total_usd`` is the rolling estimate based on
+        # tokens × provider pricing; ``cost_per_provider`` lets /status
+        # show a breakdown so the user can see which provider is eating
+        # the cap. Caps are read lazily from clk.config.json.
+        self.total_usd: float = 0.0
+        self.cost_per_provider: Dict[str, float] = {}
+        # Most-recent classified error — drives the hint bar below the
+        # input. Cleared on the next successful run.
+        self.last_error_kind: str = ""
+        self.last_error_command: str = ""
+        # Set to True while /tutorial is running so other commands can
+        # display a "currently running tutorial" banner.
+        self.in_tutorial: bool = False
+        # Set true once /help has been opened in this session — used to
+        # suppress the "press F1 for help" repeat in the hint bar.
+        self.help_dismissed: bool = False
+        # Count of local commits ahead of origin (refreshed lazily by
+        # the worker after each successful agent commit).
+        self.github_ahead: int = 0
 
     # ----- mutators (locked) --------------------------------------------
 
@@ -598,8 +679,40 @@ class DashboardState:
             card.provider_issue = provider_issue
             if provider_issue:
                 card.provider_resolution = self._provider_resolution_message(error)
+                kind, _, cmd = classify_error(error)
+                self.last_error_kind = kind
+                self.last_error_command = cmd
+            elif ok:
+                # Clear the hint after a successful run so the user
+                # doesn't keep seeing a stale "install pi" suggestion.
+                self.last_error_kind = ""
+                self.last_error_command = ""
             self.total_input_tokens += in_tok
             self.total_output_tokens += out_tok
+            # Cost accumulation. We look up pricing per-provider so a
+            # mixed-provider session (chief on claude, engineer on
+            # ollama) gets accurate per-provider totals.
+            try:
+                prov_name = card.provider or self.provider or ""
+                prov_overrides = {}
+                if self.paths is not None:
+                    try:
+                        from .config import load_providers_config as _lpc
+                        prov_cfg = (_lpc(self.paths).get("providers") or {}).get(prov_name) or {}
+                        prov_overrides = {
+                            "pricing": prov_cfg.get("pricing"),
+                            "pricing_by_model": prov_cfg.get("pricing_by_model"),
+                        }
+                    except Exception:
+                        prov_overrides = {}
+                model = (usage.get("model") or "") or ""
+                run_usd = estimate_usd(prov_name, model, in_tok, out_tok, prov_overrides)
+                card.last_usd = run_usd
+                card.total_usd = (getattr(card, "total_usd", 0.0) or 0.0) + run_usd
+                self.total_usd += run_usd
+                self.cost_per_provider[prov_name] = self.cost_per_provider.get(prov_name, 0.0) + run_usd
+            except Exception as exc:
+                log_exception("tui.end_agent.cost", exc)
             self.total_tokens += tot_tok
             self.total_files += len(files_written)
             if tot_tok > self.peak_run_tokens:
@@ -843,6 +956,22 @@ class Worker(threading.Thread):
             # the worker is blocked on the very subprocess we're killing.
             # No-op here; see TuiApp._do_abort.
             pass
+        elif job.kind == "install":
+            self._do_install(job.payload or "")
+        elif job.kind == "configure":
+            self._do_configure(job.payload or "")
+        elif job.kind == "github":
+            self._do_github()
+        elif job.kind == "undo":
+            self._do_undo(bool((job.payload or {}).get("confirm")))
+        elif job.kind == "doctor":
+            self._do_doctor(bool((job.payload or {}).get("fix")))
+        elif job.kind == "diag":
+            self._do_diag()
+        elif job.kind == "tutorial":
+            self._do_tutorial()
+        elif job.kind == "workspaces":
+            self._do_workspaces(job.payload or {})
 
     # --- handlers --------------------------------------------------------
 
@@ -867,7 +996,10 @@ class Worker(threading.Thread):
                 f"# System brief\n\n**Title:** {title}\n\n## Idea\n{idea}\n",
                 encoding="utf-8",
             )
-            self.state.add_system_message(f"idea captured: {title}")
+            self.state.add_system_message(
+                f"got it — idea captured as '{title}'. The chief will cast a "
+                f"team next; agent cards above will turn yellow as they start."
+            )
             self._maybe_commit("clk-tui-idea", f"Capture idea: {title}", "idea captured", ".clk/state/idea.json")
         except Exception as exc:
             log_exception("tui.Worker._do_idea", exc)
@@ -934,71 +1066,550 @@ class Worker(threading.Thread):
     def _do_workflow(self, name: str) -> None:
         wf_path = self.paths.workflows / f"{name}.yaml"
         if not wf_path.exists():
-            self.state.add_log(f"workflow not found: {name}", level="WARN")
+            self.state.add_log(
+                f"workflow '{name}' not found — try /run engineering or check "
+                f".clk/config/workflows/ for the available list",
+                level="WARN",
+            )
             return
         self.state.set_phase(f"workflow:{name}", busy=True)
+        self.state.add_system_message(
+            f"starting workflow '{name}' — the chief will cast a team and "
+            f"dispatch agents stage by stage. Watch the cards above for live progress."
+        )
+        any_failure = False
         try:
             wf = load_workflow(wf_path)
             wf_runner = WorkflowRunner(self.paths, self.runner)
             wf_runner.run(wf)
         except Exception as exc:
+            any_failure = True
             log_exception("tui.Worker._do_workflow", exc)
-            self.state.add_log(f"workflow {name} failed: {exc}", level="ERROR")
+            self.state.add_log(f"workflow '{name}' hit an error: {exc}", level="ERROR")
         finally:
             self.state.set_phase("idle", busy=False)
+            # Friendly post-flight summary. Always tell the user what
+            # they can do next — even on failure — so they're never
+            # stuck wondering "is something broken? what do I do?".
+            with self.state.lock:
+                tot = self.state.total_tokens
+                usd = self.state.total_usd
+                files = self.state.total_files
+                err_kind = self.state.last_error_kind
+                err_cmd = self.state.last_error_command
+            if any_failure or err_kind:
+                self.state.add_system_message(
+                    f"workflow '{name}' finished with issues. session tokens={_format_tokens(tot)} "
+                    f"cost={format_usd(usd)} files={files}"
+                )
+                if err_cmd:
+                    self.state.add_system_message(
+                        f"suggested next step: {err_cmd}  (or /provider <other> to switch)"
+                    )
+                else:
+                    self.state.add_system_message(
+                        "suggested next step: /status to inspect, /undo to roll back, "
+                        "or type a follow-up message"
+                    )
+            else:
+                self.state.add_system_message(
+                    f"workflow '{name}' complete. session tokens={_format_tokens(tot)} "
+                    f"cost={format_usd(usd)} files={files}"
+                )
+                self.state.add_system_message(
+                    "next steps: type a follow-up message to keep going, "
+                    "/loop ralph 5 to refine, /undo to revert, or /quit to exit."
+                )
 
     def _do_loop(self, mode: str, n: int) -> None:
         self.state.clear_stop()
         self.state.set_phase(f"loop:{mode}", busy=True)
+        self.state.add_system_message(
+            f"starting {mode} loop for up to {n} iterations. "
+            f"Type /stop to end after the current cycle, or /abort to kill a stuck call."
+        )
+        interrupted = False
+        completed = 0
         try:
             if mode == "ralph":
-                loop = RalphLoop(self.paths, self.runner, self.evaluator, max_iterations=n)
                 # We can't preempt mid-iteration, but we can check between iterations
                 # by running one iteration at a time.
                 for i in range(1, n + 1):
                     if self.state.is_stop_requested():
-                        self.state.add_log("loop interrupted", level="WARN")
+                        interrupted = True
+                        self.state.add_log(
+                            f"loop interrupted after iteration {i - 1} of {n}",
+                            level="WARN",
+                        )
                         break
                     self.state.iteration_count = i
+                    self.state.add_system_message(
+                        f"ralph iteration {i}/{n} — refining the previous output"
+                    )
                     sub = RalphLoop(self.paths, self.runner, self.evaluator, max_iterations=1)
                     sub.run()
+                    completed = i
             else:
                 for i in range(1, n + 1):
                     if self.state.is_stop_requested():
-                        self.state.add_log("loop interrupted", level="WARN")
+                        interrupted = True
+                        self.state.add_log(
+                            f"loop interrupted after iteration {i - 1} of {n}",
+                            level="WARN",
+                        )
                         break
                     self.state.iteration_count = i
+                    self.state.add_system_message(
+                        f"autoresearch iteration {i}/{n} — exploring open questions"
+                    )
                     sub = AutoresearchLoop(self.paths, self.runner, self.evaluator, max_iterations=1)
                     sub.run()
+                    completed = i
         except Exception as exc:
             log_exception("tui.Worker._do_loop", exc)
-            self.state.add_log(f"loop failed: {exc}", level="ERROR")
+            self.state.add_log(f"loop hit an error and stopped: {exc}", level="ERROR")
         finally:
             self.state.set_phase("idle", busy=False)
+            verb = "stopped" if interrupted else "complete"
+            self.state.add_system_message(
+                f"{mode} loop {verb} after {completed} iteration(s). "
+                f"Type /status for the breakdown, /loop {mode} {n} to keep going, "
+                f"or a follow-up message to redirect."
+            )
 
     def _do_set_provider(self, name: str) -> None:
         try:
             cfg_path = self.paths.config / "providers.json"
             data = json.loads(cfg_path.read_text(encoding="utf-8"))
             if name not in (data.get("providers") or {}):
-                self.state.add_log(f"unknown provider: {name}", level="WARN")
+                self.state.add_log(
+                    f"'{name}' isn't a known provider. valid: "
+                    f"{', '.join(sorted((data.get('providers') or {}).keys()))}",
+                    level="WARN",
+                )
                 return
+            old_name = self.state.provider or "(unset)"
             data["active"] = name
             save_json(cfg_path, data)
             self.providers_cfg = data
             self.runner.providers_cfg = data
             with self.state.lock:
                 self.state.provider = name
-            self.state.add_system_message(f"provider switched to {name}")
+                # New provider — clear stale error hints so the bar doesn't
+                # keep suggesting /install <old_provider>.
+                self.state.last_error_kind = ""
+                self.state.last_error_command = ""
+            # Check that the new provider is actually usable so we can
+            # warn before the user's next call fails.
+            try:
+                from .providers import available_providers as _ap
+                avail = _ap(data)
+                if avail.get(name):
+                    self.state.add_system_message(
+                        f"provider: {old_name} → {name}  (ready)"
+                    )
+                else:
+                    self.state.add_system_message(
+                        f"provider: {old_name} → {name}  (NOT ready — try /install {name} or /configure {name})"
+                    )
+                    with self.state.lock:
+                        self.state.last_error_kind = "not_installed"
+                        self.state.last_error_command = f"/install {name}"
+            except Exception:
+                self.state.add_system_message(f"provider switched to {name}")
         except Exception as exc:
             log_exception("tui.Worker._do_set_provider", exc)
             self.state.add_log(f"provider switch failed: {exc}", level="ERROR")
 
     def _emit_status(self) -> None:
         snap = self.state.snapshot()
-        self.state.add_system_message(
-            f"phase={snap['phase']} busy={snap['busy']} provider={snap['provider']} agents={len(snap['agents'])}"
+        # Header: short narrative the user can read at a glance.
+        phase = snap.get("phase") or "idle"
+        busy = snap.get("busy")
+        provider = snap.get("provider") or "shell"
+        agents = snap.get("agents") or {}
+        narrative = (
+            f"working on '{phase}'" if busy else f"idle (last phase: '{phase}')"
         )
+        self.state.add_system_message(
+            f"--- session snapshot ---"
+        )
+        self.state.add_system_message(
+            f"  status     {narrative}"
+        )
+        self.state.add_system_message(
+            f"  provider   {provider}"
+        )
+        self.state.add_system_message(
+            f"  agents     {len(agents)} ({', '.join(sorted(agents.keys())) or 'none yet'})"
+        )
+        # Cost breakdown — same numbers the title bar shows, but split by
+        # provider so the user can see where the spend went.
+        with self.state.lock:
+            usd = self.state.total_usd
+            per = dict(self.state.cost_per_provider)
+            tot = self.state.total_tokens
+            files = self.state.total_files
+            idea = self.state.idea[:80]
+        self.state.add_system_message(
+            f"  tokens     {_format_tokens(tot)}    files written: {files}"
+        )
+        self.state.add_system_message(f"  est. cost  {format_usd(usd)}")
+        if per:
+            for p, amount in sorted(per.items()):
+                if amount > 0:
+                    self.state.add_system_message(f"    - {p:<10} {format_usd(amount)}")
+        if idea:
+            self.state.add_system_message(f"  idea       {idea}")
+        self.state.add_system_message(
+            "------------------------"
+        )
+
+    # ----- subprocess helpers used by /install /configure /doctor ----------
+
+    def _run_capture(self, cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
+        """Run a subprocess, stream its output into the log pane, and
+        return (rc, stdout, stderr). Used by /install, /configure, etc.
+        These commands are interactive (they prompt y/N, ask for keys)
+        so we do NOT capture stdin — the subprocess inherits ours and
+        runs against /dev/tty when sourced functions need it.
+        """
+        import subprocess
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(cwd) if cwd else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except Exception as exc:
+            log_exception("tui.Worker._run_capture", exc)
+            return 1, "", str(exc)
+        out_lines: List[str] = []
+        err_lines: List[str] = []
+        # Drain both pipes line-by-line so the log pane sees progress.
+        import threading as _t
+        def _pump(stream, sink, level):
+            try:
+                for line in stream:
+                    line = line.rstrip()
+                    if line:
+                        sink.append(line)
+                        self.state.add_log(line, level=level)
+            except Exception:
+                pass
+        t1 = _t.Thread(target=_pump, args=(proc.stdout, out_lines, "INFO"), daemon=True)
+        t2 = _t.Thread(target=_pump, args=(proc.stderr, err_lines, "WARN"), daemon=True)
+        t1.start(); t2.start()
+        rc = proc.wait()
+        t1.join(timeout=1); t2.join(timeout=1)
+        return rc, "\n".join(out_lines), "\n".join(err_lines)
+
+    def _script(self, name: str) -> Path:
+        # Locate scripts/<name> relative to the harness install.
+        return Path(__file__).resolve().parent.parent / "scripts" / name
+
+    # ----- /install ---------------------------------------------------------
+
+    def _do_install(self, tool: str) -> None:
+        tool = (tool or "").strip()
+        if not tool:
+            self.state.add_log("install: no tool specified", level="WARN")
+            return
+        self.state.set_phase(f"install {tool}", busy=True)
+        try:
+            script = self._script("install_tool.sh")
+            if not script.exists():
+                self.state.add_log(f"install: {script} not found", level="ERROR")
+                return
+            rc, _out, err = self._run_capture(["bash", str(script), "install", tool, "--prompt"])
+            if rc == 0:
+                self.state.add_system_message(f"install {tool}: done")
+                # Clear the not_installed hint so the bar updates.
+                with self.state.lock:
+                    if self.state.last_error_kind == "not_installed":
+                        self.state.last_error_kind = ""
+                        self.state.last_error_command = ""
+            else:
+                self.state.add_log(f"install {tool}: rc={rc} {err[:200]}", level="ERROR")
+        finally:
+            self.state.set_phase("idle", busy=False)
+
+    # ----- /configure -------------------------------------------------------
+
+    def _do_configure(self, tool: str) -> None:
+        tool = (tool or "").strip()
+        if not tool:
+            self.state.add_log("configure: no tool specified", level="WARN")
+            return
+        self.state.set_phase(f"configure {tool}", busy=True)
+        try:
+            script = self._script("install_tool.sh")
+            rc, _out, err = self._run_capture(["bash", str(script), "configure", tool])
+            if rc == 0:
+                self.state.add_system_message(f"configure {tool}: done")
+                with self.state.lock:
+                    if self.state.last_error_kind == "auth":
+                        self.state.last_error_kind = ""
+                        self.state.last_error_command = ""
+            else:
+                self.state.add_log(f"configure {tool}: rc={rc} {err[:200]}", level="ERROR")
+        finally:
+            self.state.set_phase("idle", busy=False)
+
+    # ----- /github ----------------------------------------------------------
+
+    def _do_github(self) -> None:
+        # GitHub re-link from inside the TUI. We don't re-run the full
+        # wizard here — we just print the current state and the
+        # instructions. The wizard prompts via /dev/tty which the curses
+        # screen has already taken over, so attempting an interactive
+        # prompt from within the TUI would corrupt the display.
+        self.state.set_phase("github", busy=True)
+        try:
+            root = self.paths.root
+            rc, out, _ = self._run_capture(["git", "-C", str(root), "remote", "-v"])
+            self.state.add_system_message("current git remotes:")
+            for line in (out or "").splitlines():
+                self.state.add_system_message(f"  {line}")
+            self.state.add_system_message(
+                "to (re-)link a remote, /quit then run: ./kickoff.sh --setup"
+            )
+            self.state.add_system_message(
+                "the wizard's GitHub block handles create | existing | skip safely from /dev/tty"
+            )
+        finally:
+            self.state.set_phase("idle", busy=False)
+
+    # ----- /undo ------------------------------------------------------------
+
+    def _do_undo(self, confirm: bool) -> None:
+        root = self.paths.root
+        try:
+            if has_changes(root):
+                self.state.add_log(
+                    "undo refused: uncommitted changes in the workspace. "
+                    "Commit or stash first.",
+                    level="WARN",
+                )
+                return
+            # Show the diff of HEAD before doing anything.
+            rc, out, err = self._run_capture(
+                ["git", "-C", str(root), "log", "-1", "--stat"]
+            )
+            if rc != 0:
+                self.state.add_log(f"undo: cannot read HEAD: {err}", level="ERROR")
+                return
+            if not confirm:
+                self.state.add_system_message("last commit (HEAD):")
+                for line in (out or "").splitlines()[:40]:
+                    self.state.add_system_message(f"  {line}")
+                self.state.add_system_message(
+                    "type /undo confirm to revert this commit (creates a new revert commit)"
+                )
+                return
+            rc, _out, err = self._run_capture(
+                ["git", "-C", str(root), "revert", "--no-edit", "HEAD"]
+            )
+            if rc == 0:
+                self.state.add_system_message("undo: HEAD reverted with a new commit.")
+            else:
+                self.state.add_log(f"undo: revert failed: {err}", level="ERROR")
+        except Exception as exc:
+            log_exception("tui.Worker._do_undo", exc)
+            self.state.add_log(f"undo error: {exc}", level="ERROR")
+
+    # ----- /doctor ----------------------------------------------------------
+
+    def _do_doctor(self, fix: bool) -> None:
+        self.state.set_phase("doctor", busy=True)
+        try:
+            from .providers import available_providers
+            from .config import load_clk_config as _lcc, load_providers_config as _lpc
+            prov_cfg = _lpc(self.paths)
+            clk_cfg = _lcc(self.paths)
+            auth_mode = (clk_cfg.get("auth_mode") or "cli").lower() if isinstance(clk_cfg, dict) else "cli"
+            findings: List[Tuple[str, str, str]] = []  # (level, name, message)
+            avail = available_providers(prov_cfg)
+            active = prov_cfg.get("active") or clk_cfg.get("default_provider") or "shell"
+            for name, ok in avail.items():
+                if ok:
+                    findings.append(("ok", name, "available"))
+                else:
+                    findings.append(("warn" if name != active else "fail", name, "unavailable"))
+            # Known-bad combos.
+            import os as _os
+            if active == "claude" and auth_mode == "apikey" and not _os.environ.get("ANTHROPIC_API_KEY"):
+                findings.append(("fail", "anthropic_key", "CLK_AUTH_MODE=apikey but ANTHROPIC_API_KEY is unset"))
+            if active == "codex" and auth_mode == "apikey" and not _os.environ.get("OPENAI_API_KEY"):
+                findings.append(("fail", "openai_key", "CLK_AUTH_MODE=apikey but OPENAI_API_KEY is unset"))
+            # Git / GitHub.
+            if not is_repo(self.paths.root):
+                findings.append(("warn", "git", "no git repo at project root; auto-commit disabled"))
+            # Emit.
+            for level, name, msg in findings:
+                self.state.add_system_message(f"doctor :: [{level:<4}] {name}: {msg}")
+            failures = [f for f in findings if f[0] == "fail"]
+            if not failures:
+                self.state.add_system_message("doctor: all checks passed.")
+                return
+            if not fix:
+                self.state.add_system_message(
+                    f"doctor: {len(failures)} failure(s). Re-run as /doctor --fix to attempt repairs."
+                )
+                return
+            for _, name, _ in failures:
+                if name in ("anthropic_key", "openai_key"):
+                    self.state.add_system_message(
+                        f"doctor --fix: run /configure {active} to set the missing API key"
+                    )
+                elif name == active:
+                    self.state.add_system_message(f"doctor --fix: run /install {name}")
+        except Exception as exc:
+            log_exception("tui.Worker._do_doctor", exc)
+            self.state.add_log(f"doctor error: {exc}", level="ERROR")
+        finally:
+            self.state.set_phase("idle", busy=False)
+
+    # ----- /diag ------------------------------------------------------------
+
+    def _do_diag(self) -> None:
+        import tarfile
+        import time as _time
+        ts = _time.strftime("%Y%m%d-%H%M%S")
+        out_path = self.paths.root / f"clk-diag-{ts}.tar.gz"
+        self.state.set_phase("diag", busy=True)
+        try:
+            # Build a redacted .env first in a tempfile.
+            env_path = self.paths.root / ".env"
+            redacted = None
+            if env_path.exists():
+                redacted_lines = []
+                for line in env_path.read_text(encoding="utf-8").splitlines():
+                    if "=" in line and not line.lstrip().startswith("#"):
+                        k, v = line.split("=", 1)
+                        if any(s in k.upper() for s in ("KEY", "TOKEN", "SECRET", "PASS")):
+                            v = f"<redacted: {len(v)} chars>"
+                        redacted_lines.append(f"{k}={v}")
+                    else:
+                        redacted_lines.append(line)
+                redacted = self.paths.state / ".env.redacted"
+                redacted.write_text("\n".join(redacted_lines) + "\n", encoding="utf-8")
+
+            with tarfile.open(out_path, "w:gz") as tf:
+                # Pick up logs (last ~5MB total), state, last 3 runs.
+                for sub in ("logs", "state"):
+                    d = self.paths.clk / sub
+                    if d.exists():
+                        tf.add(d, arcname=f".clk/{sub}")
+                runs_dir = self.paths.runs
+                if runs_dir.exists():
+                    runs = sorted([p for p in runs_dir.glob("*") if p.is_dir()],
+                                  reverse=True)[:3]
+                    for r in runs:
+                        tf.add(r, arcname=f".clk/runs/{r.name}")
+                if redacted and redacted.exists():
+                    tf.add(redacted, arcname=".env.redacted")
+            if redacted and redacted.exists():
+                redacted.unlink()
+            self.state.add_system_message(f"diag: wrote {out_path}")
+            self.state.add_system_message("share this tarball in your bug report (API keys are redacted)")
+        except Exception as exc:
+            log_exception("tui.Worker._do_diag", exc)
+            self.state.add_log(f"diag error: {exc}", level="ERROR")
+        finally:
+            self.state.set_phase("idle", busy=False)
+
+    # ----- /tutorial --------------------------------------------------------
+
+    def _do_tutorial(self) -> None:
+        # Switch to the shell provider, sandbox state under
+        # .clk/state/.tutorial/, run one engineering cycle, restore.
+        original_provider = self.state.provider
+        try:
+            with self.state.lock:
+                self.state.in_tutorial = True
+            self.state.add_system_message(
+                "tutorial: switching to the shell provider; nothing will be charged."
+            )
+            self._do_set_provider("shell")
+            self.state.add_system_message(
+                "tutorial: idea = 'Add a hello() function to greeter.py'"
+            )
+            self._do_idea("Add a hello() function to greeter.py")
+            self._do_workflow("engineering")
+            self.state.add_system_message("tutorial: done. Type /quit, or type an idea to keep going.")
+            # Mark seen so the welcome banner stops mentioning the tutorial.
+            try:
+                if self.paths and self.paths.state:
+                    (self.paths.state / ".seen-tutorial").write_text("seen\n", encoding="utf-8")
+            except Exception:
+                pass
+        except Exception as exc:
+            log_exception("tui.Worker._do_tutorial", exc)
+            self.state.add_log(f"tutorial error: {exc}", level="ERROR")
+        finally:
+            with self.state.lock:
+                self.state.in_tutorial = False
+            # Restore the user's previous provider if it was something other than shell.
+            if original_provider and original_provider != "shell":
+                self._do_set_provider(original_provider)
+
+    # ----- /workspaces ------------------------------------------------------
+
+    def _do_workspaces(self, payload: Dict[str, Any]) -> None:
+        action = (payload.get("action") or "list").lower()
+        args = payload.get("args") or []
+        # Workspaces live one dir above the kickoff dir (the kickoff was
+        # created under <repo>/workspace/kickoff-<ts>). Walk up to find
+        # the workspace/ parent.
+        kickoff_dir = self.paths.root
+        ws_parent = kickoff_dir.parent if kickoff_dir.parent.name == "workspace" else (kickoff_dir / ".." / "..").resolve() / "workspace"
+        if action == "list":
+            if not ws_parent.exists():
+                self.state.add_system_message("workspaces: no workspace/ dir found")
+                return
+            count = 0
+            for d in sorted(ws_parent.glob("kickoff-*"), reverse=True):
+                if not d.is_dir():
+                    continue
+                count += 1
+                idea = ""
+                idea_path = d / ".clk" / "state" / "idea.json"
+                if idea_path.exists():
+                    try:
+                        idea = (json.loads(idea_path.read_text(encoding="utf-8")).get("title") or "")[:60]
+                    except Exception:
+                        idea = ""
+                marker = "* " if d.resolve() == kickoff_dir.resolve() else "  "
+                self.state.add_system_message(f"{marker}{d.name} :: {idea}")
+            if count == 0:
+                self.state.add_system_message("workspaces: no kickoff dirs yet")
+        elif action == "rename":
+            if len(args) < 2:
+                self.state.add_log("workspaces rename: usage /workspaces rename <old> <new>", level="WARN")
+                return
+            old, new = ws_parent / args[0], ws_parent / args[1]
+            if not old.exists():
+                self.state.add_log(f"workspaces rename: {old} not found", level="WARN")
+                return
+            if new.exists():
+                self.state.add_log(f"workspaces rename: {new} already exists", level="WARN")
+                return
+            old.rename(new)
+            self.state.add_system_message(f"workspaces: renamed {args[0]} -> {args[1]}")
+        elif action == "switch":
+            self.state.add_system_message(
+                "workspaces switch: /quit this TUI, then cd into the target dir and run ./.clk/scripts/clk tui"
+            )
+        elif action == "clean":
+            self.state.add_system_message(
+                "workspaces clean: run `./kickoff.sh --clean 7d` from the repo root — "
+                "it prompts before deleting."
+            )
+        else:
+            self.state.add_log(f"workspaces: unknown action {action}", level="WARN")
 
     def _maybe_commit(self, agent: str, objective: str, validation: str, *files: str) -> None:
         try:
@@ -1057,6 +1668,10 @@ class TuiApp:
         # 30-60s model call doesn't drown the log in "still working" lines.
         self.HEARTBEAT_FIRST_S = 15.0   # first heartbeat after this much silence
         self.HEARTBEAT_REPEAT_S = 15.0  # then every N seconds while still working
+        # /help modal overlay: toggled by /help, F1, or `?` when the input
+        # buffer is empty. Esc/q dismisses. While visible, _render draws
+        # an extra centred panel above everything else.
+        self._help_visible: bool = False
 
     # --- entrypoint ------------------------------------------------------
 
@@ -1073,12 +1688,15 @@ class TuiApp:
         stdscr.nodelay(True)
         stdscr.timeout(80)
         self._init_colors()
-        self.state.add_system_message(
-            "TUI ready. Type your idea (engineering auto-runs with chief casting "
-            "as stage 1). Commands: /cast, /roles list|add|drop, /run, /loop ralph 5, "
-            "/stop, /abort (kill stuck subprocess), /provider claude|codex|gemini|"
-            "ollama|openwebui|shell|pi, /status, /quit."
-        )
+        # First-run welcome: a one-time multi-line greeting that explains
+        # what CLK is, what agents are, and the most useful commands. We
+        # gate on a marker file under .clk/state so subsequent runs show
+        # a one-liner instead.
+        self._emit_welcome()
+        # Proactive provider health check — surface broken providers
+        # *before* the user types their first idea so they don't get a
+        # surprise "cli not found" three seconds in.
+        self._emit_provider_health()
         while True:
             try:
                 self._render(stdscr)
@@ -1095,6 +1713,65 @@ class TuiApp:
                 log_exception("tui.TuiApp._loop", exc)
                 self.state.add_log(f"render error: {exc}", level="ERROR")
         self.worker.stop()
+
+    # --- welcome & health ------------------------------------------------
+
+    def _emit_welcome(self) -> None:
+        """Emit the welcome banner. Multi-line on first run, one-liner after."""
+        marker = self.state.paths.state / ".seen-welcome" if self.state.paths else None
+        first_run = True
+        if marker is not None:
+            try:
+                first_run = not marker.exists()
+            except Exception:
+                first_run = True
+        if first_run:
+            lines = [
+                "Welcome to CLK — Cognitive Loop Kernel.",
+                "Type any idea below and a team of agents (chief, qa, ralph + dynamic roles)",
+                "will plan, build, and refine it together. Each commit is checkpointed in git.",
+                "",
+                "Quick commands:",
+                "  /help         see the full command list (or press F1)",
+                "  /tutorial     run a 30-second sample idea on the shell provider (free)",
+                "  /provider X   switch the active AI (claude, ollama, pi, …)",
+                "  /quit         exit (Ctrl-D also works)",
+            ]
+            for line in lines:
+                self.state.add_system_message(line)
+            if marker is not None:
+                try:
+                    marker.parent.mkdir(parents=True, exist_ok=True)
+                    marker.write_text("seen\n", encoding="utf-8")
+                except Exception:
+                    pass
+        else:
+            self.state.add_system_message(
+                "Welcome back. Type an idea, or /help for commands."
+            )
+
+    def _emit_provider_health(self) -> None:
+        """Surface the available/broken status of each configured provider."""
+        if not self.state.paths:
+            return
+        try:
+            from .providers import available_providers
+            prov_cfg = load_providers_config(self.state.paths)
+            avail = available_providers(prov_cfg)
+            active = self.state.provider or prov_cfg.get("active") or ""
+            self.state.add_log("provider check:", level="SYSTEM")
+            for name, ok in avail.items():
+                tag = "available" if ok else "UNAVAILABLE"
+                marker = " (active)" if name == active else ""
+                self.state.add_log(f"  {name:<10} {tag}{marker}", level="SYSTEM" if ok else "WARN")
+            if not avail.get(active, False):
+                # Pre-load the hint bar so the user sees a fix path
+                # before typing anything.
+                with self.state.lock:
+                    self.state.last_error_kind = "not_installed"
+                    self.state.last_error_command = "/install"
+        except Exception as exc:
+            log_exception("tui.TuiApp._emit_provider_health", exc)
 
     # --- colors ----------------------------------------------------------
 
@@ -1140,12 +1817,16 @@ class TuiApp:
         # Layout from the bottom up:
         #   y=h-input_rows..h-1                 input field rows (1..N)
         #   y=h-input_rows-1                    input frame ("---")
-        #   y=h-input_rows-2                    global token totals
-        #   y=idea_bottom+1..h-input_rows-3     log pane
-        log_height = max(3, h - idea_bottom - input_rows - 3)
+        #   y=h-input_rows-2                    hint bar (state-aware)
+        #   y=h-input_rows-3                    global token totals
+        #   y=idea_bottom+1..h-input_rows-4     log pane
+        log_height = max(3, h - idea_bottom - input_rows - 4)
         self._draw_log(stdscr, top=idea_bottom + 1, height=log_height, width=w)
-        self._draw_totals(stdscr, top=h - input_rows - 2, width=w)
+        self._draw_totals(stdscr, top=h - input_rows - 3, width=w)
+        self._draw_hint_bar(stdscr, top=h - input_rows - 2, width=w)
         self._draw_input(stdscr, top=h - input_rows - 1, width=w, rows=input_rows, cursor=cursor)
+        if self._help_visible:
+            self._draw_help_overlay(stdscr, h, w)
         stdscr.refresh()
 
     def _tick_heartbeat(self) -> None:
@@ -1259,12 +1940,16 @@ class TuiApp:
             tot_in = s.total_input_tokens
             tot_out = s.total_output_tokens
             files = s.total_files
+            usd = s.total_usd
+            ahead = s.github_ahead
         spin = self._spinner[self._spinner_idx] if busy else " "
+        cost_str = format_usd(usd)
+        push_str = f" :: ↑{ahead}" if ahead > 0 else ""
         title = (
             f" CLK :: {project} :: provider={provider} :: phase={phase} {spin} "
             f"iter={iteration} :: tok={_format_tokens(tot)} "
             f"(in={_format_tokens(tot_in)}/out={_format_tokens(tot_out)}) :: "
-            f"files={files} "
+            f"{cost_str} :: files={files}{push_str} "
         )
         self._fill(stdscr, 0, 0, width, " ", curses.color_pair(self.COLOR_TITLE) | curses.A_BOLD)
         self._safe_addstr(
@@ -1563,6 +2248,110 @@ class TuiApp:
         # Pad to width so the line reads as a band rather than a phrase.
         self._safe_addstr(stdscr, top, 0, line.ljust(width - 1)[: width - 1], width, attr)
 
+    def _hint_for_state(self) -> str:
+        """Compute the one-line hint that goes above the input prompt.
+
+        Looks at the current dashboard state (idea captured? agent
+        working? last error?) and returns a short suggestion. Returns
+        an empty string when there's nothing useful to say.
+        """
+        s = self.state
+        with s.lock:
+            has_idea = bool(s.idea)
+            busy = s.busy
+            err_kind = s.last_error_kind
+            err_cmd = s.last_error_command
+            in_tut = s.in_tutorial
+            stop_req = s.stop_requested
+            active_provider = s.provider or "shell"
+        if in_tut:
+            return "tutorial running — agents are operating in a sandbox; press /quit to exit"
+        if busy:
+            return "agent is working — /abort to kill the stuck subprocess if needed"
+        if stop_req:
+            return "stop requested — loop will end after the current cycle"
+        if err_kind == "not_installed":
+            return f"{active_provider} CLI not found — try /install {active_provider} or /provider <other>"
+        if err_kind == "auth":
+            return f"{active_provider} auth failed — /configure {active_provider} to set credentials"
+        if err_kind == "rate_limit":
+            return "provider rate-limited — wait, or /provider <other> to switch"
+        if err_kind == "timeout":
+            return "provider call stalled — /abort to kill it, then retry or switch provider"
+        if not has_idea:
+            return "type your idea, or /tutorial for a sample run, or /help"
+        return "type a message to continue, or /help for commands"
+
+    def _draw_hint_bar(self, stdscr, *, top: int, width: int) -> None:
+        hint = self._hint_for_state()
+        if not hint:
+            return
+        text = ("  " + hint).ljust(width - 1)[: width - 1]
+        # Subtle styling — log info color, no bold — so the hint never
+        # competes with the title bar or the cards for attention.
+        self._safe_addstr(stdscr, top, 0, text, width, curses.color_pair(self.COLOR_LOG_INFO))
+
+    # ----- /help overlay ----------------------------------------------------
+
+    _HELP_ROWS: List[Tuple[str, str]] = [
+        ("/help, F1, ?",            "Toggle this overlay."),
+        ("Esc, q",                  "Dismiss the overlay."),
+        ("",                        ""),
+        ("/idea <text>",            "Replace the captured idea."),
+        ("/cast",                   "Have the chief re-pick the team."),
+        ("/roles list|add|drop",    "Inspect or edit the agent roster."),
+        ("/run [workflow]",         "Run one workflow cycle (default: engineering)."),
+        ("/loop ralph|autoresearch [N]", "Refinement loop for N iterations."),
+        ("/stop",                   "Stop the active loop after the current cycle."),
+        ("/abort",                  "Hard-kill the running provider subprocess."),
+        ("",                        ""),
+        ("/provider <name>",        "Switch the active provider."),
+        ("/install [tool]",         "Install a missing CLI (claude, pi, ollama, …)."),
+        ("/configure [tool]",       "Re-run a tool's first-use config."),
+        ("/github",                 "(Re-)connect this workspace to a GitHub remote."),
+        ("",                        ""),
+        ("/doctor [--fix]",         "Health-check providers and config."),
+        ("/diag",                   "Build a redacted diagnostic bundle."),
+        ("/tutorial",               "Run a free sample idea on the shell provider."),
+        ("/workspaces list|switch|rename|clean", "Manage past kickoff dirs."),
+        ("/undo",                   "Revert the last clk-authored commit."),
+        ("/status",                 "Print a snapshot to the log."),
+        ("/quit, Ctrl-D",           "Exit the TUI."),
+    ]
+
+    def _draw_help_overlay(self, stdscr, h: int, w: int) -> None:
+        rows = self._HELP_ROWS
+        # Box dimensions: leave at least 4 cells of margin on each side
+        # so the underlying log/cards are still partially visible.
+        box_w = max(50, min(w - 4, 84))
+        box_h = min(h - 2, len(rows) + 5)
+        y0 = max(1, (h - box_h) // 2)
+        x0 = max(1, (w - box_w) // 2)
+        attr = curses.color_pair(self.COLOR_LOG_SYS) | curses.A_BOLD
+        bg = curses.color_pair(self.COLOR_TITLE)
+        # Top + bottom borders, side walls.
+        self._safe_addstr(stdscr, y0, x0, "+" + "-" * (box_w - 2) + "+", box_w, attr)
+        for r in range(1, box_h - 1):
+            self._safe_addstr(stdscr, y0 + r, x0, "|" + " " * (box_w - 2) + "|", box_w, attr)
+        self._safe_addstr(stdscr, y0 + box_h - 1, x0, "+" + "-" * (box_w - 2) + "+", box_w, attr)
+        # Title.
+        title = " CLK :: help "
+        self._safe_addstr(
+            stdscr, y0, x0 + max(1, (box_w - len(title)) // 2), title, box_w, bg | curses.A_BOLD
+        )
+        # Body.
+        col_w = (box_w - 6) // 3
+        for i, (cmd, desc) in enumerate(rows[: box_h - 4]):
+            line = f"  {cmd:<{col_w}} {desc}"[: box_w - 3]
+            self._safe_addstr(stdscr, y0 + 2 + i, x0 + 1, line, box_w - 2, curses.color_pair(self.COLOR_LOG_INFO))
+        # Footer hint.
+        footer = " Esc / q to close "
+        self._safe_addstr(
+            stdscr, y0 + box_h - 1,
+            x0 + max(1, (box_w - len(footer)) // 2),
+            footer, box_w, bg | curses.A_BOLD,
+        )
+
     def _draw_input(self, stdscr, *, top: int, width: int, rows: int = 1, cursor: int = 0) -> None:
         # Frame line above the input rows.
         self._safe_addstr(
@@ -1599,6 +2388,19 @@ class TuiApp:
     # --- input handling --------------------------------------------------
 
     def _handle_key(self, ch: int) -> bool:
+        # When the /help overlay is up, Esc/q dismisses it and all
+        # other keys (including arrows) pass through normally. This
+        # lets agent state continue updating beneath the overlay.
+        if self._help_visible:
+            if ch in (27, ord('q'), ord('Q')):  # Esc / q
+                self._help_visible = False
+                with self.state.lock:
+                    self.state.help_dismissed = True
+                return True
+        # F1 always toggles help — no need to clear the input buffer.
+        if ch == curses.KEY_F1:
+            self._help_visible = not self._help_visible
+            return True
         if ch in (4,):  # Ctrl-D
             self.worker.stop()
             return False
@@ -1654,6 +2456,14 @@ class TuiApp:
                 return self._dispatch(msg.strip())
             return True
         if 32 <= ch < 127:
+            # When the input buffer is empty, ? opens /help instead of
+            # being typed — same convention as many CLIs.
+            if ch == ord('?'):
+                with self.state.lock:
+                    empty = (self.state.input_buffer == "")
+                if empty:
+                    self._help_visible = True
+                    return True
             with self.state.lock:
                 if len(self.state.input_buffer) < 1024:
                     i = max(0, min(self.state.input_cursor, len(self.state.input_buffer)))
@@ -1703,6 +2513,42 @@ class TuiApp:
             if cmd == "abort":
                 self._do_abort()
                 return True
+            if cmd == "help":
+                self._help_visible = True
+                return True
+            if cmd == "install":
+                tool = args[0] if args else (self.state.provider or "")
+                self.worker.submit(Job("install", tool))
+                return True
+            if cmd == "configure":
+                tool = args[0] if args else (self.state.provider or "")
+                self.worker.submit(Job("configure", tool))
+                return True
+            if cmd == "github":
+                self.worker.submit(Job("github"))
+                return True
+            if cmd == "undo":
+                # Two-step confirm: first /undo prints the diff, second
+                # /undo confirm actually reverts. Matches the
+                # always-confirm policy.
+                confirm = bool(args and args[0].lower() == "confirm")
+                self.worker.submit(Job("undo", {"confirm": confirm}))
+                return True
+            if cmd == "doctor":
+                fix = bool(args and args[0] == "--fix")
+                self.worker.submit(Job("doctor", {"fix": fix}))
+                return True
+            if cmd == "diag":
+                self.worker.submit(Job("diag"))
+                return True
+            if cmd == "tutorial":
+                self.worker.submit(Job("tutorial"))
+                return True
+            if cmd == "workspaces":
+                action = args[0] if args else "list"
+                rest = args[1:]
+                self.worker.submit(Job("workspaces", {"action": action, "args": rest}))
+                return True
             if cmd == "roles":
                 if not args:
                     self.worker.submit(Job("roles", {"action": "list"}))
@@ -1718,7 +2564,10 @@ class TuiApp:
                 else:
                     self.state.add_log(f"unknown roles op: {sub}", level="WARN")
                 return True
-            self.state.add_log(f"unknown command: /{cmd}", level="WARN")
+            self.state.add_log(
+                f"'/{cmd}' isn't a command I know. Type /help (or press F1) for the list.",
+                level="WARN",
+            )
             return True
         # Free-text: first message becomes the idea; subsequent ones are
         # appended to the conversation file and trigger another run.
@@ -1755,12 +2604,18 @@ class TuiApp:
                 if card.status == AgentStatus.WORKING and card.live_pid
             ]
         if not targets:
-            self.state.add_log("abort: no agents currently running", level="WARN")
+            self.state.add_log(
+                "nothing to abort — no agent subprocess is running right now.",
+                level="WARN",
+            )
             return
+        self.state.add_system_message(
+            f"aborting {len(targets)} stuck subprocess(es)…"
+        )
         for name, pid in targets:
             try:
                 os.kill(pid, signal.SIGTERM)
-                self.state.add_log(f"abort: SIGTERM sent to {name} pid={pid}", level="WARN")
+                self.state.add_log(f"sent SIGTERM to {name} (pid {pid}) — the cycle will report a timeout", level="WARN")
             except ProcessLookupError:
                 self.state.add_log(f"abort: {name} pid={pid} already gone", level="INFO")
             except Exception as exc:
@@ -1826,9 +2681,44 @@ def run(initial_prompt: Optional[str] = None) -> int:
     agents_cfg = load_agents_config(paths)
     agent_names = list((agents_cfg.get("agents") or {}).keys())
 
+    # Crashed-session detection: if a previous TUI exited without removing
+    # its lock file, mention that and offer the user a clean restart hint.
+    # We don't auto-resume the conversation here — that's the worker's job
+    # if the user types something — but we do surface the situation so
+    # they know what happened.
+    lock_path = paths.state / ".tui-active"
+    prior_session = None
+    try:
+        if lock_path.exists():
+            prior_pid = lock_path.read_text(encoding="utf-8").strip()
+            # Stale lock if the PID no longer exists.
+            try:
+                import os as _os
+                if prior_pid.isdigit():
+                    _os.kill(int(prior_pid), 0)
+                    # Still running — leave the file alone, don't claim it.
+                    print(
+                        f"[tui] another CLK TUI is already running (pid {prior_pid}); "
+                        f"close it first or rm -f {lock_path}",
+                        file=sys.stderr,
+                    )
+                    return 2
+            except (OSError, ValueError):
+                prior_session = prior_pid
+        paths.state.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(str(__import__('os').getpid()), encoding="utf-8")
+    except Exception:
+        pass
+
     state = DashboardState(agent_names, paths=paths, agents_cfg=agents_cfg)
     state.project_name = clk_cfg.get("project_name") or paths.root.name
     state.provider = providers_cfg.get("active") or clk_cfg.get("default_provider") or "shell"
+    if prior_session:
+        state.add_log(
+            f"recovered from a crashed session (prior pid {prior_session}). "
+            f"Your conversation is preserved under .clk/state/conversation.md.",
+            level="WARN",
+        )
     # Mirror every status-pane line to a persistent file so we have a
     # full session trace inside the kickoff dir for later analysis.
     state.attach_session_log(paths.logs / "session.log")
@@ -1878,4 +2768,10 @@ def run(initial_prompt: Optional[str] = None) -> int:
         sys.stderr = old_stderr
         sys.stdout = old_stdout
         state.close_session_log()
+        # Clean up the lock so the next run doesn't see "crashed session".
+        try:
+            if lock_path.exists():
+                lock_path.unlink()
+        except Exception:
+            pass
     return 0
