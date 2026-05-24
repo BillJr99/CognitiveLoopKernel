@@ -264,9 +264,14 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
           preferredModel: params.preferredModel,
           cwd: ctx.cwd,
           signal: sig,
-          // Wrap the plain-string progress message into the ToolResult shape
-          // Pi's onUpdate callback expects ({ content: [...] }).
-          onUpdate: (text) => onUpdate({ content: [{ type: "text", text }] }),
+          // Wrap the plain-string progress message into the AgentToolResult
+          // shape Pi's onUpdate callback expects. `details` is required by
+          // the AgentToolResult<T> interface even for intermediate updates;
+          // we pass {} here since we have no structured payload yet — the
+          // final return below carries the real {agent, sessionId} details.
+          // onUpdate itself is optional per AgentTool.execute's signature.
+          onUpdate: (text) =>
+            onUpdate?.({ content: [{ type: "text", text }], details: {} }),
         });
         let text = output || "(subagent produced no output)";
         if (text.length > MAX_OUTPUT_CHARS) {

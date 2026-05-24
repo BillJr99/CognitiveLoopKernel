@@ -251,7 +251,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         // errors (rate limits, network blips) don't abort the run.
         const sig = activeSignal();
         await withRetry(
-          () => pi.sendUserMessage(clkChiefPrimer(idea)),
+          // pi.sendUserMessage returns void (it just enqueues the message
+          // onto Pi's turn queue), so we wrap it in an async fn that
+          // returns Promise<void>. withRetry's type parameter is satisfied,
+          // and any synchronous throw from the enqueue path still
+          // triggers a retry.
+          async () => { pi.sendUserMessage(clkChiefPrimer(idea)); },
           {
             signal: sig,
             // Free-tier upstream rate limits can persist for 30–120 s; use a
