@@ -69,6 +69,16 @@ class RalphLoop:
         self.evaluator = evaluator
         self.max_iterations = max_iterations
 
+    def _observer_log(self, line: str) -> None:
+        """Mirror a status line to both the log file and the TUI status pane."""
+        log(line)
+        obs = getattr(self.runner, "observer", None)
+        if obs is not None:
+            try:
+                obs.log(line)
+            except Exception:
+                pass
+
     def run(self, *, dry_run: bool = False) -> List[IterationOutcome]:
         outcomes: List[IterationOutcome] = []
         plateau_streak = 0
@@ -158,8 +168,15 @@ class RalphLoop:
             # Escalation is already wired via _adaptive_extra setting
             # careful=true on the next iteration; just record the intent.
             log_event(self.paths, "ralph_plateau_escalate", agent="ralph", iteration=idx)
+            self._observer_log(
+                f"ralph #{idx} :: plateau escalate :: enabling consensus fan-out (streak={streak})"
+            )
         if action in ("reframe_only", "escalate_then_reframe") and streak >= 2 and not dry_run:
             try:
+                self._observer_log(
+                    f"ralph #{idx} :: plateau reframe :: dispatching chief to re-cast workflow "
+                    f"(streak={streak})"
+                )
                 self.runner.run(
                     "chief",
                     (
@@ -184,6 +201,7 @@ class RalphLoop:
     def _handle_regression(self, idx: int, *, dry_run: bool) -> None:
         log_event(self.paths, "ralph_regression_detected", agent="ralph", iteration=idx)
         log(f"ralph: regression detected at iteration {idx}", level="WARN")
+        self._observer_log(f"ralph #{idx} :: regression detected :: dispatching critic")
         if dry_run:
             return
         # Ask the critic to look at what just broke before we plan the
@@ -251,6 +269,7 @@ class RalphLoop:
         base_extra.update(adaptive_extra or {})
 
         # 1. Plan with Ralph
+        self._observer_log(f"ralph #{idx} :: plan :: dispatching ralph")
         plan = self.runner.run(
             "ralph",
             objective,
@@ -300,6 +319,7 @@ class RalphLoop:
         # 2. Engineer one slice
         engineer_extra = dict(base_extra)
         engineer_extra["from"] = "ralph"
+        self._observer_log(f"ralph #{idx} :: engineer :: {eng_obj_text[:60]}")
         engineer = self.runner.run(
             "engineer",
             eng_obj_text,
@@ -308,6 +328,7 @@ class RalphLoop:
         )
 
         # 3. QA pass
+        self._observer_log(f"ralph #{idx} :: qa :: dispatching audit pass")
         qa = self.runner.run(
             "qa",
             f"Audit changes from iteration #{idx} and validate.",

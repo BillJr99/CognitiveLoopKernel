@@ -68,10 +68,21 @@ class AutoresearchLoop:
     def _robustness_cfg(self) -> Dict[str, Any]:
         return dict(self.runner.clk_cfg.get("robustness") or {})
 
+    def _observer_log(self, line: str) -> None:
+        """Mirror a status line to both the log file and the TUI status pane."""
+        log(line)
+        obs = getattr(self.runner, "observer", None)
+        if obs is not None:
+            try:
+                obs.log(line)
+            except Exception:
+                pass
+
     def _step(self, idx: int, *, dry_run: bool) -> Experiment:
         started = datetime.now().isoformat(timespec="seconds")
         before = head_sha(self.paths.root)
         min_chars = int(self._robustness_cfg().get("min_response_chars") or 40)
+        self._observer_log(f"autoresearch #{idx} :: survey :: dispatching ralph")
         survey = self.runner.run(
             "ralph",
             f"Autoresearch step #{idx}: survey state and propose next experiment.",
@@ -107,12 +118,14 @@ class AutoresearchLoop:
             f"Open question #{idx}",
         )
 
+        self._observer_log(f"autoresearch #{idx} :: analyst :: investigating: {question[:60]}")
         analyst = self.runner.run(
             "analyst",
             f"Investigate: {question}",
             extra={"iteration": idx, "loop": "autoresearch"},
             dry_run=dry_run,
         )
+        self._observer_log(f"autoresearch #{idx} :: critic :: reviewing findings")
         critic = self.runner.run(
             "critic",
             f"Critique findings on: {question}",

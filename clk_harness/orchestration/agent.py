@@ -802,6 +802,9 @@ class AgentRunner:
             provider=provider.describe(),
             run_id=run_id,
         )
+        self._observer_log(
+            f"consensus :: {name} :: sample #{sample} dispatching ({agent_name})"
+        )
         if self.observer is not None:
             self.observer.begin(label, sample_objective)
             self.observer.prompt_sent(label, prompt)
@@ -823,6 +826,10 @@ class AgentRunner:
         self._record(arun, prompt, provider.describe())
         if self.observer is not None:
             self.observer.end(label, arun)
+        self._observer_log(
+            f"consensus :: {name} :: sample #{sample} done "
+            f"({'ok' if resp.ok else 'error: ' + (resp.error or '?')})"
+        )
         log_event(
             self.paths,
             "consensus_sample_response",
@@ -935,6 +942,9 @@ class AgentRunner:
                 f"Worker system prompt preview: {system_preview or '(missing)'}\n\n"
                 f"Original objective:\n{base_objective}\n"
             )
+            self._observer_log(
+                f"meta :: drafting dispatch prompt for {agent_name} via chief"
+            )
             run = self.run(
                 "chief",
                 objective,
@@ -994,6 +1004,9 @@ class AgentRunner:
                 "Output ONLY the prompt body — no PROPOSE_ROLE wrapper, no commentary.\n"
                 "Keep it under 50 lines. Make the role's distinct ownership explicit\n"
                 "compared with existing roles."
+            )
+            self._observer_log(
+                f"meta :: drafting role prompt for {role_name} via chief"
             )
             run = self.run(
                 "chief",
