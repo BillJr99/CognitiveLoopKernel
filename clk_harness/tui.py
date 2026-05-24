@@ -520,7 +520,14 @@ class DashboardState:
             card.live_rss_kb = ""
             card.live_idle_s = 0.0
             card.live_elapsed_s = 0.0
-        self.add_log(f"{name} :: start :: {objective[:80]}", level="INFO")
+        # Take the first non-empty line of the objective so that multi-line
+        # objectives (e.g. recovery dispatches that start with a blank line
+        # after the header) don't produce a stray fragment in the log pane.
+        _obj_first = next(
+            (l for l in (objective or "").splitlines() if l.strip()),
+            (objective or ""),
+        )
+        self.add_log(f"{name} :: start :: {_obj_first[:80]}", level="INFO")
 
     def report_progress(self, name: str, kind: str, message: str) -> None:
         """Capture streaming progress from a provider's subprocess.
