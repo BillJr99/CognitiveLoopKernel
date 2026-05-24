@@ -340,6 +340,12 @@ container has a terminal. If no `.env` is present it will prompt for provider
 and settings before launching. Pass your idea as the first argument to skip
 the prompt and go straight to the engineering workflow.
 
+> **`install_local.sh` is not needed inside Docker.** The `Dockerfile` runs
+> `pip install -e .` at image-build time, so all Python dependencies are
+> already present. Keep `CLK_RUN_INSTALL=false` (the default) — setting it to
+> `true` in a Docker environment would redundantly re-create a `.clk/venv`
+> that the container doesn't need.
+
 All examples below assume the image is tagged `clk` locally — either
 build it from source or pull a prebuilt image and re-tag it (see the next
 two sections).
@@ -406,7 +412,12 @@ what the value does before asking for it, modeled on the
    `codex`, `gemini`, `pi`, `ollama`, `openwebui`). One-liner per
    choice.
 2. **Loop settings** — max iterations, project name, install flag,
-   TUI/no-TUI.
+   TUI/no-TUI. The **install flag** (`CLK_RUN_INSTALL`) controls
+   whether `scripts/install_local.sh` runs inside each kickoff
+   directory to create a local `.clk/venv`. **Leave it `false`
+   (the default) when running in Docker** — the image already has
+   all Python dependencies installed at build time, so the local
+   venv step is unnecessary.
 3. **Auth mode** — only for CLI providers; `cli` reuses your local
    `claude login` / `codex login` / `gemini login`, `apikey`
    prompts for a key directly.

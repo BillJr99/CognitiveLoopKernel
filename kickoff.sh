@@ -176,8 +176,10 @@ The provider is the AI that actually writes your code each cycle.
 autoresearch loops can run. \`project name\` becomes the title of the
 captured idea and (optionally) the GitHub repo name. The \`run install\`
 flag triggers .clk/harness/scripts/install_local.sh inside each kickoff
-dir so providers like pi can find PyYAML and other deps. \`no TUI\`
-switches to a non-interactive pipeline — handy for CI."
+dir so providers like pi can find PyYAML and other deps — leave it
+\`false\` (the default) when running inside Docker, because the image
+already has all Python dependencies installed at build time.
+\`no TUI\` switches to a non-interactive pipeline — handy for CI."
     max_iter="$(_sv_read    "Max loop iterations" "${CLK_MAX_ITERATIONS:-10}")"
     proj_name="$(_sv_read   "Project name"        "${CLK_PROJECT_NAME:-clk-app}")"
     run_install="$(_sv_read "Run install_local.sh in each kickoff (true|false)" "${CLK_RUN_INSTALL:-false}")"
