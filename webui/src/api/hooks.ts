@@ -1,6 +1,6 @@
 // React Query hooks for every endpoint the UI touches.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiDelete, apiGet, apiPost, apiPut } from "./client";
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from "./client";
 import type {
   DoctorResponse,
   EnvResponse,
@@ -43,6 +43,15 @@ export function useDeleteWorkspace() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => apiDelete<{ ok: boolean }>(`/api/workspaces/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
+  });
+}
+
+export function useRenameWorkspace() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      apiPatch<{ ok: boolean }>(`/api/workspaces/${id}`, { name }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
   });
 }

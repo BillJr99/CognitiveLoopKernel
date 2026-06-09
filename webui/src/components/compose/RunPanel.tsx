@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Play, Square, Lightbulb, Repeat, Wand2, Terminal, AlertTriangle } from "lucide-react";
-import { useCancelTask, useDoctor, useStartTask, useTaskStatus, useWorkflows } from "../../api/hooks";
+import { useCancelTask, useCreateWorkspace, useDoctor, useStartTask, useTaskStatus, useWorkflows } from "../../api/hooks";
 import { useActiveWorkspace } from "../../state/activeWorkspace";
 import { Badge, Spinner } from "../common/ui";
 
@@ -28,13 +28,17 @@ export function ShellGuardBanner() {
 }
 
 export function RunPanel() {
-  const { activeId } = useActiveWorkspace();
+  const { activeId, setActiveId } = useActiveWorkspace();
   const { data: wfData } = useWorkflows();
   const { data: doctor } = useDoctor(activeId);
   const doctorLoaded = doctor !== undefined;
   const isShell = doctor?.active_provider === "shell";
   const start = useStartTask();
   const cancel = useCancelTask();
+  const createWorkspace = useCreateWorkspace();
+  // Without an active workspace, Start creates one on the fly, so the provider
+  // gate (which needs a workspace's doctor) doesn't apply yet.
+  const noWorkspace = !activeId;
 
   const [idea, setIdea] = useState("");
   const [mode, setMode] = useState<Mode>("run");
@@ -73,10 +77,22 @@ export function RunPanel() {
   }, [lines.length]);
 
   async function launch() {
-    if (!activeId || !doctorLoaded || isShell) return;
+    if (start.isPending || createWorkspace.isPending) return;
+    if (mode === "idea" && !idea.trim()) return;
+    // With a workspace, respect the provider gate; without one, we create a
+    // fresh timestamped workspace and run in it.
+    let wsId = activeId;
+    if (!wsId) {
+      const name = new Date().toISOString().slice(0, 19).replace("T", " ");
+      const ws = await createWorkspace.mutateAsync(name);
+      wsId = ws.workspace_id;
+      setActiveId(wsId);
+    } else if (!doctorLoaded || isShell) {
+      return;
+    }
     const body: { command: string; args?: string[]; workspace_id: string; workflow?: string } = {
       command: mode,
-      workspace_id: activeId,
+      workspace_id: wsId,
     };
     if (mode === "idea") {
       if (!idea.trim()) return;
@@ -185,6 +201,11 @@ export function RunPanel() {
           )}
 
           <div className="ml-auto flex items-center gap-2">
+            {!running && !noWorkspace && !doctorLoaded && (
+              <span className="flex items-center gap-1 text-[11px] text-[var(--color-mist)]">
+                <Spinner size={11} /> checking provider…
+              </span>
+            )}
             {running ? (
               <button
                 onClick={() => taskId && cancel.mutate(taskId)}
@@ -195,13 +216,20 @@ export function RunPanel() {
             ) : (
               <button
                 onClick={launch}
-                disabled={!doctorLoaded || isShell || start.isPending || (mode === "idea" && !idea.trim())}
+                disabled={
+                  start.isPending ||
+                  createWorkspace.isPending ||
+                  (mode === "idea" && !idea.trim()) ||
+                  (!noWorkspace && (!doctorLoaded || isShell))
+                }
                 title={
-                  !doctorLoaded
-                    ? "Checking the active provider…"
-                    : isShell
-                      ? "Active provider is 'shell' — pick a real provider in Configure → Providers"
-                      : undefined
+                  noWorkspace
+                    ? "Starts a new timestamped workspace"
+                    : !doctorLoaded
+                      ? "Checking the active provider…"
+                      : isShell
+                        ? "Active provider is 'shell' — pick a real provider in Configure → Providers"
+                        : undefined
                 }
                 className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-[var(--color-brand)] to-[var(--color-good)] px-5 py-2 text-sm font-semibold text-[var(--color-ink-950)] disabled:opacity-50"
               >

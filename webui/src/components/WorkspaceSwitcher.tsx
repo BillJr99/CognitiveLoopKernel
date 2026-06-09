@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { FolderPlus, Trash2, Check } from "lucide-react";
-import { useCreateWorkspace, useDeleteWorkspace, useWorkspaces } from "../api/hooks";
+import { FolderPlus, Trash2, Check, Pencil, X } from "lucide-react";
+import { useCreateWorkspace, useDeleteWorkspace, useRenameWorkspace, useWorkspaces } from "../api/hooks";
 import { useActiveWorkspace } from "../state/activeWorkspace";
 import { Spinner } from "./common/ui";
 
@@ -9,10 +9,24 @@ export function WorkspaceSwitcher() {
   const { activeId, setActiveId } = useActiveWorkspace();
   const create = useCreateWorkspace();
   const del = useDeleteWorkspace();
+  const rename = useRenameWorkspace();
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
 
   const workspaces = data?.workspaces ?? [];
+
+  function startEdit(id: string, current: string) {
+    setEditingId(id);
+    setEditName(current);
+  }
+
+  async function submitEdit() {
+    const trimmed = editName.trim();
+    if (trimmed && editingId) await rename.mutateAsync({ id: editingId, name: trimmed });
+    setEditingId(null);
+  }
 
   async function submit() {
     const trimmed = name.trim();
@@ -72,21 +86,56 @@ export function WorkspaceSwitcher() {
                 active ? "bg-[var(--color-ink-800)] ring-1 ring-[var(--color-brand)]/40" : "hover:bg-[var(--color-ink-800)]"
               }`}
             >
-              <button onClick={() => setActiveId(w.id)} className="min-w-0 flex-1 truncate text-left">
-                <span className={active ? "text-[var(--color-frost)]" : "text-[var(--color-mist)]"}>{w.name}</span>
-              </button>
-              <button
-                onClick={() => {
-                  if (confirm(`Delete workspace "${w.name}"? This removes its files.`)) {
-                    del.mutate(w.id);
-                    if (active) setActiveId(null);
-                  }
-                }}
-                className="opacity-0 transition-opacity group-hover:opacity-100 text-[var(--color-mist)] hover:text-[var(--color-bad)]"
-                title="Delete"
-              >
-                <Trash2 size={14} />
-              </button>
+              {editingId === w.id ? (
+                <>
+                  <input
+                    autoFocus
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") submitEdit();
+                      if (e.key === "Escape") setEditingId(null);
+                    }}
+                    className="min-w-0 flex-1 rounded border border-[var(--color-line)] bg-[var(--color-ink-900)] px-1.5 py-0.5 text-sm outline-none focus:border-[var(--color-brand)]"
+                  />
+                  <button onClick={submitEdit} className="text-[var(--color-good)] hover:opacity-80" title="Save name">
+                    <Check size={14} />
+                  </button>
+                  <button onClick={() => setEditingId(null)} className="text-[var(--color-mist)] hover:text-[var(--color-frost)]" title="Cancel">
+                    <X size={14} />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setActiveId(w.id)}
+                    onDoubleClick={() => startEdit(w.id, w.name)}
+                    title="Click to switch · double-click to rename"
+                    className="min-w-0 flex-1 truncate text-left"
+                  >
+                    <span className={active ? "text-[var(--color-frost)]" : "text-[var(--color-mist)]"}>{w.name}</span>
+                  </button>
+                  <button
+                    onClick={() => startEdit(w.id, w.name)}
+                    className="opacity-0 transition-opacity group-hover:opacity-100 text-[var(--color-mist)] hover:text-[var(--color-brand-bright)]"
+                    title="Rename"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Delete workspace "${w.name}"? This removes its files.`)) {
+                        del.mutate(w.id);
+                        if (active) setActiveId(null);
+                      }
+                    }}
+                    className="opacity-0 transition-opacity group-hover:opacity-100 text-[var(--color-mist)] hover:text-[var(--color-bad)]"
+                    title="Delete"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </>
+              )}
             </div>
           );
         })}

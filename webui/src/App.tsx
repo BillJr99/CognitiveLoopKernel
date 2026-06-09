@@ -74,12 +74,14 @@ export default function App() {
       <main className="flex min-w-0 flex-1 flex-col">
         <TopBar />
         <div className="min-h-0 flex-1 overflow-auto p-5">
-          {!activeId ? (
+          {/* Run is reachable without a workspace — hitting Start auto-creates
+              a timestamped one. Other views need an active workspace first. */}
+          {view === "run" ? (
+            <RunPanel />
+          ) : !activeId ? (
             <Onboarding />
           ) : view === "dashboard" ? (
             <Dashboard />
-          ) : view === "run" ? (
-            <RunPanel />
           ) : view === "think" ? (
             <ThinkStream />
           ) : view === "files" ? (

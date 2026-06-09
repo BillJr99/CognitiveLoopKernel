@@ -34,6 +34,9 @@ export function ModelPicker({
 
   const httpProvider = ptype === "ollama" || ptype === "openwebui";
   const endpointStr = (endpoint || "").trim();
+  // Single source of truth for the per-probe identity (used by the auto-probe
+  // guard and both manual refresh buttons).
+  const probeKey = `${ptype}|${endpointStr}`;
 
   // Fire a probe, ignoring responses superseded by a newer request and never
   // throwing (a failure just renders as "unreachable").
@@ -62,12 +65,11 @@ export function ModelPicker({
   // doesn't spam the network. The manual buttons below force a re-probe.
   useEffect(() => {
     if (!httpProvider) return;
-    const key = `${ptype}|${endpointStr}`;
-    if (lastKey.current === key) return;
-    const t = setTimeout(() => fire(key), 500);
+    if (lastKey.current === probeKey) return;
+    const t = setTimeout(() => fire(probeKey), 500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [httpProvider, ptype, endpointStr]);
+  }, [httpProvider, probeKey]);
 
   const inputCls =
     "min-w-0 flex-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-ink-900)] px-3 py-2 text-sm outline-none focus:border-[var(--color-brand)]";
@@ -89,7 +91,7 @@ export function ModelPicker({
           <button type="button" onClick={() => setManual(true)} className={btnCls} title="Type a model id manually">
             <Pencil size={13} />
           </button>
-          <button type="button" onClick={() => fire(`${ptype}|${endpointStr}`)} className={btnCls} title="Refresh model list">
+          <button type="button" onClick={() => fire(probeKey)} className={btnCls} title="Refresh model list">
             <RefreshCw size={13} className={busy ? "animate-spin" : ""} />
           </button>
         </div>
@@ -102,7 +104,7 @@ export function ModelPicker({
             className={inputCls}
           />
           {httpProvider && (
-            <button type="button" onClick={() => fire(`${ptype}|${endpointStr}`)} disabled={busy} className={btnCls} title="Fetch models from the endpoint">
+            <button type="button" onClick={() => fire(probeKey)} disabled={busy} className={btnCls} title="Fetch models from the endpoint">
               {busy ? <Spinner size={12} /> : <RefreshCw size={13} />} models
             </button>
           )}

@@ -311,6 +311,10 @@ class WorkspaceCreate(BaseModel):
     name: str
 
 
+class WorkspaceRename(BaseModel):
+    name: str
+
+
 class ResearchRequest(BaseModel):
     command: str
     args: List[str] = Field(default_factory=list)
@@ -381,6 +385,17 @@ async def create_workspace(body: WorkspaceCreate) -> Dict[str, Any]:
 @app.get("/api/workspaces")
 async def list_workspaces() -> Dict[str, Any]:
     return {"ok": True, "workspaces": list(WORKSPACES.values())}
+
+
+@app.patch("/api/workspaces/{workspace_id}")
+async def rename_workspace(workspace_id: str, body: WorkspaceRename) -> Dict[str, Any]:
+    if workspace_id not in WORKSPACES:
+        raise _err("workspace_not_found", f"Workspace {workspace_id!r} not found.", 404)
+    name = body.name.strip()
+    if not name:
+        raise _err("invalid_name", "Workspace name cannot be empty.")
+    WORKSPACES[workspace_id]["name"] = name
+    return {"ok": True, "workspace": WORKSPACES[workspace_id]}
 
 
 @app.delete("/api/workspaces/{workspace_id}")

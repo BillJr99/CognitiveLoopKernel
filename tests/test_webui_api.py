@@ -262,6 +262,44 @@ async def test_files_list_read_write_roundtrip(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rename_workspace(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "old-name")
+    wid = ws["workspace_id"]
+    r = await client.patch(f"/api/workspaces/{wid}", json={"name": "new-name"})
+    assert r.status_code == 200, r.text
+    assert r.json()["workspace"]["name"] == "new-name"
+    listing = (await client.get("/api/workspaces")).json()["workspaces"]
+    assert any(w["id"] == wid and w["name"] == "new-name" for w in listing)
+    # Empty name is rejected.
+    r = await client.patch(f"/api/workspaces/{wid}", json={"name": "  "})
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_download_workspace_zip(client: AsyncClient) -> None:
+    import io
+    import zipfile
+
+    ws = await _make_workspace(client, "zip-ws")
+    wid = ws["workspace_id"]
+    ws_path = Path(ws["path"])
+    (ws_path / "src").mkdir(parents=True, exist_ok=True)
+    (ws_path / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    (ws_path / ".clk" / "logs").mkdir(parents=True, exist_ok=True)
+    (ws_path / ".clk" / "logs" / "activity.jsonl").write_text("{}\n", encoding="utf-8")
+
+    r = await client.get(f"/api/workspaces/{wid}/download")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    assert "zip-ws.zip" in r.headers.get("content-disposition", "")
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    names = zf.namelist()
+    assert "src/app.py" in names
+    # Harness-internal files are excluded from the archive.
+    assert not any(n.startswith(".clk") for n in names)
+
+
+@pytest.mark.asyncio
 async def test_files_list_hides_internal_dirs(client: AsyncClient) -> None:
     ws = await _make_workspace(client, "hide-ws")
     wid = ws["workspace_id"]
