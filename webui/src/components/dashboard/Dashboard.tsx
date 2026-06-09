@@ -25,7 +25,7 @@ export function Dashboard() {
     <div className="grid h-full min-h-0 grid-cols-1 gap-4 xl:grid-cols-3">
       {/* Left/main column */}
       <div className="flex min-h-0 flex-col gap-4 xl:col-span-2">
-        <NowHappening events={events} busy={!!snap?.busy} />
+        <NowHappening snap={snap} latest={events[events.length - 1]} />
         {snap?.idea && (
           <div className="card flex items-start gap-2 p-3">
             <Lightbulb size={16} className="mt-0.5 shrink-0 text-[var(--color-warn)]" />
