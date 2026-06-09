@@ -86,8 +86,11 @@ _MAX_FILE_BYTES = 1_000_000  # 1 MB read/write cap for the in-browser editor
 
 
 def _safe_ws_file(paths: Paths, rel: str, *, for_write: bool = False) -> Path:
-    """Resolve ``<ws>/<rel>`` with a traversal guard (and a hidden-dir guard
-    for writes), raising the standard 403/400 envelope on violation."""
+    """Resolve ``<ws>/<rel>`` with a traversal guard and a harness-internal
+    (``.clk``/``.git``/…) guard, raising the standard 403/400 envelope on
+    violation. The hidden-dir guard applies to reads and writes alike so
+    internal logs/state can't be fetched through the file endpoints.
+    """
     api = _api()
     if not rel or rel.strip() == "":
         raise api._err("invalid_path", "A file path is required.", 400)
@@ -98,8 +101,9 @@ def _safe_ws_file(paths: Paths, rel: str, *, for_write: bool = False) -> Path:
     except ValueError:
         raise api._err("forbidden", "Path escapes workspace boundary.", 403)
     parts = set(target.relative_to(root).parts)
-    if for_write and parts & _HIDDEN_DIRS:
-        raise api._err("forbidden", "Cannot write to a harness-internal path.", 403)
+    if parts & _HIDDEN_DIRS:
+        verb = "write to" if for_write else "read"
+        raise api._err("forbidden", f"Cannot {verb} a harness-internal path.", 403)
     return target
 
 
@@ -223,11 +227,14 @@ async def get_providers_config(workspace_id: str) -> Dict[str, Any]:
     merged_blocks: Dict[str, Any] = dict(DEFAULT_PROVIDERS.get("providers") or {})
     for name, block in (cfg.get("providers") or {}).items():
         merged_blocks[name] = block
+    # available_providers() does blocking network probes for HTTP providers;
+    # run it off the event loop so the Providers tab never stalls the server.
+    available = await asyncio.to_thread(available_providers, {"providers": merged_blocks})
     return {
         "ok": True,
         "active": cfg.get("active"),
         "providers": _mask_provider_block(merged_blocks),
-        "available": available_providers({"providers": merged_blocks}),
+        "available": available,
     }
 
 
@@ -457,6 +464,10 @@ async def list_files(workspace_id: str) -> Dict[str, Any]:
                     truncated = True
                     break
                 fp = Path(dirpath) / name
+                # Skip symlinks: following them with stat() could leak
+                # size/mtime for targets outside the workspace.
+                if fp.is_symlink():
+                    continue
                 try:
                     stat = fp.stat()
                 except OSError:
@@ -499,6 +510,8 @@ async def write_file(workspace_id: str, body: FileWrite) -> Dict[str, Any]:
     paths = _require_workspace(workspace_id)
     paths.root.mkdir(parents=True, exist_ok=True)
     target = _safe_ws_file(paths, body.path, for_write=True)
+    if body.path.endswith(("/", "\\")) or (target.exists() and target.is_dir()):
+        raise _api()._err("invalid_path", f"{body.path!r} is a directory, not a file.", 400)
     data = body.content.encode("utf-8")
     if len(data) > _MAX_FILE_BYTES:
         raise _api()._err("too_large", "File exceeds the 1 MB editor limit.", 413)
@@ -565,36 +578,41 @@ class ProbeRequest(BaseModel):
     api_key: Optional[str] = None
 
 
+def _probe_blocking(ptype: str, endpoint: str, api_key: str) -> Dict[str, Any]:
+    """Synchronous probe worker (runs off the event loop via to_thread)."""
+    from .providers._endpoint_fallback import (
+        normalize_endpoint, probe_endpoint, docker_host_swap,
+    )
+    if ptype == "ollama":
+        from .providers.ollama import list_models as _ollama_models
+        ep = normalize_endpoint(endpoint) or "http://localhost:11434"
+        models = _ollama_models(ep)
+    elif ptype == "openwebui":
+        from .providers.openwebui import list_models as _owui_models
+        ep = normalize_endpoint(endpoint) or "http://localhost:8080"
+        models = _owui_models(ep, api_key)
+    else:
+        return {"ok": True, "supported": False, "reachable": None, "models": []}
+    swap = docker_host_swap(ep)
+    reachable = bool(models) or probe_endpoint(ep) or (bool(swap) and probe_endpoint(swap))
+    return {"ok": True, "supported": True, "reachable": reachable, "models": models}
+
+
 @router.post("/api/providers/probe")
 async def probe_provider(body: ProbeRequest) -> Dict[str, Any]:
     """Probe an HTTP provider endpoint and return its available models.
 
-    Used by the Providers form to offer a model dropdown. For provider
-    types that don't expose an HTTP model list (claude/codex/gemini/pi/
-    shell) ``supported`` is False so the UI keeps a free-text box. Never
-    raises on a bad endpoint — returns ``reachable: false`` instead.
+    Used by the Providers form / .env editor to offer a model dropdown.
+    For HTTP providers (ollama/openwebui), ``supported`` is True and
+    ``reachable`` is True/False. For provider types that don't expose an
+    HTTP model list (claude/codex/gemini/pi/shell) ``supported`` is False
+    and ``reachable`` is ``null`` so the UI keeps a free-text box. Never
+    raises on a bad endpoint. The blocking ``urllib`` work runs in a
+    thread so it never stalls the event loop.
     """
-    ptype = (body.type or "").lower()
-    endpoint = (body.endpoint or "").strip()
-    if ptype == "ollama":
-        from .providers.ollama import list_models as _ollama_models
-        from .providers._endpoint_fallback import probe_endpoint, docker_host_swap
-        ep = endpoint or "http://localhost:11434"
-        models = _ollama_models(ep)
-        reachable = bool(models) or probe_endpoint(ep) or (
-            bool(docker_host_swap(ep)) and probe_endpoint(docker_host_swap(ep) or "")
-        )
-        return {"ok": True, "supported": True, "reachable": reachable, "models": models}
-    if ptype == "openwebui":
-        from .providers.openwebui import list_models as _owui_models
-        from .providers._endpoint_fallback import probe_endpoint, docker_host_swap
-        ep = endpoint or "http://localhost:8080"
-        models = _owui_models(ep, body.api_key or "")
-        reachable = bool(models) or probe_endpoint(ep) or (
-            bool(docker_host_swap(ep)) and probe_endpoint(docker_host_swap(ep) or "")
-        )
-        return {"ok": True, "supported": True, "reachable": reachable, "models": models}
-    return {"ok": True, "supported": False, "reachable": None, "models": []}
+    return await asyncio.to_thread(
+        _probe_blocking, (body.type or "").lower(), (body.endpoint or "").strip(), body.api_key or "",
+    )
 
 
 __all__ = ["router"]

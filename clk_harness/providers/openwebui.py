@@ -45,7 +45,8 @@ def list_models(endpoint: str, api_key: str, *, timeout_s: float = 5.0) -> List[
     Returns an empty list on any failure (network, auth, parse) so the
     kickoff script can fall back to manual entry without crashing.
     """
-    url = endpoint.rstrip("/") + "/api/models"
+    from ._endpoint_fallback import normalize_endpoint
+    url = normalize_endpoint(endpoint).rstrip("/") + "/api/models"
     req = urllib.request.Request(
         url,
         headers={"Accept": "application/json", **_auth_header(api_key)},
@@ -79,7 +80,8 @@ class OpenWebUIProvider(AgentProvider):
     def _endpoint(self) -> str:
         # .env knobs win when set so the global config can drive the
         # connection without editing providers.json.
-        return (
+        from ._endpoint_fallback import normalize_endpoint
+        return normalize_endpoint(
             os.environ.get("CLK_OPENWEBUI_ENDPOINT")
             or self.config.get("endpoint")
             or "http://localhost:8080"

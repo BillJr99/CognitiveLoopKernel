@@ -42,14 +42,16 @@ export function ThinkStream() {
   const { activeId } = useActiveWorkspace();
   const { events, connected } = useSharedActivity();
   const [filter, setFilter] = useState<Filter>("all");
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [inspect, setInspect] = useState<ActivityEvent | null>(null);
   const [follow, setFollow] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const rows = useMemo(() => {
     return events
-      .map((ev, i) => ({ ev, key: i }))
+      // Stable per-event key (matches the stream de-dupe key) so expand/collapse
+      // tracks the right row even as old events are dropped from the buffer.
+      .map((ev) => ({ ev, key: `${ev.seq}|${ev.ts}|${ev.kind}|${ev.agent}` }))
       .filter(({ ev }) => {
         const b = bucket(ev);
         if (!b) return false;
@@ -65,7 +67,7 @@ export function ThinkStream() {
     return <EmptyState icon={<Brain size={22} />} title="No workspace selected" hint="Pick a workspace to watch the agents think." />;
   }
 
-  function toggle(key: number) {
+  function toggle(key: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
       next.has(key) ? next.delete(key) : next.add(key);
@@ -120,7 +122,7 @@ export function ThinkStream() {
           <ul className="flex flex-col gap-1.5">
             {rows.map(({ ev, key }) => (
               <ThinkRow
-                key={`${key}-${ev.seq}`}
+                key={key}
                 ev={ev}
                 open={expanded.has(key)}
                 onToggle={() => toggle(key)}
