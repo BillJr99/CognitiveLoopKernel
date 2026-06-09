@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+/* CLK dark theme tokens (Tailwind v4 @theme). */
+@theme {
+  --color-ink-950: #060912;
+  --color-ink-900: #0a0e1c;
+  --color-ink-850: #0d1226;
+  --color-ink-800: #11172f;
+  --color-ink-700: #1a2143;
+  --color-line: #283156;
+  --color-mist: #9aabd6;
+  --color-frost: #eaf0ff;
+  --color-brand: #7aa2ff;
+  --color-brand-bright: #b3c8ff;
+  --color-iris: #a78bfa;
+  --color-good: #4ade80;
+  --color-warn: #fbbf24;
+  --color-bad: #fb7185;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--color-frost);
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background-color: var(--color-ink-950);
+  background-image:
+    radial-gradient(900px 520px at 85% -8%, rgba(122, 162, 255, 0.16), transparent 60%),
+    radial-gradient(820px 480px at -8% 8%, rgba(167, 139, 250, 0.13), transparent 60%),
+    radial-gradient(900px 560px at 50% 120%, rgba(74, 222, 128, 0.08), transparent 60%);
+  background-attachment: fixed;
+}
+
+/* Animated aurora layer behind everything (very subtle). */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -20%;
+  z-index: -1;
+  background:
+    conic-gradient(from 120deg at 30% 30%, rgba(122, 162, 255, 0.06), transparent 25%, rgba(167, 139, 250, 0.06) 50%, transparent 75%);
+  filter: blur(40px);
+  animation: aurora 26s ease-in-out infinite alternate;
+}
+
+@keyframes aurora {
+  0% { transform: translate3d(-2%, -1%, 0) rotate(0deg) scale(1.05); opacity: 0.7; }
+  100% { transform: translate3d(2%, 2%, 0) rotate(8deg) scale(1.15); opacity: 1; }
+}
+
+/* Thin custom scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--color-line); border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: #34406e; }
+
+/* ---- Reusable surfaces ---- */
+.card {
+  background: linear-gradient(180deg, rgba(17, 23, 47, 0.92), rgba(13, 18, 38, 0.92));
+  border: 1px solid var(--color-line);
+  border-radius: 16px;
+  transition: border-color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
+}
+.card-hover:hover {
+  border-color: rgba(122, 162, 255, 0.45);
+  box-shadow: 0 12px 40px -16px rgba(122, 162, 255, 0.45);
+  transform: translateY(-2px);
+}
+.glass {
+  background: rgba(13, 18, 38, 0.72);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--color-line);
+}
+.gradient-text {
+  background: linear-gradient(92deg, var(--color-brand-bright), var(--color-iris) 60%, var(--color-good));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---- Motion ---- */
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(122, 162, 255, 0.45); }
+  70% { box-shadow: 0 0 0 9px rgba(122, 162, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(122, 162, 255, 0); }
+}
+.working-ring {
+  animation: pulse-ring 1.9s infinite;
+  border-color: rgba(122, 162, 255, 0.55) !important;
+}
+
+@keyframes sweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(320%); }
+}
+.activity-sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 32%;
+  background: linear-gradient(90deg, transparent, rgba(122, 162, 255, 0.65), transparent);
+  animation: sweep 1.3s linear infinite;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.slide-in { animation: slide-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@keyframes flash {
+  0% { color: var(--color-brand-bright); text-shadow: 0 0 12px rgba(122, 162, 255, 0.7); }
+  100% { color: inherit; text-shadow: none; }
+}
+.flash { animation: flash 0.7s ease-out; }
+
+@keyframes live-blink {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.8); }
+}
+.live-dot { animation: live-blink 1.4s ease-in-out infinite; }
+
+@keyframes float-in {
+  from { opacity: 0; transform: scale(0.97) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.float-in { animation: float-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

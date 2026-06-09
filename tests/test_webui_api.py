@@ -1,0 +1,256 @@
+"""In-process ASGI tests for the web-UI REST surface (webui_router + static_spa).
+
+Drives ``clk_harness.api.app`` via httpx ASGITransport (no real server, no
+subprocess). Covers .env masking/round-trip, per-workspace config GET/PUT,
+the activity/snapshot endpoints over a synthetic activity.jsonl, the SPA
+fallback, and the 404 envelope.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import AsyncIterator
+
+import pytest
+import pytest_asyncio
+
+os.environ.setdefault("CLK_WORKSPACES_DIR", "/tmp/clk-workspaces-webui-test")
+
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+
+from clk_harness.api import app  # noqa: E402
+from clk_harness import env_file  # noqa: E402
+
+
+@pytest_asyncio.fixture
+async def client() -> AsyncIterator[AsyncClient]:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest.fixture(autouse=True)
+def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    target = tmp_path / ".env"
+    monkeypatch.setenv("CLK_ENV_FILE", str(target))
+    return target
+
+
+async def _make_workspace(client: AsyncClient, name: str = "ws") -> dict:
+    r = await client.post("/api/workspaces", json={"name": name})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+# ---------------------------------------------------------------------------
+# .env
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_env_get_masks_secrets(client: AsyncClient) -> None:
+    env_file.write_env({"ANTHROPIC_API_KEY": "sk-secret", "CLK_PROVIDER": "claude"})
+    r = await client.get("/api/env")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    by_key = {v["key"]: v for v in body["vars"]}
+    assert by_key["ANTHROPIC_API_KEY"]["value"] == env_file.MASK_SENTINEL
+    assert by_key["ANTHROPIC_API_KEY"]["masked"] is True
+    assert by_key["CLK_PROVIDER"]["value"] == "claude"
+    assert "API Keys" in body["groups"]
+
+
+@pytest.mark.asyncio
+async def test_env_schema_endpoint(client: AsyncClient) -> None:
+    r = await client.get("/api/env/schema")
+    body = r.json()
+    assert body["ok"] is True
+    names = {g["name"] for g in body["groups"]}
+    assert "Core" in names and "API Keys" in names
+    # No values are returned in the schema endpoint.
+    for g in body["groups"]:
+        for v in g["vars"]:
+            assert "value" not in v
+
+
+@pytest.mark.asyncio
+async def test_env_put_sentinel_preserves_secret(client: AsyncClient) -> None:
+    env_file.write_env({"ANTHROPIC_API_KEY": "sk-keepme"})
+    # New plain value + sentinel for the secret.
+    r = await client.put("/api/env", json={"values": {
+        "ANTHROPIC_API_KEY": env_file.MASK_SENTINEL,
+        "CLK_PROVIDER": "ollama",
+    }})
+    assert r.status_code == 200
+    assert env_file.read_env()["ANTHROPIC_API_KEY"] == "sk-keepme"
+    assert env_file.read_env()["CLK_PROVIDER"] == "ollama"
+
+
+@pytest.mark.asyncio
+async def test_env_put_new_secret_value(client: AsyncClient) -> None:
+    r = await client.put("/api/env", json={"values": {"OPENAI_API_KEY": "sk-brandnew"}})
+    assert r.status_code == 200
+    assert env_file.read_env()["OPENAI_API_KEY"] == "sk-brandnew"
+    # And it is masked on read-back.
+    body = (await client.get("/api/env")).json()
+    by_key = {v["key"]: v for v in body["vars"]}
+    assert by_key["OPENAI_API_KEY"]["value"] == env_file.MASK_SENTINEL
+
+
+@pytest.mark.asyncio
+async def test_env_reveal_disabled_by_default(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLK_API_ALLOW_REVEAL", raising=False)
+    env_file.write_env({"ANTHROPIC_API_KEY": "sk-secret"})
+    r = await client.get("/api/env/reveal/ANTHROPIC_API_KEY")
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_env_reveal_when_enabled(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLK_API_ALLOW_REVEAL", "1")
+    env_file.write_env({"ANTHROPIC_API_KEY": "sk-secret"})
+    r = await client.get("/api/env/reveal/ANTHROPIC_API_KEY")
+    assert r.status_code == 200
+    assert r.json()["value"] == "sk-secret"
+
+
+# ---------------------------------------------------------------------------
+# Per-workspace config
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_clk_config_get_put_round_trip(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "cfg")
+    wid = ws["workspace_id"]
+    # Defaults come back even before init.
+    r = await client.get(f"/api/workspaces/{wid}/config/clk")
+    assert r.status_code == 200
+    cfg = r.json()["config"]
+    assert "default_provider" in cfg
+
+    cfg["max_iterations"] = 42
+    r = await client.put(f"/api/workspaces/{wid}/config/clk", json={"config": cfg})
+    assert r.status_code == 200
+    assert r.json()["config"]["max_iterations"] == 42
+
+
+@pytest.mark.asyncio
+async def test_providers_config_masks_and_preserves_secret(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "prov")
+    wid = ws["workspace_id"]
+    # Seed a provider api_key directly on disk.
+    from clk_harness.config import Paths, load_providers_config, save_providers_config
+    paths = Paths(root=Path(ws["path"]))
+    paths.ensure()
+    cfg = load_providers_config(paths)
+    cfg.setdefault("providers", {}).setdefault("claude", {})["api_key"] = "sk-prov-secret"
+    save_providers_config(paths, cfg)
+
+    r = await client.get(f"/api/workspaces/{wid}/config/providers")
+    body = r.json()
+    assert body["providers"]["claude"]["api_key"] == env_file.MASK_SENTINEL
+
+    # PUT back with the mask -> secret preserved on disk.
+    r = await client.put(f"/api/workspaces/{wid}/config/providers",
+                         json={"providers": body["providers"], "active": "claude"})
+    assert r.status_code == 200
+    reloaded = load_providers_config(paths)
+    assert reloaded["providers"]["claude"]["api_key"] == "sk-prov-secret"
+    assert reloaded["active"] == "claude"
+
+
+@pytest.mark.asyncio
+async def test_agents_config_round_trip(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "roster")
+    wid = ws["workspace_id"]
+    r = await client.put(f"/api/workspaces/{wid}/config/agents",
+                         json={"agents": {"chief": {"role": "lead"}, "scribe": {"role": "notes"}}})
+    assert r.status_code == 200
+    agents = r.json()["agents"]
+    assert "scribe" in agents and agents["scribe"]["role"] == "notes"
+
+
+@pytest.mark.asyncio
+async def test_doctor_endpoint(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "doc")
+    r = await client.get(f"/api/workspaces/{ws['workspace_id']}/doctor")
+    body = r.json()
+    assert body["ok"] is True
+    assert "findings" in body
+    assert "active_provider" in body
+
+
+# ---------------------------------------------------------------------------
+# Activity + snapshot
+# ---------------------------------------------------------------------------
+
+def _seed_activity(ws_path: str) -> None:
+    log = Path(ws_path) / ".clk" / "logs" / "activity.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    events = [
+        {"event": "agent_dispatch", "agent": "engineer", "run_id": "r1", "provider": "shell (shell)", "workflow": "engineering"},
+        {"event": "prompt_sent", "agent": "engineer", "run_id": "r1", "prompt": "go", "prompt_path": ".clk/runs/r1/prompt.txt"},
+        {"event": "agent_response", "agent": "engineer", "run_id": "r1", "ok": True,
+         "tokens_in": 100, "tokens_out": 50, "tokens_total": 150, "response_text": "Decision: done", "files_reported": ["a.py"]},
+        {"event": "git_commit", "message": "init"},
+    ]
+    log.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_activity_history_and_filter(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "act")
+    _seed_activity(ws["path"])
+    r = await client.get(f"/api/workspaces/{ws['workspace_id']}/activity")
+    body = r.json()
+    assert body["ok"] is True
+    kinds = [e["kind"] for e in body["events"]]
+    assert "agent_dispatch" in kinds and "agent_response" in kinds
+
+    # kinds filter.
+    r2 = await client.get(f"/api/workspaces/{ws['workspace_id']}/activity?kinds=git_commit")
+    body2 = r2.json()
+    assert all(e["kind"] == "git_commit" for e in body2["events"])
+    assert len(body2["events"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_snapshot_endpoint(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "snap")
+    _seed_activity(ws["path"])
+    r = await client.get(f"/api/workspaces/{ws['workspace_id']}/snapshot")
+    snap = r.json()["snapshot"]
+    assert snap["agents"]["engineer"]["status"] == "done"
+    assert snap["totals"]["total_tokens"] == 150
+    assert snap["totals"]["commits"] == 1
+    assert "a.py" in snap["files_changed"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_workspace_404(client: AsyncClient) -> None:
+    r = await client.get("/api/workspaces/does-not-exist/snapshot")
+    assert r.status_code == 404
+    assert r.json()["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# SPA serving + envelope
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_root_serves_something(client: AsyncClient) -> None:
+    r = await client.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers.get("content-type", "")
+
+
+@pytest.mark.asyncio
+async def test_unknown_api_route_returns_envelope(client: AsyncClient) -> None:
+    r = await client.get("/api/totally-unknown")
+    assert r.status_code == 404
+    body = r.json()
+    assert body["ok"] is False
+    assert "error" in body

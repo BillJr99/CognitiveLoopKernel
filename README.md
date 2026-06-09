@@ -20,6 +20,11 @@ committed automatically.
 
 If you've used CLK before, the highlights of this release:
 
+- **Web dashboard (`clk web`).** A beautiful browser UI that mirrors the
+  TUI: configure every feature and `.env` setting, kick off workflows,
+  and watch the agents work in real time with live cards, a colour-coded
+  activity timeline, and animated token/cost meters. See
+  [Web dashboard](#web-dashboard).
 - **Robustness loops by default.** Every meaningful dispatch is now
   scored after the provider returns; empty / malformed / contract-
   violating / low-confidence responses are re-dispatched with a repair
@@ -121,6 +126,7 @@ you've configured CLK in one place you can mix and match the rest.
 | Platform / mode                      | Tutorial                                                  |
 |--------------------------------------|-----------------------------------------------------------|
 | Local Linux / macOS / WSL (Python)   | [Quick start](#quick-start) → [Lower-level CLI](#lower-level-cli) |
+| Browser dashboard (point & click)    | [Web dashboard](#web-dashboard)                          |
 | Docker container (build locally)     | [Docker](#docker) → [First-run setup](#first-run-setup)   |
 | Pre-built image from GHCR            | [Docker → Pull from GHCR](#pull-from-ghcr)                |
 | Raspberry Pi (`pi` runtime)          | [Pi extension](#pi-extension)                             |
@@ -245,6 +251,94 @@ or:
 ```bash
 ./scripts/clk configure --set default_provider=claude
 ```
+
+## Web dashboard
+
+Everything the TUI does, in your browser — and then some. The web
+dashboard is a React single-page app served by CLK's own FastAPI server.
+It lets you **configure every feature and `.env` setting**, **kick off
+agent workflows**, and — the star of the show — **watch what the agents
+are doing in real time** with live agent cards, a colour-coded activity
+timeline, animated token/cost meters, and a prompt/response inspector.
+
+### Launch it
+
+```bash
+pip install "clk-harness[api]"
+
+# Build the UI bundle (needs Node/npm) the first time, then serve it.
+clk web --build
+
+# Subsequent runs (bundle already built) just serve it and open a browser:
+clk web
+```
+
+`clk web` runs a uvicorn server (default `http://127.0.0.1:8001`) and
+opens your browser. Flags:
+
+| Flag         | Purpose                                                        |
+|--------------|----------------------------------------------------------------|
+| `--build`    | Compile the React bundle first (`npm ci && npm run build`).    |
+| `--no-build` | Never auto-build, even if the bundle is missing.               |
+| `--host`     | Bind host (default `CLK_API_HOST` or `127.0.0.1`).             |
+| `--port`     | Bind port (default `CLK_API_PORT` or `8001`).                  |
+| `--no-open`  | Don't open a browser window.                                   |
+
+> The pre-built Docker image already contains the compiled bundle, so
+> inside a container you can run `clk web --no-build` directly.
+
+### What you can do from the browser
+
+- **Workspaces** — create, switch between, and delete isolated projects
+  from the left rail. The whole UI focuses on one active workspace at a
+  time, just like the TUI.
+- **Run** — capture an idea and launch a workflow (`run`), an iterative
+  `loop` (ralph / autoresearch with an iteration count), `plan`, or just
+  set the idea. A raw-output tab streams stdout while the structured
+  view animates on the Dashboard.
+- **Dashboard** — a live **"now happening"** banner, per-agent cards
+  (status, runs, tokens, cost, last "thought", activity meter), a
+  filterable real-time **activity timeline** (dispatches, prompts,
+  responses, actions, retries, commits…), **token & cost charts**, and a
+  files-changed list. Click any timeline event to inspect the full prompt
+  and response.
+- **Configure** — tabbed settings for the global **`.env`** (grouped,
+  typed widgets; secrets masked with `••••••••` and preserved on save),
+  per-workspace **harness config** (`clk.config.json`), **providers**
+  (pick the active one, edit endpoints/keys), and the **agent roster**.
+  A health strip surfaces `doctor` findings (missing keys, unavailable
+  providers) at a glance.
+
+### How the live view works
+
+Under the hood the dashboard streams the harness's structured event log
+(`.clk/logs/activity.jsonl`) over Server-Sent Events
+(`GET /api/workspaces/{id}/activity/stream`) and folds it into a snapshot
+(`GET /api/workspaces/{id}/snapshot`) that mirrors the TUI's model. The
+connection auto-reconnects, so you can leave the tab open across runs.
+
+### Secrets & network safety
+
+`.env` editing includes API keys. Secret-looking values
+(`*_API_KEY`, `*_TOKEN`, …) are **masked** in every response and never
+echoed back; saving an unchanged masked field preserves the stored value.
+A single-key reveal endpoint exists but is **disabled by default** — set
+`CLK_API_ALLOW_REVEAL=1` to enable it. The server binds to loopback
+(`127.0.0.1`) by default; only set `CLK_API_HOST=0.0.0.0` on a trusted,
+isolated network (there is no built-in auth).
+
+### Developing the UI
+
+The source lives in `webui/` (Vite + React + TypeScript). For hot-reload
+development against a running server:
+
+```bash
+clk web --no-open            # serve the API on :8001 in one terminal
+cd webui && npm install && npm run dev   # Vite dev server on :5173 (proxies /api)
+```
+
+`npm run build` emits the bundle to `clk_harness/webui_dist/` (shipped in
+the wheel via `package-data`); `npm test` runs the Vitest suite.
 
 ## REST API
 

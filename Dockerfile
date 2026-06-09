@@ -35,6 +35,18 @@ RUN mkdir -p clk_harness && touch clk_harness/__init__.py README.md \
 # Using the extras directly (instead of a separate requirements-api.txt)
 # keeps pyproject.toml as the single source of truth and avoids drift.
 COPY clk_harness/ ./clk_harness/
+
+# Build the React web UI bundle so the `clk web` dashboard is served from the
+# image (Node is already installed above). Vite emits into
+# clk_harness/webui_dist, which then ships with the package on install below.
+# Best-effort: if the build fails the server still runs and shows a
+# build-instructions page rather than breaking the image.
+COPY webui/ ./webui/
+RUN (npm --prefix webui ci && npm --prefix webui run build && rm -rf webui/node_modules) \
+    || echo "[docker] web UI build skipped; 'clk web' will show the build-instructions page"
+
+# README.md is referenced by pyproject metadata; ensure it exists for the build.
+RUN [ -f README.md ] || printf '# clk-harness\n' > README.md
 RUN pip install --no-cache-dir ".[api,telegram]"
 
 COPY scripts/     ./scripts/

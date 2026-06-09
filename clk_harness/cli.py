@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 import traceback
 import venv
 from datetime import datetime
@@ -509,6 +510,90 @@ def cmd_tui(args: argparse.Namespace) -> int:
     return _tui.run(initial_prompt=args.prompt)
 
 
+def _build_webui(log=sys.stderr) -> bool:
+    """Build the React web UI bundle with npm. Returns True on success."""
+    import shutil
+    import subprocess
+    repo_root = Path(__file__).resolve().parent.parent
+    webui_dir = repo_root / "webui"
+    if not (webui_dir / "package.json").exists():
+        print(f"[clk web] no webui/ project found at {webui_dir}", file=log)
+        return False
+    npm = shutil.which("npm")
+    if not npm:
+        print("[clk web] npm not found on PATH; cannot build the UI.", file=log)
+        return False
+    try:
+        if not (webui_dir / "node_modules").exists():
+            print("[clk web] installing web UI dependencies (npm ci)...", file=log)
+            subprocess.run([npm, "ci"], cwd=str(webui_dir), check=True)
+        print("[clk web] building web UI (npm run build)...", file=log)
+        subprocess.run([npm, "run", "build"], cwd=str(webui_dir), check=True)
+        return True
+    except subprocess.CalledProcessError as exc:
+        print(f"[clk web] build failed: {exc}", file=log)
+        return False
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    """Launch the web frontend: a browser dashboard mirroring the TUI.
+
+    Serves the React SPA + REST API via uvicorn in the foreground. Use
+    ``--build`` to (re)compile the UI bundle first; without it, a prebuilt
+    bundle is served, or a friendly "not built" page if absent.
+    """
+    try:
+        import uvicorn  # noqa: F401
+        from .api import app, get_bind_host, get_bind_port
+        from . import static_spa
+    except ImportError:
+        print(
+            "Error: web UI dependencies not installed. Run: "
+            "pip install 'clk-harness[api]'",
+            file=sys.stderr,
+        )
+        return 1
+
+    host = args.host or get_bind_host()
+    try:
+        port = int(args.port) if args.port else get_bind_port()
+    except (TypeError, ValueError):
+        port = get_bind_port()
+
+    if args.build or (not static_spa.spa_available() and not args.no_build):
+        _build_webui()
+
+    if not static_spa.spa_available():
+        print(
+            "[clk web] UI bundle not found — serving the API + a build-instructions "
+            "page. Re-run with `clk web --build` (needs Node/npm).",
+            file=sys.stderr,
+        )
+
+    url = f"http://{host}:{port}"
+    print(f"[clk web] serving CLK web UI on {url}", file=sys.stderr)
+    if host == "0.0.0.0":
+        print(
+            "[clk web] WARNING: bound to 0.0.0.0 (all interfaces) with NO auth. "
+            "Use 127.0.0.1 for loopback-only access.",
+            file=sys.stderr,
+        )
+    if not args.no_open:
+        def _open():
+            import time as _t
+            import webbrowser
+            _t.sleep(1.0)
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        threading.Thread(target=_open, daemon=True).start()
+
+    import uvicorn as _uvicorn
+    _uvicorn.run(app, host=host, port=port, log_level=os.environ.get("CLK_API_LOG_LEVEL", "info"))
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     paths = project_paths()
     if not _ensure_initialized(paths):
@@ -759,6 +844,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_tui.add_argument("prompt", nargs="?", help="Optional initial idea / prompt.")
     p_tui.set_defaults(func=cmd_tui)
 
+    p_web = sub.add_parser(
+        "web",
+        help="Launch the web dashboard (browser UI mirroring the TUI).",
+    )
+    p_web.add_argument("--host", help="Bind host (default CLK_API_HOST or 127.0.0.1).")
+    p_web.add_argument("--port", help="Bind port (default CLK_API_PORT or 8001).")
+    p_web.add_argument("--build", action="store_true", help="Build the UI bundle first (needs npm).")
+    p_web.add_argument("--no-build", action="store_true", help="Never auto-build, even if the bundle is missing.")
+    p_web.add_argument("--no-open", action="store_true", help="Do not open a browser window.")
+    p_web.set_defaults(func=cmd_web)
+
     p_status = sub.add_parser("status", help="Show harness status.")
     p_status.set_defaults(func=cmd_status)
 
@@ -792,12 +888,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Auto-start the REST API on a daemon thread so it is available during
     # normal CLI / TUI operation.  Falls back gracefully if the optional
-    # [api] extras are not installed.
-    try:
-        from ._api_launcher import start_api_in_background
-        start_api_in_background(disable=bool(getattr(args, "no_api", False)))
-    except Exception as exc:  # noqa: BLE001 — must never block the CLI
-        log_exception("cli.main.start_api", exc)
+    # [api] extras are not installed.  The `web` command runs its own
+    # uvicorn server in the foreground, so skip the background launcher
+    # there to avoid double-binding the port.
+    if getattr(args, "func", None) is not cmd_web:
+        try:
+            from ._api_launcher import start_api_in_background
+            start_api_in_background(disable=bool(getattr(args, "no_api", False)))
+        except Exception as exc:  # noqa: BLE001 — must never block the CLI
+            log_exception("cli.main.start_api", exc)
 
     try:
         return int(args.func(args) or 0)
