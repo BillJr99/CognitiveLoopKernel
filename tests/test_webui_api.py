@@ -262,6 +262,20 @@ async def test_files_list_read_write_roundtrip(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rename_workspace(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "old-name")
+    wid = ws["workspace_id"]
+    r = await client.patch(f"/api/workspaces/{wid}", json={"name": "new-name"})
+    assert r.status_code == 200, r.text
+    assert r.json()["workspace"]["name"] == "new-name"
+    listing = (await client.get("/api/workspaces")).json()["workspaces"]
+    assert any(w["id"] == wid and w["name"] == "new-name" for w in listing)
+    # Empty name is rejected.
+    r = await client.patch(f"/api/workspaces/{wid}", json={"name": "  "})
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_download_workspace_zip(client: AsyncClient) -> None:
     import io
     import zipfile
