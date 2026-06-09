@@ -18,6 +18,7 @@ import {
   useStartTask,
   useCancelTask,
   useWorkflows,
+  useDoctor,
 } from "../../api/hooks";
 import { useActiveWorkspace } from "../../state/activeWorkspace";
 import type { FileEntry } from "../../api/types";
@@ -179,6 +180,8 @@ function FileEditor({ ws, path }: { ws: string; path: string | null }) {
 
 function AgentChat({ ws, selectedPath }: { ws: string; selectedPath: string | null }) {
   const { data: wfData } = useWorkflows();
+  const { data: doctor } = useDoctor(ws);
+  const isShell = doctor?.active_provider === "shell";
   const saveIdea = useSaveIdea(ws);
   const start = useStartTask();
   const cancel = useCancelTask();
@@ -229,7 +232,7 @@ function AgentChat({ ws, selectedPath }: { ws: string; selectedPath: string | nu
 
   async function send() {
     const text = message.trim();
-    if (!text || sending || running) return;
+    if (!text || sending || running || isShell) return;
     setSending(true);
     const userId = crypto.randomUUID();
     const agentId = crypto.randomUUID();
@@ -291,6 +294,11 @@ function AgentChat({ ws, selectedPath }: { ws: string; selectedPath: string | nu
       </div>
 
       <div className="border-t border-[var(--color-line)] p-2.5">
+        {isShell && (
+          <div className="mb-1.5 text-[11px] text-[var(--color-warn)]">
+            Active provider is <code>shell</code> (echoes only) — pick a real provider in Configure → Providers to chat with the agents.
+          </div>
+        )}
         {selectedPath && (
           <div className="mb-1.5 flex items-center gap-1 text-[11px] text-[var(--color-mist)]">
             <FileText size={11} /> context: <span className="font-mono text-[var(--color-brand-bright)]">{selectedPath}</span>
@@ -320,7 +328,8 @@ function AgentChat({ ws, selectedPath }: { ws: string; selectedPath: string | nu
           ) : (
             <button
               onClick={send}
-              disabled={!message.trim() || sending}
+              disabled={!message.trim() || sending || isShell}
+              title={isShell ? "Active provider is 'shell' — pick a real provider in Configure → Providers" : undefined}
               className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[var(--color-brand)] to-[var(--color-iris)] px-4 py-2.5 text-sm font-semibold text-[var(--color-ink-950)] disabled:opacity-40"
             >
               {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Send
