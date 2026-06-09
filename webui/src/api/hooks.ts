@@ -188,6 +188,13 @@ export function useSaveIdea(ws: string | null) {
   });
 }
 
+export function useProbeModels() {
+  return useMutation({
+    mutationFn: (body: { type: string; endpoint?: string; api_key?: string }) =>
+      apiPost<import("./types").ProbeResponse>("/api/providers/probe", body),
+  });
+}
+
 export function useTaskStatus(taskId: string | null) {
   return useQuery({
     enabled: !!taskId,

@@ -301,6 +301,42 @@ async def test_set_idea_writes_brief(client: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Provider model probe + shell-fallback doctor warning
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_probe_unsupported_provider(client: AsyncClient) -> None:
+    r = await client.post("/api/providers/probe", json={"type": "claude"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["supported"] is False
+    assert body["models"] == []
+
+
+@pytest.mark.asyncio
+async def test_probe_ollama_unreachable(client: AsyncClient) -> None:
+    # A bogus endpoint must not raise — it reports unreachable + no models.
+    r = await client.post("/api/providers/probe", json={"type": "ollama", "endpoint": "http://127.0.0.1:1"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["supported"] is True
+    assert body["reachable"] is False
+    assert body["models"] == []
+
+
+@pytest.mark.asyncio
+async def test_doctor_flags_shell_provider(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "doc-ws")
+    wid = ws["workspace_id"]
+    r = await client.get(f"/api/workspaces/{wid}/doctor")
+    assert r.status_code == 200
+    body = r.json()
+    # Default active provider is the shell stub; the doctor should warn.
+    assert body["active_provider"] == "shell"
+    assert any(f["name"] == "active_provider" and "shell" in f["message"] for f in body["findings"])
+
+
+# ---------------------------------------------------------------------------
 # SPA serving + envelope
 # ---------------------------------------------------------------------------
 

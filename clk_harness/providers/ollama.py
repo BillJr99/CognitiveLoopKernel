@@ -17,6 +17,34 @@ from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens
 from ._endpoint_fallback import maybe_docker_host_fallback, probe_endpoint
 
 
+def list_models(endpoint: str, *, timeout_s: float = 5.0) -> list:
+    """Fetch installed model names from an Ollama server (``GET /api/tags``).
+
+    Returns an empty list on any failure (network, parse) so callers can
+    fall back to manual entry. Applies the container→host fallback so a
+    ``localhost`` endpoint still resolves from inside Docker.
+    """
+    base = (endpoint or "http://localhost:11434").rstrip("/")
+    if not probe_endpoint(base):
+        swapped = maybe_docker_host_fallback(base, label="ollama")
+        if swapped:
+            base = swapped
+    url = base + "/api/tags"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+    out = []
+    for entry in (payload.get("models") if isinstance(payload, dict) else []) or []:
+        if isinstance(entry, dict):
+            name = entry.get("name") or entry.get("model")
+            if name:
+                out.append(str(name))
+    return out
+
+
 class OllamaProvider(AgentProvider):
     type_name = "ollama"
 

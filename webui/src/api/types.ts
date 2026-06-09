@@ -108,6 +108,13 @@ export interface Snapshot {
   event_count: number;
 }
 
+export interface ProbeResponse {
+  ok: boolean;
+  supported: boolean;
+  reachable: boolean | null;
+  models: string[];
+}
+
 export interface FileEntry {
   path: string;
   size: number;

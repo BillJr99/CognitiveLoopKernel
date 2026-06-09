@@ -262,6 +262,19 @@ async def workspace_doctor(workspace_id: str) -> Dict[str, Any]:
     avail = available_providers(prov_cfg)
     active = prov_cfg.get("active") or clk_cfg.get("default_provider") or "shell"
     findings: List[Dict[str, str]] = []
+    # The most common "it runs but does nothing" trap: the active provider is
+    # the shell stub (echoes prompts, never calls an LLM), or it points at a
+    # name with no config block (which silently degrades to shell at runtime).
+    if active == "shell":
+        findings.append({
+            "level": "warn", "name": "active_provider",
+            "message": "active provider is 'shell' — a stub that echoes prompts and never calls an LLM. Pick a real provider on this tab.",
+        })
+    elif active not in (prov_cfg.get("providers") or {}):
+        findings.append({
+            "level": "fail", "name": "active_provider",
+            "message": f"active provider '{active}' has no config block — runs will silently fall back to the shell stub.",
+        })
     for name, ok in sorted(avail.items()):
         if ok:
             findings.append({"level": "ok", "name": name, "message": "available"})
@@ -531,6 +544,44 @@ async def list_providers(workspace: Optional[str] = None) -> Dict[str, Any]:
         paths = project_paths()
     cfg = load_providers_config(paths)
     return {"ok": True, "active": cfg.get("active"), "available": available_providers(cfg)}
+
+
+class ProbeRequest(BaseModel):
+    type: str
+    endpoint: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+@router.post("/api/providers/probe")
+async def probe_provider(body: ProbeRequest) -> Dict[str, Any]:
+    """Probe an HTTP provider endpoint and return its available models.
+
+    Used by the Providers form to offer a model dropdown. For provider
+    types that don't expose an HTTP model list (claude/codex/gemini/pi/
+    shell) ``supported`` is False so the UI keeps a free-text box. Never
+    raises on a bad endpoint — returns ``reachable: false`` instead.
+    """
+    ptype = (body.type or "").lower()
+    endpoint = (body.endpoint or "").strip()
+    if ptype == "ollama":
+        from .providers.ollama import list_models as _ollama_models
+        from .providers._endpoint_fallback import probe_endpoint, docker_host_swap
+        ep = endpoint or "http://localhost:11434"
+        models = _ollama_models(ep)
+        reachable = bool(models) or probe_endpoint(ep) or (
+            bool(docker_host_swap(ep)) and probe_endpoint(docker_host_swap(ep) or "")
+        )
+        return {"ok": True, "supported": True, "reachable": reachable, "models": models}
+    if ptype == "openwebui":
+        from .providers.openwebui import list_models as _owui_models
+        from .providers._endpoint_fallback import probe_endpoint, docker_host_swap
+        ep = endpoint or "http://localhost:8080"
+        models = _owui_models(ep, body.api_key or "")
+        reachable = bool(models) or probe_endpoint(ep) or (
+            bool(docker_host_swap(ep)) and probe_endpoint(docker_host_swap(ep) or "")
+        )
+        return {"ok": True, "supported": True, "reachable": reachable, "models": models}
+    return {"ok": True, "supported": False, "reachable": None, "models": []}
 
 
 __all__ = ["router"]
