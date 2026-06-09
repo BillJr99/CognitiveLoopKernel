@@ -113,6 +113,20 @@ def _is_probably_binary(data: bytes) -> bool:
     return b"\x00" in data
 
 
+def _safe_unlink(path: str) -> None:
+    """Best-effort temp-file removal that never raises.
+
+    Used for download-zip cleanup both on the build-failure path and as the
+    response ``BackgroundTask``; swallows ``OSError`` so a TOCTOU race (file
+    already gone) or a permission hiccup can't surface a noisy exception
+    during response finalization.
+    """
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 _SECRET_PROVIDER_FIELDS = ("api_key", "apikey", "token", "secret", "password")
 
 
@@ -281,13 +295,25 @@ async def workspace_doctor(workspace_id: str) -> Dict[str, Any]:
     clk_cfg = load_clk_config(paths)
     prov_cfg = load_providers_config(paths)
     auth_mode = (clk_cfg.get("auth_mode") or "cli").lower()
-    avail = available_providers(prov_cfg)
     env = env_file.read_env()
     # CLK_PROVIDER in the global .env overrides the workspace 'active' at
     # runtime (see AgentRunner.get_provider), so the doctor must reflect it --
     # otherwise it would report 'shell' even when .env makes runs use Ollama.
     env_provider = (env.get("CLK_PROVIDER") or os.environ.get("CLK_PROVIDER") or "").strip()
     active = env_provider or prov_cfg.get("active") or clk_cfg.get("default_provider") or "shell"
+    from .config import DEFAULT_PROVIDERS
+    # Probe the saved providers *plus* the resolved active provider's block.
+    # available_providers() only probes blocks present in providers.json, but
+    # the active provider can be an env/default-selected built-in with no saved
+    # block (e.g. CLK_PROVIDER=ollama on a workspace whose providers.json only
+    # has 'shell'). Without seeding the default block here, that provider would
+    # never get an availability finding and could never be marked 'fail'.
+    probe_blocks: Dict[str, Any] = dict(prov_cfg.get("providers") or {})
+    if active != "shell" and active not in probe_blocks:
+        default_block = (DEFAULT_PROVIDERS.get("providers") or {}).get(active)
+        if default_block is not None:
+            probe_blocks[active] = default_block
+    avail = available_providers({"providers": probe_blocks})
     findings: List[Dict[str, str]] = []
     # The most common "it runs but does nothing" trap: the active provider is
     # the shell stub (echoes prompts, never calls an LLM), or it points at a
@@ -298,7 +324,6 @@ async def workspace_doctor(workspace_id: str) -> Dict[str, Any]:
             "message": "active provider is 'shell' — a stub that echoes prompts and never calls an LLM. Pick a real provider on this tab.",
         })
     else:
-        from .config import DEFAULT_PROVIDERS
         known = set(prov_cfg.get("providers") or {}) | set(DEFAULT_PROVIDERS.get("providers") or {})
         if active not in known:
             findings.append({
@@ -510,18 +535,25 @@ async def download_workspace(workspace_id: str) -> FileResponse:
         import tempfile
         fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="clk-ws-")
         os.close(fd)
-        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            if root.exists():
-                for dirpath, dirnames, filenames in os.walk(root):
-                    dirnames[:] = [d for d in dirnames if d not in _HIDDEN_DIRS]
-                    for name in filenames:
-                        fp = Path(dirpath) / name
-                        if fp.is_symlink():
-                            continue
-                        try:
-                            zf.write(fp, fp.relative_to(root).as_posix())
-                        except OSError:
-                            continue
+        # If zipping fails (e.g. a permission error while walking/writing) the
+        # FileResponse -- and its cleanup BackgroundTask -- is never created, so
+        # remove the temp file here before re-raising to avoid leaking it.
+        try:
+            with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                if root.exists():
+                    for dirpath, dirnames, filenames in os.walk(root):
+                        dirnames[:] = [d for d in dirnames if d not in _HIDDEN_DIRS]
+                        for name in filenames:
+                            fp = Path(dirpath) / name
+                            if fp.is_symlink():
+                                continue
+                            try:
+                                zf.write(fp, fp.relative_to(root).as_posix())
+                            except OSError:
+                                continue
+        except BaseException:
+            _safe_unlink(tmp_path)
+            raise
         return tmp_path
 
     tmp_path = await asyncio.to_thread(_build_zip_to_tempfile)
@@ -533,7 +565,7 @@ async def download_workspace(workspace_id: str) -> FileResponse:
         tmp_path,
         media_type="application/zip",
         filename=f"{safe}.zip",
-        background=BackgroundTask(lambda: os.path.exists(tmp_path) and os.remove(tmp_path)),
+        background=BackgroundTask(lambda: _safe_unlink(tmp_path)),
     )
 
 
