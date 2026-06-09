@@ -27,7 +27,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import __version__
+try:
+    from . import __version__
+except ImportError:
+    # A broken/partial install (e.g. a Docker layer-cache artifact that left an
+    # empty package __init__.py) shouldn't make the whole CLI unimportable.
+    __version__ = "0.0.0+unknown"
 from .config import (
     DEFAULT_CLK_CONFIG,
     Paths,

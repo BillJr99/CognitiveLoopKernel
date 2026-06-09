@@ -47,7 +47,15 @@ RUN (npm --prefix webui ci && npm --prefix webui run build && rm -rf webui/node_
 
 # README.md is referenced by pyproject metadata; ensure it exists for the build.
 RUN [ -f README.md ] || printf '# clk-harness\n' > README.md
-RUN pip install --no-cache-dir ".[api,telegram]"
+# The dependency-caching layer above installed clk_harness from an empty
+# placeholder package (just a touched __init__.py). The version is unchanged
+# (0.1.0), so if a stale Docker build cache reuses this install step the empty
+# stub can survive into site-packages -- and `clk` then fails with
+# "cannot import name '__version__' from 'clk_harness'". Force-reinstall the
+# package itself (without touching the already-installed deps) so the real
+# sources always overwrite the stub, then install the [api,telegram] extras.
+RUN pip install --no-cache-dir --force-reinstall --no-deps "." \
+ && pip install --no-cache-dir ".[api,telegram]"
 
 COPY scripts/     ./scripts/
 COPY kickoff.sh   ./
