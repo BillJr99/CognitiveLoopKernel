@@ -20,13 +20,16 @@ Scope notes
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
+import re
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import env_file
@@ -482,6 +485,44 @@ async def list_files(workspace_id: str) -> Dict[str, Any]:
                 break
     files.sort(key=lambda f: f["path"])
     return {"ok": True, "files": files, "count": len(files), "truncated": truncated}
+
+
+@router.get("/api/workspaces/{workspace_id}/download")
+async def download_workspace(workspace_id: str) -> Response:
+    """Download the workspace's deliverables as a zip.
+
+    Mirrors the file listing: harness-internal directories (``.clk``,
+    ``.git``, ``node_modules`` …) and symlinks are excluded so the archive
+    is just the user-facing files the agents produced.
+    """
+    paths = _require_workspace(workspace_id)
+    root = paths.root.resolve()
+
+    def _build_zip() -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            if root.exists():
+                for dirpath, dirnames, filenames in os.walk(root):
+                    dirnames[:] = [d for d in dirnames if d not in _HIDDEN_DIRS]
+                    for name in filenames:
+                        fp = Path(dirpath) / name
+                        if fp.is_symlink():
+                            continue
+                        try:
+                            zf.write(fp, fp.relative_to(root).as_posix())
+                        except OSError:
+                            continue
+        return buf.getvalue()
+
+    data = await asyncio.to_thread(_build_zip)
+    entry = _api().WORKSPACES.get(workspace_id) or {}
+    raw_name = str(entry.get("name") or workspace_id[:8])
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_name).strip("-") or "workspace"
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.zip"'},
+    )
 
 
 @router.get("/api/workspaces/{workspace_id}/file")

@@ -9,6 +9,7 @@ import {
   Square,
   FolderOpen,
   Loader2,
+  Download,
 } from "lucide-react";
 import {
   useWorkspaceFiles,
@@ -57,10 +58,20 @@ export function FilesView() {
           <FileText size={15} className="text-[var(--color-brand)]" />
           <span className="text-sm font-semibold">Files</span>
           <span className="text-[11px] text-[var(--color-mist)]">{files.length}</span>
+          <a
+            href={`/api/workspaces/${activeId}/download`}
+            download
+            title="Download the workspace as a .zip"
+            className={`ml-auto rounded-lg p-1 text-[var(--color-mist)] hover:bg-[var(--color-ink-800)] hover:text-[var(--color-brand-bright)] ${
+              files.length === 0 ? "pointer-events-none opacity-40" : ""
+            }`}
+          >
+            <Download size={14} />
+          </a>
           <button
             onClick={() => refetch()}
             title="Refresh"
-            className="ml-auto rounded-lg p-1 text-[var(--color-mist)] hover:bg-[var(--color-ink-800)] hover:text-[var(--color-brand-bright)]"
+            className="rounded-lg p-1 text-[var(--color-mist)] hover:bg-[var(--color-ink-800)] hover:text-[var(--color-brand-bright)]"
           >
             <RefreshCw size={14} className={isRefetching ? "animate-spin" : ""} />
           </button>
