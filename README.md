@@ -313,6 +313,72 @@ Then browse to `http://localhost:8001`. Notes:
 - `--no-build` serves the bundle already baked into the image (no npm at
   runtime); `--no-open` skips the in-container browser launch.
 
+### Tutorial: from `docker run` to your first shipped feature
+
+This walks the whole loop — start the server, configure a provider, kick
+off a job, and watch (and steer) the agents — entirely in the browser.
+
+**1. Start the server.** Using the published image (nothing is built or
+run until you ask):
+
+```bash
+docker run --rm -it \
+  -p 8001:8001 \
+  -e CLK_API_HOST=0.0.0.0 \
+  -e CLK_ENV_FILE=/workspaces/.env \
+  -v "$(pwd):/workspaces" \
+  --entrypoint clk \
+  ghcr.io/billjr99/cognitiveloopkernel:latest web --no-open --no-build
+```
+
+Open **http://localhost:8001**. The `CLK_ENV_FILE=/workspaces/.env` line
+makes your settings persist to `./.env` on the host (see
+[Configuring `.env`](#configuring-env-where-settings-live) below).
+
+**2. Create a workspace.** In the left rail under **Workspaces**, click
+the **＋** and name your project (e.g. `markdown-cli`). A workspace is one
+isolated project directory; the whole UI focuses on one at a time.
+
+**3. Configure a provider.** Open the **Configure** tab:
+   - On **.env (global)**, set your provider and key — e.g. `CLK_PROVIDER`
+     = `claude` and `ANTHROPIC_API_KEY` = your key (secrets show as
+     `••••••••` and are preserved on save). Click **Save**.
+   - On **Providers**, pick the **active** provider. The **Health** strip
+     at the top runs `doctor` and flags anything missing (e.g. an unset
+     key or an uninstalled CLI).
+   - Auth: set `CLK_AUTH_MODE` to `apikey` to use the keys above, or `cli`
+     to trust a provider CLI you've already logged in to.
+
+**4. Kick off a job.** Open the **Run** tab:
+   - Type your idea / problem statement (e.g. *"Build a Markdown-to-HTML
+     CLI with a parser, renderer, and golden-file tests"*).
+   - Choose a mode: **Run workflow** (one development cycle — pick a
+     workflow like `engineering`), **Loop** (iterative ralph /
+     autoresearch with an iteration count), **Plan** (discovery + product
+     passes), or **Set idea** (just capture it).
+   - Click **Start**. A raw-output panel streams stdout; the structured
+     view comes alive on the other tabs.
+
+**5. Watch the team work.** Three tabs give you live visibility:
+   - **Dashboard** — the "now happening" banner, per-agent cards (status,
+     tokens, cost, last thought), the colour-coded activity timeline,
+     token/cost charts, and a files-changed list.
+   - **Think** — a live, timestamped feed of every **dispatch**, **prompt**,
+     and **response**. Filter by type and expand any entry to read the full
+     prompt or the agent's full response inline (or pop the full inspector).
+   - **Files** — browse everything the agents created. Click a file to view
+     and **edit** it (Save writes back to the workspace).
+
+**6. Steer them — follow up in chat.** On the **Files** tab, the bottom
+panel is a chat with the agents. Select a file for context, type a
+follow-up (e.g. *"add error handling and a test for empty input"*), pick a
+workflow, and **Send**. Each message seeds a new workflow run scoped to
+your request and streams the agents' work straight back into the thread —
+so you can iterate on the generated code conversationally.
+
+That's the full loop: configure → run → watch → edit/steer → repeat, all
+from `http://localhost:8001`.
+
 ### What you can do from the browser
 
 - **Workspaces** — create, switch between, and delete isolated projects
@@ -328,6 +394,14 @@ Then browse to `http://localhost:8001`. Notes:
   responses, actions, retries, commits…), **token & cost charts**, and a
   files-changed list. Click any timeline event to inspect the full prompt
   and response.
+- **Think** — a dedicated, live **thinking & dispatching** feed: every
+  dispatch, prompt, and response as a timestamped row, filterable by type
+  and expandable to the full text inline (or in the inspector).
+- **Files** — browse the files the agents generated, **view and edit** them
+  in-browser (Save writes back to the workspace), and **chat with the
+  agents**: each follow-up message seeds a workflow run scoped to your
+  request (optionally with a selected file as context) and streams the
+  result back into the thread.
 - **Configure** — tabbed settings for the global **`.env`** (grouped,
   typed widgets; secrets masked with `••••••••` and preserved on save),
   per-workspace **harness config** (`clk.config.json`), **providers**
@@ -342,6 +416,31 @@ Under the hood the dashboard streams the harness's structured event log
 (`GET /api/workspaces/{id}/activity/stream`) and folds it into a snapshot
 (`GET /api/workspaces/{id}/snapshot`) that mirrors the TUI's model. The
 connection auto-reconnects, so you can leave the tab open across runs.
+
+### Configuring `.env` (where settings live)
+
+The **Configure → .env (global)** tab edits a single `.env` file shared by
+all workspaces (provider, API keys, git identity, feature flags…). The API
+injects it into every agent subprocess, so edits take effect on the **next
+run** without restarting the server. The tab header shows exactly which
+file it's editing.
+
+CLK resolves that path as follows:
+
+1. **`CLK_ENV_FILE`** — if set, this exact path wins (`~` is expanded).
+2. Otherwise, `<package-dir>/../.env`.
+
+In an installed image the fallback resolves next to the installed
+package (e.g. `…/site-packages/.env`) — not where you'd want it. **Set
+`CLK_ENV_FILE` to a path inside your bind mount** so the file lives on your
+host and persists across containers:
+
+```bash
+-e CLK_ENV_FILE=/workspaces/.env  -v "$(pwd):/workspaces"
+```
+
+The file is created on first save (you don't need to pre-create it); just
+make sure the parent directory exists.
 
 ### Secrets & network safety
 

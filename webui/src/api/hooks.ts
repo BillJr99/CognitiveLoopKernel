@@ -4,6 +4,8 @@ import { apiDelete, apiGet, apiPost, apiPut } from "./client";
 import type {
   DoctorResponse,
   EnvResponse,
+  FileContent,
+  FilesResponse,
   ProvidersConfig,
   Snapshot,
   TaskRef,
@@ -147,6 +149,42 @@ export function useStartTask() {
 export function useCancelTask() {
   return useMutation({
     mutationFn: (taskId: string) => apiPost<{ ok: boolean }>(`/api/research/${taskId}/cancel`),
+  });
+}
+
+export function useWorkspaceFiles(ws: string | null) {
+  return useQuery({
+    enabled: !!ws,
+    queryKey: ["files", ws],
+    queryFn: () => apiGet<FilesResponse>(`/api/workspaces/${ws}/files`),
+    refetchInterval: 5_000,
+  });
+}
+
+export function useFileContent(ws: string | null, path: string | null) {
+  return useQuery({
+    enabled: !!ws && !!path,
+    queryKey: ["file", ws, path],
+    queryFn: () => apiGet<FileContent>(`/api/workspaces/${ws}/file?path=${encodeURIComponent(path!)}`),
+  });
+}
+
+export function useSaveFile(ws: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { path: string; content: string }) =>
+      apiPut<{ ok: boolean; path: string; size: number }>(`/api/workspaces/${ws}/file`, body),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["files", ws] });
+      qc.invalidateQueries({ queryKey: ["file", ws, vars.path] });
+    },
+  });
+}
+
+export function useSaveIdea(ws: string | null) {
+  return useMutation({
+    mutationFn: (body: { statement: string; title?: string; tags?: string[] }) =>
+      apiPut<{ ok: boolean; title: string }>(`/api/workspaces/${ws}/idea`, body),
   });
 }
 

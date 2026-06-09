@@ -237,6 +237,70 @@ async def test_unknown_workspace_404(client: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Workspace files: list / read / write + idea
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_files_list_read_write_roundtrip(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "files-ws")
+    wid = ws["workspace_id"]
+
+    r = await client.put(f"/api/workspaces/{wid}/file", json={"path": "src/app.py", "content": "print('hi')\n"})
+    assert r.status_code == 200, r.text
+    assert r.json()["path"] == "src/app.py"
+
+    r = await client.get(f"/api/workspaces/{wid}/files")
+    assert r.status_code == 200
+    paths = [f["path"] for f in r.json()["files"]]
+    assert "src/app.py" in paths
+
+    r = await client.get(f"/api/workspaces/{wid}/file", params={"path": "src/app.py"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["binary"] is False
+    assert body["content"] == "print('hi')\n"
+
+
+@pytest.mark.asyncio
+async def test_files_list_hides_internal_dirs(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "hide-ws")
+    wid = ws["workspace_id"]
+    ws_path = Path(ws["path"])
+    (ws_path / ".clk" / "logs").mkdir(parents=True, exist_ok=True)
+    (ws_path / ".clk" / "logs" / "activity.jsonl").write_text("{}\n", encoding="utf-8")
+    (ws_path / "README.md").write_text("# hi\n", encoding="utf-8")
+
+    r = await client.get(f"/api/workspaces/{wid}/files")
+    paths = [f["path"] for f in r.json()["files"]]
+    assert "README.md" in paths
+    assert not any(p.startswith(".clk") for p in paths)
+
+
+@pytest.mark.asyncio
+async def test_file_traversal_is_blocked(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "trav-ws")
+    wid = ws["workspace_id"]
+    r = await client.get(f"/api/workspaces/{wid}/file", params={"path": "../../etc/passwd"})
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+    r = await client.put(f"/api/workspaces/{wid}/file", json={"path": ".clk/state/idea.json", "content": "x"})
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_set_idea_writes_brief(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "idea-ws")
+    wid = ws["workspace_id"]
+    ws_path = Path(ws["path"])
+    r = await client.put(f"/api/workspaces/{wid}/idea", json={"statement": "Build a thing. With tests."})
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "Build a thing"
+    idea = json.loads((ws_path / ".clk" / "state" / "idea.json").read_text())
+    assert idea["statement"] == "Build a thing. With tests."
+    assert (ws_path / ".clk" / "state" / "system_brief.md").exists()
+
+
+# ---------------------------------------------------------------------------
 # SPA serving + envelope
 # ---------------------------------------------------------------------------
 

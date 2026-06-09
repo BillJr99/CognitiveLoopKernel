@@ -1,18 +1,22 @@
 import { useState } from "react";
-import { Activity, Brain, Settings, Rocket } from "lucide-react";
+import { Activity, Brain, Settings, Rocket, FolderOpen } from "lucide-react";
 import { useActiveWorkspace } from "./state/activeWorkspace";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { TopBar } from "./components/TopBar";
 import { Dashboard } from "./components/dashboard/Dashboard";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { RunPanel } from "./components/compose/RunPanel";
+import { ThinkStream } from "./components/think/ThinkStream";
+import { FilesView } from "./components/files/FilesView";
 import { Onboarding } from "./components/Onboarding";
 
-type View = "dashboard" | "configure" | "run";
+type View = "dashboard" | "run" | "think" | "files" | "configure";
 
 const NAV: { id: View; label: string; icon: typeof Activity }[] = [
   { id: "dashboard", label: "Dashboard", icon: Activity },
   { id: "run", label: "Run", icon: Rocket },
+  { id: "think", label: "Think", icon: Brain },
+  { id: "files", label: "Files", icon: FolderOpen },
   { id: "configure", label: "Configure", icon: Settings },
 ];
 
@@ -76,6 +80,10 @@ export default function App() {
             <Dashboard />
           ) : view === "run" ? (
             <RunPanel />
+          ) : view === "think" ? (
+            <ThinkStream />
+          ) : view === "files" ? (
+            <FilesView />
           ) : (
             <SettingsPanel />
           )}

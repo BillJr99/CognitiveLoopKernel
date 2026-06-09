@@ -108,6 +108,28 @@ export interface Snapshot {
   event_count: number;
 }
 
+export interface FileEntry {
+  path: string;
+  size: number;
+  modified: string;
+}
+
+export interface FilesResponse {
+  ok: boolean;
+  files: FileEntry[];
+  count: number;
+  truncated: boolean;
+}
+
+export interface FileContent {
+  ok: boolean;
+  path: string;
+  binary: boolean;
+  size: number;
+  truncated?: boolean;
+  content?: string;
+}
+
 export interface TaskRef {
   ok: boolean;
   task_id: string;
