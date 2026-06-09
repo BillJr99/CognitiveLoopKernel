@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens
-from ._endpoint_fallback import maybe_docker_host_fallback, probe_endpoint
+from ._endpoint_fallback import maybe_docker_host_fallback, normalize_endpoint, probe_endpoint
 
 
 def list_models(endpoint: str, *, timeout_s: float = 5.0) -> list:
@@ -25,7 +25,7 @@ def list_models(endpoint: str, *, timeout_s: float = 5.0) -> list:
     fall back to manual entry. Applies the container→host fallback so a
     ``localhost`` endpoint still resolves from inside Docker.
     """
-    base = (endpoint or "http://localhost:11434").rstrip("/")
+    base = (normalize_endpoint(endpoint) or "http://localhost:11434").rstrip("/")
     if not probe_endpoint(base):
         swapped = maybe_docker_host_fallback(base, label="ollama")
         if swapped:
@@ -52,7 +52,7 @@ class OllamaProvider(AgentProvider):
     def _endpoint(self) -> str:
         # .env (CLK_OLLAMA_ENDPOINT) wins when set so the global config can
         # drive the connection without editing providers.json.
-        return (
+        return normalize_endpoint(
             os.environ.get("CLK_OLLAMA_ENDPOINT")
             or self.config.get("endpoint")
             or "http://localhost:11434"

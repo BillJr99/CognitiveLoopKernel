@@ -293,7 +293,7 @@ not), override the entrypoint and publish the port:
 
 ```bash
 docker run --rm -it \
-  -p 8001:8001 \
+  -p 127.0.0.1:8001:8001 \
   -e CLK_API_HOST=0.0.0.0 \
   -v "$(pwd):/workspaces" \
   --entrypoint clk \
@@ -304,9 +304,12 @@ Then browse to `http://localhost:8001`. Notes:
 
 - `--entrypoint clk` replaces `kickoff.sh`, so nothing runs until you
   press **Run** in the UI.
-- `CLK_API_HOST=0.0.0.0` is required for the published port to be
-  reachable (the server binds loopback-only by default); the UI is still
-  only exposed on your host via `-p`.
+- `CLK_API_HOST=0.0.0.0` lets the container's server accept the forwarded
+  connection (it binds loopback-only *inside* the container by default).
+  The `127.0.0.1:` prefix on `-p` publishes the port to your host's
+  loopback only, so the unauthenticated UI isn't reachable from other
+  machines on your network. Drop the prefix (`-p 8001:8001`) only if you
+  deliberately want LAN access and have firewalled appropriately.
 - `-v "$(pwd):/workspaces"` bind-mounts the current directory as the
   workspace root — no named volumes — and `--rm` discards the image's
   anonymous volumes on exit.
@@ -323,7 +326,7 @@ run until you ask):
 
 ```bash
 docker run --rm -it \
-  -p 8001:8001 \
+  -p 127.0.0.1:8001:8001 \
   -e CLK_API_HOST=0.0.0.0 \
   -e CLK_ENV_FILE=/workspaces/.env \
   -v "$(pwd):/workspaces" \
@@ -905,7 +908,7 @@ alongside `clk-api`:
 docker run -d --name clk-api \
   -v ~/clk.env:/app/.env \
   -v clk-workspaces:/workspaces \
-  -p 8001:8001 \
+  -p 127.0.0.1:8001:8001 \
   --entrypoint python clk -m clk_harness.api
 
 # Telegram bot — talks to clk-api via Docker's bridge network

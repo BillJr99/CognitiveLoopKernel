@@ -136,18 +136,22 @@ function FileEditor({ ws, path }: { ws: string; path: string | null }) {
     );
   }
 
-  const dirty = data && !data.binary && draft !== (data.content ?? "");
+  // A truncated read only has the first chunk; saving it would clobber the
+  // rest of the file, so it's view-only.
+  const truncated = !!data?.truncated;
+  const dirty = data && !data.binary && !truncated && draft !== (data.content ?? "");
 
   return (
     <div className="card flex min-h-0 flex-[2] flex-col">
       <div className="flex items-center gap-2 border-b border-[var(--color-line)] px-3 py-2">
         <FileText size={14} className="text-[var(--color-brand)]" />
         <span className="truncate font-mono text-xs">{path}</span>
-        {data?.truncated && <Badge tone="warn">truncated</Badge>}
+        {truncated && <Badge tone="warn">truncated · read-only</Badge>}
         {dirty && <Badge tone="brand">unsaved</Badge>}
         <button
-          onClick={() => path && save.mutate({ path, content: draft })}
+          onClick={() => path && dirty && save.mutate({ path, content: draft })}
           disabled={!dirty || save.isPending}
+          title={truncated ? "File too large to edit safely in-browser" : undefined}
           className="ml-auto flex items-center gap-1.5 rounded-lg bg-[var(--color-brand)] px-3 py-1 text-xs font-semibold text-[var(--color-ink-950)] disabled:opacity-40"
         >
           {save.isPending ? <Spinner size={12} /> : <Save size={13} />} Save
@@ -164,11 +168,17 @@ function FileEditor({ ws, path }: { ws: string; path: string | null }) {
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            readOnly={truncated}
             spellCheck={false}
-            className="h-full min-h-[14rem] w-full resize-none bg-[var(--color-ink-950)] p-3 font-mono text-[12px] leading-relaxed outline-none"
+            className={`h-full min-h-[14rem] w-full resize-none bg-[var(--color-ink-950)] p-3 font-mono text-[12px] leading-relaxed outline-none ${truncated ? "opacity-70" : ""}`}
           />
         )}
       </div>
+      {truncated && (
+        <div className="border-t border-[var(--color-line)] px-3 py-1.5 text-xs text-[var(--color-warn)]">
+          Showing the first {fmtSize(data!.size > 1_000_000 ? 1_000_000 : data!.size)} of {fmtSize(data!.size)} — too large to edit in-browser.
+        </div>
+      )}
       {save.isError && (
         <div className="border-t border-[var(--color-line)] px-3 py-1.5 text-xs text-[var(--color-bad)]">
           {(save.error as Error).message}
@@ -181,6 +191,7 @@ function FileEditor({ ws, path }: { ws: string; path: string | null }) {
 function AgentChat({ ws, selectedPath }: { ws: string; selectedPath: string | null }) {
   const { data: wfData } = useWorkflows();
   const { data: doctor } = useDoctor(ws);
+  const doctorLoaded = doctor !== undefined;
   const isShell = doctor?.active_provider === "shell";
   const saveIdea = useSaveIdea(ws);
   const start = useStartTask();
@@ -232,7 +243,7 @@ function AgentChat({ ws, selectedPath }: { ws: string; selectedPath: string | nu
 
   async function send() {
     const text = message.trim();
-    if (!text || sending || running || isShell) return;
+    if (!text || sending || running || isShell || !doctorLoaded) return;
     setSending(true);
     const userId = crypto.randomUUID();
     const agentId = crypto.randomUUID();
@@ -328,8 +339,14 @@ function AgentChat({ ws, selectedPath }: { ws: string; selectedPath: string | nu
           ) : (
             <button
               onClick={send}
-              disabled={!message.trim() || sending || isShell}
-              title={isShell ? "Active provider is 'shell' — pick a real provider in Configure → Providers" : undefined}
+              disabled={!message.trim() || sending || isShell || !doctorLoaded}
+              title={
+                !doctorLoaded
+                  ? "Checking the active provider…"
+                  : isShell
+                    ? "Active provider is 'shell' — pick a real provider in Configure → Providers"
+                    : undefined
+              }
               className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[var(--color-brand)] to-[var(--color-iris)] px-4 py-2.5 text-sm font-semibold text-[var(--color-ink-950)] disabled:opacity-40"
             >
               {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Send

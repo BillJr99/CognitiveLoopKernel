@@ -31,6 +31,7 @@ export function RunPanel() {
   const { activeId } = useActiveWorkspace();
   const { data: wfData } = useWorkflows();
   const { data: doctor } = useDoctor(activeId);
+  const doctorLoaded = doctor !== undefined;
   const isShell = doctor?.active_provider === "shell";
   const start = useStartTask();
   const cancel = useCancelTask();
@@ -72,7 +73,7 @@ export function RunPanel() {
   }, [lines.length]);
 
   async function launch() {
-    if (!activeId || isShell) return;
+    if (!activeId || !doctorLoaded || isShell) return;
     const body: { command: string; args?: string[]; workspace_id: string; workflow?: string } = {
       command: mode,
       workspace_id: activeId,
@@ -194,8 +195,14 @@ export function RunPanel() {
             ) : (
               <button
                 onClick={launch}
-                disabled={isShell || start.isPending || (mode === "idea" && !idea.trim())}
-                title={isShell ? "Active provider is 'shell' — pick a real provider in Configure → Providers" : undefined}
+                disabled={!doctorLoaded || isShell || start.isPending || (mode === "idea" && !idea.trim())}
+                title={
+                  !doctorLoaded
+                    ? "Checking the active provider…"
+                    : isShell
+                      ? "Active provider is 'shell' — pick a real provider in Configure → Providers"
+                      : undefined
+                }
                 className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-[var(--color-brand)] to-[var(--color-good)] px-5 py-2 text-sm font-semibold text-[var(--color-ink-950)] disabled:opacity-50"
               >
                 {start.isPending ? <Spinner size={15} /> : <Play size={15} />} Start

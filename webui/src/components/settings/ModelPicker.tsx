@@ -7,9 +7,9 @@ import { Spinner } from "../common/ui";
 const MASK = "••••••••";
 
 // Shared model field: for HTTP providers (ollama / openwebui) it auto-probes
-// the endpoint and offers a dropdown of installed models; otherwise (or when
-// unreachable) it falls back to a plain text box. Used by both the Providers
-// form and the .env editor.
+// the endpoint (debounced) and offers a dropdown of installed models;
+// otherwise (or when unreachable) it falls back to a plain text box. Used by
+// both the Providers form and the .env editor.
 export function ModelPicker({
   ptype,
   endpoint,
@@ -27,26 +27,45 @@ export function ModelPicker({
 }) {
   const probe = useProbeModels();
   const [result, setResult] = useState<ProbeResponse | null>(null);
+  const [busy, setBusy] = useState(false);
   const [manual, setManual] = useState(false);
-  const probedFor = useRef<string | null>(null);
+  const lastKey = useRef<string | null>(null);
+  const reqId = useRef(0);
 
   const httpProvider = ptype === "ollama" || ptype === "openwebui";
   const endpointStr = (endpoint || "").trim();
 
-  async function doProbe() {
-    const key = apiKey && apiKey !== MASK ? apiKey : undefined;
-    const r = await probe.mutateAsync({ type: ptype, endpoint: endpointStr || undefined, api_key: key });
-    setResult(r);
-    setManual(false);
+  // Fire a probe, ignoring responses superseded by a newer request and never
+  // throwing (a failure just renders as "unreachable").
+  function fire(key: string) {
+    lastKey.current = key;
+    const myId = ++reqId.current;
+    setBusy(true);
+    const apiKeyArg = apiKey && apiKey !== MASK ? apiKey : undefined;
+    probe
+      .mutateAsync({ type: ptype, endpoint: endpointStr || undefined, api_key: apiKeyArg })
+      .then((r) => {
+        if (myId !== reqId.current) return; // stale
+        setResult(r);
+        setManual(false);
+      })
+      .catch(() => {
+        if (myId !== reqId.current) return;
+        setResult({ ok: false, supported: true, reachable: false, models: [] });
+      })
+      .finally(() => {
+        if (myId === reqId.current) setBusy(false);
+      });
   }
 
-  // Auto-probe once per (type, endpoint); re-probe when the endpoint changes.
+  // Auto-probe once per (type, endpoint), debounced so typing the endpoint
+  // doesn't spam the network. The manual buttons below force a re-probe.
   useEffect(() => {
     if (!httpProvider) return;
     const key = `${ptype}|${endpointStr}`;
-    if (probedFor.current === key) return;
-    probedFor.current = key;
-    doProbe();
+    if (lastKey.current === key) return;
+    const t = setTimeout(() => fire(key), 500);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [httpProvider, ptype, endpointStr]);
 
@@ -70,8 +89,8 @@ export function ModelPicker({
           <button type="button" onClick={() => setManual(true)} className={btnCls} title="Type a model id manually">
             <Pencil size={13} />
           </button>
-          <button type="button" onClick={doProbe} className={btnCls} title="Refresh model list">
-            <RefreshCw size={13} className={probe.isPending ? "animate-spin" : ""} />
+          <button type="button" onClick={() => fire(`${ptype}|${endpointStr}`)} className={btnCls} title="Refresh model list">
+            <RefreshCw size={13} className={busy ? "animate-spin" : ""} />
           </button>
         </div>
       ) : (
@@ -83,8 +102,8 @@ export function ModelPicker({
             className={inputCls}
           />
           {httpProvider && (
-            <button type="button" onClick={doProbe} disabled={probe.isPending} className={btnCls} title="Fetch models from the endpoint">
-              {probe.isPending ? <Spinner size={12} /> : <RefreshCw size={13} />} models
+            <button type="button" onClick={() => fire(`${ptype}|${endpointStr}`)} disabled={busy} className={btnCls} title="Fetch models from the endpoint">
+              {busy ? <Spinner size={12} /> : <RefreshCw size={13} />} models
             </button>
           )}
         </div>

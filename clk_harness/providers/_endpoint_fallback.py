@@ -24,6 +24,22 @@ _LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _DOCKER_HOST = "host.docker.internal"
 
 
+def normalize_endpoint(endpoint: str) -> str:
+    """Ensure ``endpoint`` has a scheme.
+
+    Users often type ``host.docker.internal:11434`` without ``http://``;
+    ``urlparse`` then misreads the host:port as ``scheme:path`` and the
+    probe targets the wrong place. Prepend ``http://`` when no scheme is
+    present so the rest of the pipeline resolves host/port correctly.
+    """
+    ep = (endpoint or "").strip()
+    if not ep:
+        return ep
+    if "://" not in ep:
+        ep = "http://" + ep
+    return ep
+
+
 def _port_for(url) -> int:
     if url.port:
         return url.port

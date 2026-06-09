@@ -283,7 +283,11 @@ async def test_file_traversal_is_blocked(client: AsyncClient) -> None:
     r = await client.get(f"/api/workspaces/{wid}/file", params={"path": "../../etc/passwd"})
     assert r.status_code == 403
     assert r.json()["ok"] is False
+    # Writes into a harness-internal dir are refused...
     r = await client.put(f"/api/workspaces/{wid}/file", json={"path": ".clk/state/idea.json", "content": "x"})
+    assert r.status_code == 403
+    # ...and so are reads (internal logs/state must not leak through this API).
+    r = await client.get(f"/api/workspaces/{wid}/file", params={"path": ".clk/logs/activity.jsonl"})
     assert r.status_code == 403
 
 
