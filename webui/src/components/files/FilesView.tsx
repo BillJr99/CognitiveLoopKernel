@@ -305,7 +305,12 @@ function AgentChat({ ws, selectedPath }: { ws: string; selectedPath: string | nu
       </div>
 
       <div className="border-t border-[var(--color-line)] p-2.5">
-        {isShell && (
+        {!doctorLoaded && (
+          <div className="mb-1.5 flex items-center gap-1 text-[11px] text-[var(--color-mist)]">
+            <Loader2 size={11} className="animate-spin" /> checking the active provider…
+          </div>
+        )}
+        {doctorLoaded && isShell && (
           <div className="mb-1.5 text-[11px] text-[var(--color-warn)]">
             Active provider is <code>shell</code> (echoes only) — pick a real provider in Configure → Providers to chat with the agents.
           </div>

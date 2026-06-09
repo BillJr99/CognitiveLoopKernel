@@ -185,6 +185,11 @@ export function RunPanel() {
           )}
 
           <div className="ml-auto flex items-center gap-2">
+            {!running && !doctorLoaded && (
+              <span className="flex items-center gap-1 text-[11px] text-[var(--color-mist)]">
+                <Spinner size={11} /> checking provider…
+              </span>
+            )}
             {running ? (
               <button
                 onClick={() => taskId && cancel.mutate(taskId)}

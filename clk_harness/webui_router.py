@@ -102,8 +102,8 @@ def _safe_ws_file(paths: Paths, rel: str, *, for_write: bool = False) -> Path:
         raise api._err("forbidden", "Path escapes workspace boundary.", 403)
     parts = set(target.relative_to(root).parts)
     if parts & _HIDDEN_DIRS:
-        verb = "write to" if for_write else "read"
-        raise api._err("forbidden", f"Cannot {verb} a harness-internal path.", 403)
+        verb = "write to" if for_write else "read from"
+        raise api._err("forbidden", f"Cannot {verb} harness-internal paths.", 403)
     return target
 
 
