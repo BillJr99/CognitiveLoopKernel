@@ -27,9 +27,17 @@ clk = "clk_harness.cli:main"
 clk-api = "clk_harness._api_shim:main"
 clk-telegram-bot = "clk_harness.integrations.telegram.bot:main"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["clk_harness*"]
+
+[tool.setuptools.package-data]
+# Ship the built React web UI (emitted by `npm --prefix webui run build`)
+# inside the wheel so `clk web` can serve it without a Node toolchain.
+clk_harness = ["webui_dist/**/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

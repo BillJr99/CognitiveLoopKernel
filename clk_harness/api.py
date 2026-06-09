@@ -75,6 +75,30 @@ def get_bind_port() -> int:
 COMMANDS = ["init", "idea", "plan", "run", "loop", "status"]
 MAX_TASK_LINES = 10_000
 
+
+def _subprocess_env() -> Dict[str, str]:
+    """Environment handed to each ``clk`` subprocess.
+
+    Layers the web-UI-editable ``.env`` on top of the server's own
+    environment so that settings changed in the browser take effect on
+    the next run without a server restart.
+
+    Precedence: the server's inherited ``os.environ`` is the base, and
+    every key present in ``.env`` overrides it -- including keys whose
+    value is the empty string, so blanking a field in the ``.env`` editor
+    clears that variable for the next run (matching how a shell sourcing
+    the file would set it to empty). Keys absent from ``.env`` are left
+    untouched.
+    """
+    env = dict(os.environ)
+    try:
+        from .env_file import read_env
+        for key, value in read_env().items():
+            env[key] = value
+    except Exception:  # noqa: BLE001
+        logger.debug("could not load .env for subprocess env", exc_info=True)
+    return env
+
 logger = logging.getLogger(__name__)
 
 TASKS: Dict[str, Dict[str, Any]] = {}
@@ -206,6 +230,7 @@ async def _run_task(task_id: str) -> None:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                     cwd=str(ws_path),
+                    env=_subprocess_env(),
                 )
                 task["proc"] = init_proc
                 try:
@@ -236,6 +261,7 @@ async def _run_task(task_id: str) -> None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(ws_path),
+            env=_subprocess_env(),
         )
         task["proc"] = proc
 
@@ -507,6 +533,24 @@ async def cancel_task(task_id: str) -> Dict[str, Any]:
     if task_id in _task_handles:
         _task_handles[task_id].cancel()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Web UI: extra REST surface (config/.env/activity) + the React SPA.
+# Registered last so the SPA catch-all does not shadow the /api routes.
+# ---------------------------------------------------------------------------
+
+try:
+    from .webui_router import router as _webui_router
+    app.include_router(_webui_router)
+except Exception:  # noqa: BLE001
+    logger.exception("Failed to register web UI router")
+
+try:
+    from .static_spa import mount_spa as _mount_spa
+    _mount_spa(app)
+except Exception:  # noqa: BLE001
+    logger.exception("Failed to mount web UI static assets")
 
 
 def main() -> None:

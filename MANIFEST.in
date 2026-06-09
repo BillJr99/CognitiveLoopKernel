@@ -1,0 +1,5 @@
+# Ship the built React web UI bundle inside source distributions so the
+# `clk web` command can serve it without a Node toolchain. The bundle is
+# produced by `npm --prefix webui run build` (run in CI before packaging)
+# and lands in clk_harness/webui_dist/.
+recursive-include clk_harness/webui_dist *

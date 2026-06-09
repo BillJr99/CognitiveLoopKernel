@@ -43,3 +43,8 @@ workspace/
 
 # Local env overrides (kickoff.sh reads .env if present)
 .env
+
+# Web UI: dependencies and the built bundle (CI builds the bundle before
+# packaging; locally use `clk web --build`). Source lives in webui/.
+webui/node_modules/
+clk_harness/webui_dist/

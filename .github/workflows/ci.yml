@@ -32,6 +32,65 @@ jobs:
         env:
           CLK_WORKSPACES_DIR: /tmp/clk-workspaces
 
+  webui:
+    name: Web UI (build + unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install web UI deps
+        run: npm ci
+        working-directory: webui
+
+      - name: Type-check & build
+        run: npm run build
+        working-directory: webui
+
+      - name: Unit tests (vitest)
+        run: npm run test
+        working-directory: webui
+
+      - name: Upload built bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: webui-dist
+          path: clk_harness/webui_dist
+          if-no-files-found: error
+
+  web-e2e:
+    name: Web UI end-to-end
+    runs-on: ubuntu-latest
+    needs: [test, webui]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[api]"
+          pip install pytest pytest-asyncio httpx
+
+      - name: Download built web UI bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: clk_harness/webui_dist
+
+      - name: Run web UI end-to-end tests
+        run: pytest user_tests/test_webui_e2e.py -v
+
   docker-e2e:
     runs-on: ubuntu-latest
     needs: test
