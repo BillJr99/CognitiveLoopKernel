@@ -287,6 +287,32 @@ opens your browser. Flags:
 > The pre-built Docker image already contains the compiled bundle, so
 > inside a container you can run `clk web --no-build` directly.
 
+To open the dashboard from the Docker image without kicking off a run
+(the default `kickoff.sh` entrypoint starts an agent — `clk web` does
+not), override the entrypoint and publish the port:
+
+```bash
+docker run --rm -it \
+  -p 8001:8001 \
+  -e CLK_API_HOST=0.0.0.0 \
+  -v "$(pwd):/workspaces" \
+  --entrypoint clk \
+  clk web --no-open --no-build
+```
+
+Then browse to `http://localhost:8001`. Notes:
+
+- `--entrypoint clk` replaces `kickoff.sh`, so nothing runs until you
+  press **Run** in the UI.
+- `CLK_API_HOST=0.0.0.0` is required for the published port to be
+  reachable (the server binds loopback-only by default); the UI is still
+  only exposed on your host via `-p`.
+- `-v "$(pwd):/workspaces"` bind-mounts the current directory as the
+  workspace root — no named volumes — and `--rm` discards the image's
+  anonymous volumes on exit.
+- `--no-build` serves the bundle already baked into the image (no npm at
+  runtime); `--no-open` skips the in-container browser launch.
+
 ### What you can do from the browser
 
 - **Workspaces** — create, switch between, and delete isolated projects
