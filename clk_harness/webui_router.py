@@ -127,9 +127,15 @@ def _mask_provider_block(providers: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _unmask_provider_block(incoming: Dict[str, Any], existing: Dict[str, Any]) -> Dict[str, Any]:
-    """Replace any masked secret field in ``incoming`` with the stored
-    value from ``existing`` so a round-trip never clobbers a real secret."""
-    out: Dict[str, Any] = {}
+    """Merge ``incoming`` over ``existing``, restoring masked secrets.
+
+    Starts from ``existing`` so provider blocks the caller didn't include
+    are preserved (dropping them would leave ``active`` pointing at a
+    missing block, which silently degrades the run to the shell stub).
+    Masked secret fields fall back to the stored value so a round-trip
+    never clobbers a real secret.
+    """
+    out: Dict[str, Any] = dict(existing or {})
     for name, block in (incoming or {}).items():
         if not isinstance(block, dict):
             out[name] = block
