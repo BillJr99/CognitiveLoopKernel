@@ -78,6 +78,35 @@ def _activity_path(paths: Paths) -> Path:
     return target
 
 
+# Directories that are harness internals / noise -- never listed as "files the
+# agents generated for you", and never writable through the file editor.
+_HIDDEN_DIRS = {".clk", ".git", "node_modules", "__pycache__", ".venv", ".mypy_cache", ".pytest_cache"}
+_MAX_FILES = 3000
+_MAX_FILE_BYTES = 1_000_000  # 1 MB read/write cap for the in-browser editor
+
+
+def _safe_ws_file(paths: Paths, rel: str, *, for_write: bool = False) -> Path:
+    """Resolve ``<ws>/<rel>`` with a traversal guard (and a hidden-dir guard
+    for writes), raising the standard 403/400 envelope on violation."""
+    api = _api()
+    if not rel or rel.strip() == "":
+        raise api._err("invalid_path", "A file path is required.", 400)
+    root = paths.root.resolve()
+    target = (root / rel).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise api._err("forbidden", "Path escapes workspace boundary.", 403)
+    parts = set(target.relative_to(root).parts)
+    if for_write and parts & _HIDDEN_DIRS:
+        raise api._err("forbidden", "Cannot write to a harness-internal path.", 403)
+    return target
+
+
+def _is_probably_binary(data: bytes) -> bool:
+    return b"\x00" in data
+
+
 _SECRET_PROVIDER_FIELDS = ("api_key", "apikey", "token", "secret", "password")
 
 
@@ -140,6 +169,17 @@ class ProvidersUpdate(BaseModel):
 
 class AgentsUpdate(BaseModel):
     agents: Dict[str, Any]
+
+
+class FileWrite(BaseModel):
+    path: str
+    content: str
+
+
+class IdeaUpdate(BaseModel):
+    statement: str
+    title: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
 
 
 class EnvUpdate(BaseModel):
@@ -363,6 +403,123 @@ async def stream_activity(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Workspace files: list / read / write + the "follow up with the agents" idea
+# ---------------------------------------------------------------------------
+
+@router.get("/api/workspaces/{workspace_id}/files")
+async def list_files(workspace_id: str) -> Dict[str, Any]:
+    """List the files the agents have produced in the workspace.
+
+    Harness-internal directories (``.clk``, ``.git``, ``node_modules`` …) are
+    skipped so this reflects the user-facing deliverables, not bookkeeping.
+    """
+    from datetime import datetime, timezone
+
+    paths = _require_workspace(workspace_id)
+    root = paths.root.resolve()
+    files: List[Dict[str, Any]] = []
+    truncated = False
+    if root.exists():
+        for dirpath, dirnames, filenames in os.walk(root):
+            # Prune hidden/internal dirs in place so os.walk doesn't descend.
+            dirnames[:] = sorted(d for d in dirnames if d not in _HIDDEN_DIRS)
+            for name in sorted(filenames):
+                if len(files) >= _MAX_FILES:
+                    truncated = True
+                    break
+                fp = Path(dirpath) / name
+                try:
+                    stat = fp.stat()
+                except OSError:
+                    continue
+                files.append({
+                    "path": str(fp.relative_to(root)),
+                    "size": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+                        .isoformat().replace("+00:00", "Z"),
+                })
+            if truncated:
+                break
+    files.sort(key=lambda f: f["path"])
+    return {"ok": True, "files": files, "count": len(files), "truncated": truncated}
+
+
+@router.get("/api/workspaces/{workspace_id}/file")
+async def read_file(workspace_id: str, path: str = Query(...)) -> Dict[str, Any]:
+    paths = _require_workspace(workspace_id)
+    target = _safe_ws_file(paths, path)
+    if not target.exists() or not target.is_file():
+        raise _api()._err("file_not_found", f"File {path!r} not found.", 404)
+    raw = target.read_bytes()
+    too_big = len(raw) > _MAX_FILE_BYTES
+    chunk = raw[:_MAX_FILE_BYTES]
+    if _is_probably_binary(chunk):
+        return {"ok": True, "path": path, "binary": True, "size": len(raw)}
+    return {
+        "ok": True,
+        "path": path,
+        "binary": False,
+        "size": len(raw),
+        "truncated": too_big,
+        "content": chunk.decode("utf-8", errors="replace"),
+    }
+
+
+@router.put("/api/workspaces/{workspace_id}/file")
+async def write_file(workspace_id: str, body: FileWrite) -> Dict[str, Any]:
+    paths = _require_workspace(workspace_id)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    target = _safe_ws_file(paths, body.path, for_write=True)
+    data = body.content.encode("utf-8")
+    if len(data) > _MAX_FILE_BYTES:
+        raise _api()._err("too_large", "File exceeds the 1 MB editor limit.", 413)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body.content, encoding="utf-8")
+    return {"ok": True, "path": body.path, "size": len(data)}
+
+
+@router.put("/api/workspaces/{workspace_id}/idea")
+async def set_idea(workspace_id: str, body: IdeaUpdate) -> Dict[str, Any]:
+    """Seed the workspace idea/brief used by the next ``run``.
+
+    Mirrors ``clk idea`` (idea.json + system_brief.md) but without the chief
+    casting pass, so the Files-view chat can attach context and immediately
+    kick off a workflow.
+    """
+    import textwrap
+    from datetime import datetime
+
+    paths = _require_workspace(workspace_id)
+    paths.ensure()
+    statement = body.statement.strip()
+    if not statement:
+        raise _api()._err("invalid_idea", "An idea statement is required.", 400)
+    title = (body.title or statement.split(".")[0])[:80]
+    captured_at = datetime.now().isoformat(timespec="seconds")
+    save_json(paths.state / "idea.json", {
+        "title": title,
+        "statement": statement,
+        "captured_at": captured_at,
+        "tags": body.tags or [],
+    })
+    brief = textwrap.dedent(
+        f"""\
+        # System brief
+
+        **Title:** {title}
+
+        ## Idea
+        {statement}
+
+        ## Captured at
+        {captured_at}
+        """
+    )
+    (paths.state / "system_brief.md").write_text(brief, encoding="utf-8")
+    return {"ok": True, "title": title}
 
 
 @router.get("/api/providers")
