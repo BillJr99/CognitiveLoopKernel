@@ -213,7 +213,6 @@ def build_snapshot(
     total_usd = 0.0
     peak_run_tokens = 0
     phase = ""
-    busy = False
     commits = 0
 
     def card(name: str) -> Dict[str, Any]:
@@ -234,7 +233,6 @@ def build_snapshot(
                 phase = str(raw.get("phase"))
             elif raw.get("workflow"):
                 phase = str(raw.get("workflow"))
-            busy = True
 
         elif kind == "prompt_sent":
             c = card(agent)
@@ -282,7 +280,6 @@ def build_snapshot(
                 c["status"] = "provider" if kind_str in (
                     "rate_limit", "timeout", "auth", "policy", "not_installed"
                 ) else "failed"
-            busy = False
 
         elif kind == "action_applied":
             path = raw.get("path")
@@ -304,6 +301,12 @@ def build_snapshot(
             c = card(agent)
             if raw.get("role"):
                 c["role"] = raw.get("role")
+
+    # An agent is "in flight" while its card is still working or recovering
+    # from a retry. Deriving busy from the final folded statuses (rather than
+    # toggling it on each response) stays correct when several agents run
+    # concurrently -- the loop is busy until every agent has settled.
+    busy = any(c["status"] in ("working", "recovering") for c in cards.values())
 
     return {
         "idea": idea,

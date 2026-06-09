@@ -81,16 +81,20 @@ def _subprocess_env() -> Dict[str, str]:
 
     Layers the web-UI-editable ``.env`` on top of the server's own
     environment so that settings changed in the browser take effect on
-    the next run without a server restart. The server's own env still
-    wins for anything not present in ``.env`` is false here — ``.env``
-    overrides, matching how ``kickoff.sh`` sources it.
+    the next run without a server restart.
+
+    Precedence: the server's inherited ``os.environ`` is the base, and
+    every key present in ``.env`` overrides it -- including keys whose
+    value is the empty string, so blanking a field in the ``.env`` editor
+    clears that variable for the next run (matching how a shell sourcing
+    the file would set it to empty). Keys absent from ``.env`` are left
+    untouched.
     """
     env = dict(os.environ)
     try:
         from .env_file import read_env
         for key, value in read_env().items():
-            if value != "":
-                env[key] = value
+            env[key] = value
     except Exception:  # noqa: BLE001
         logger.debug("could not load .env for subprocess env", exc_info=True)
     return env

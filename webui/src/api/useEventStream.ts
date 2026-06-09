@@ -13,7 +13,7 @@ const MAX_EVENTS = 2000;
 export function useActivityStream(workspaceId: string | null): StreamState {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [connected, setConnected] = useState(false);
-  const seenSeq = useRef<Set<number>>(new Set());
+  const seenSeq = useRef<Set<string>>(new Set());
   const retry = useRef(0);
 
   useEffect(() => {
@@ -38,12 +38,12 @@ export function useActivityStream(workspaceId: string | null): StreamState {
         if (!ev.data || ev.data.startsWith(":")) return;
         try {
           const parsed: ActivityEvent = JSON.parse(ev.data);
-          // The stream restarts seq at 0 per connection; key on
-          // (seq, ts, kind) to avoid double-rendering replayed events.
+          // The stream restarts seq at 0 per connection; key on the full
+          // (seq, ts, kind, agent) composite so reconnect replays are
+          // de-duped without the collision risk of a hashed number.
           const key = `${parsed.seq}|${parsed.ts}|${parsed.kind}|${parsed.agent}`;
-          const hash = hashKey(key);
-          if (seenSeq.current.has(hash)) return;
-          seenSeq.current.add(hash);
+          if (seenSeq.current.has(key)) return;
+          seenSeq.current.add(key);
           setEvents((prev) => {
             const next = [...prev, parsed];
             return next.length > MAX_EVENTS ? next.slice(next.length - MAX_EVENTS) : next;
@@ -73,13 +73,4 @@ export function useActivityStream(workspaceId: string | null): StreamState {
   }, [workspaceId]);
 
   return { events, connected };
-}
-
-function hashKey(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (h << 5) - h + s.charCodeAt(i);
-    h |= 0;
-  }
-  return h;
 }
