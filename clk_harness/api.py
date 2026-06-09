@@ -227,8 +227,12 @@ async def _run_task(task_id: str) -> None:
     args = list(task["args"])
 
     try:
-        clk_dir = ws_path / ".clk"
-        if command != "init" and not clk_dir.exists():
+        # Auto-init when the workspace isn't a real CLK project yet. Check the
+        # actual init marker (clk.config.json), not just that `.clk/` exists --
+        # endpoints like set_idea create `.clk/` subdirs, which would otherwise
+        # trick us into skipping init and then failing with "not initialized".
+        from .config import Paths as _Paths, is_initialized as _is_initialized
+        if command != "init" and not _is_initialized(_Paths(root=ws_path)):
             try:
                 init_proc = await asyncio.create_subprocess_exec(
                     *_clk_cmd("init", []),

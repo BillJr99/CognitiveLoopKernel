@@ -325,6 +325,20 @@ async def test_probe_ollama_unreachable(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_providers_always_includes_defaults(client: AsyncClient) -> None:
+    ws = await _make_workspace(client, "prov-ws")
+    wid = ws["workspace_id"]
+    # Save a deliberately sparse providers.json (active set, no blocks).
+    await client.put(f"/api/workspaces/{wid}/config/providers", json={"providers": {}, "active": "ollama"})
+    r = await client.get(f"/api/workspaces/{wid}/config/providers")
+    body = r.json()
+    # Every built-in provider card is still offered so the UI can activate one.
+    for name in ("shell", "claude", "ollama", "openwebui"):
+        assert name in body["providers"], name
+    assert body["active"] == "ollama"
+
+
+@pytest.mark.asyncio
 async def test_doctor_flags_shell_provider(client: AsyncClient) -> None:
     ws = await _make_workspace(client, "doc-ws")
     wid = ws["workspace_id"]

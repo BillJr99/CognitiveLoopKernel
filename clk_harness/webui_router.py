@@ -216,11 +216,18 @@ async def put_clk_config(workspace_id: str, body: ClkConfigUpdate) -> Dict[str, 
 async def get_providers_config(workspace_id: str) -> Dict[str, Any]:
     paths = _require_workspace(workspace_id)
     cfg = load_providers_config(paths)
+    # Always surface the full set of built-in providers (merged under any saved
+    # overrides) so the UI can always show every provider card — otherwise a
+    # sparse/empty providers.json leaves no "make active" buttons to click.
+    from .config import DEFAULT_PROVIDERS
+    merged_blocks: Dict[str, Any] = dict(DEFAULT_PROVIDERS.get("providers") or {})
+    for name, block in (cfg.get("providers") or {}).items():
+        merged_blocks[name] = block
     return {
         "ok": True,
         "active": cfg.get("active"),
-        "providers": _mask_provider_block(cfg.get("providers") or {}),
-        "available": available_providers(cfg),
+        "providers": _mask_provider_block(merged_blocks),
+        "available": available_providers({"providers": merged_blocks}),
     }
 
 

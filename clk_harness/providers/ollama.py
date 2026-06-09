@@ -8,6 +8,7 @@ reports unavailable.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import traceback
 import urllib.error
@@ -49,7 +50,13 @@ class OllamaProvider(AgentProvider):
     type_name = "ollama"
 
     def _endpoint(self) -> str:
-        return (self.config.get("endpoint") or "http://localhost:11434").rstrip("/")
+        # .env (CLK_OLLAMA_ENDPOINT) wins when set so the global config can
+        # drive the connection without editing providers.json.
+        return (
+            os.environ.get("CLK_OLLAMA_ENDPOINT")
+            or self.config.get("endpoint")
+            or "http://localhost:11434"
+        ).rstrip("/")
 
     def available(self) -> bool:
         endpoint = self._endpoint()
@@ -65,7 +72,7 @@ class OllamaProvider(AgentProvider):
         return False
 
     def _model(self) -> str:
-        return self.config.get("model") or "llama3.1"
+        return os.environ.get("CLK_OLLAMA_MODEL") or self.config.get("model") or "llama3.1"
 
     def invoke(self, req: AgentRequest) -> AgentResponse:
         progress = req.on_progress or (lambda kind, msg: None)

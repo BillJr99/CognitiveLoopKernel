@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { Save, RotateCcw } from "lucide-react";
+import { Save, RotateCcw, Info } from "lucide-react";
 import { useEnv, useSaveEnv } from "../../api/hooks";
 import type { EnvVar } from "../../api/types";
 import { Spinner, Toggle } from "../common/ui";
 import { SecretField } from "./SecretField";
+import { ModelPicker } from "./ModelPicker";
+
+// .env model keys that get a live model dropdown, mapped to the provider type
+// and the sibling endpoint / api-key keys used to probe.
+const MODEL_KEYS: Record<string, { ptype: string; endpointKey: string; apiKeyKey?: string }> = {
+  CLK_OLLAMA_MODEL: { ptype: "ollama", endpointKey: "CLK_OLLAMA_ENDPOINT" },
+  CLK_OPENWEBUI_MODEL: { ptype: "openwebui", endpointKey: "CLK_OPENWEBUI_ENDPOINT", apiKeyKey: "CLK_OPENWEBUI_API_KEY" },
+};
 
 const MASK = "••••••••";
 
@@ -40,6 +48,16 @@ export function EnvForm() {
     if (v.key in edits) return edits[v.key];
     return v.is_secret ? null : v.value;
   }
+
+  // Resolve the current string value of any env key (edited or stored) so a
+  // model field can read its sibling endpoint/api-key.
+  function valueOf(key: string): string {
+    if (key in edits) return edits[key] ?? "";
+    const v = (data?.vars ?? []).find((x) => x.key === key);
+    return v ? v.value : "";
+  }
+
+  const activeProvider = valueOf("CLK_PROVIDER");
 
   async function onSave() {
     const values: Record<string, string | null> = {};
@@ -88,6 +106,33 @@ export function EnvForm() {
         </div>
       )}
 
+      <div
+        className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${
+          !activeProvider || activeProvider === "shell"
+            ? "border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10"
+            : "border-[var(--color-line)] bg-[var(--color-ink-900)]/40"
+        }`}
+      >
+        <Info size={16} className="mt-0.5 shrink-0 text-[var(--color-brand)]" />
+        <div className="text-[var(--color-mist)]">
+          <span className="font-semibold text-[var(--color-frost)]">Set your provider here.</span>{" "}
+          <code>CLK_PROVIDER</code> selects which backend runs your agents
+          {activeProvider ? (
+            <> (currently <code className="text-[var(--color-brand-bright)]">{activeProvider}</code>)</>
+          ) : (
+            <> (currently <span className="text-[var(--color-warn)]">unset → falls back to <code>shell</code></span>)</>
+          )}
+          .{" "}
+          {(!activeProvider || activeProvider === "shell") && (
+            <span className="text-[var(--color-warn)]">
+              <code>shell</code> only echoes prompts and never calls an LLM — set it to a real
+              provider (e.g. <code>ollama</code>) or workflows won't do anything.
+            </span>
+          )}{" "}
+          For <code>ollama</code>/<code>openwebui</code>, also set the endpoint and model below.
+        </div>
+      </div>
+
       {groupOrder.map((group) => {
         const vars = byGroup.get(group) ?? [];
         if (vars.length === 0) return null;
@@ -101,7 +146,7 @@ export function EnvForm() {
                     <span title={v.help}>{v.label}</span>
                     <code className="text-[10px] text-[var(--color-mist)]">{v.key}</code>
                   </label>
-                  <EnvInput v={v} value={current(v)} edited={v.key in edits} onChange={(val) => set(v.key, val)} />
+                  <EnvInput v={v} value={current(v)} edited={v.key in edits} onChange={(val) => set(v.key, val)} valueOf={valueOf} />
                   {v.help && <span className="text-[11px] text-[var(--color-mist)]">{v.help}</span>}
                 </div>
               ))}
@@ -118,16 +163,32 @@ function EnvInput({
   value,
   edited,
   onChange,
+  valueOf,
 }: {
   v: EnvVar;
   value: string | null;
   edited: boolean;
   onChange: (val: string | null) => void;
+  valueOf: (key: string) => string;
 }) {
   if (v.is_secret || v.type === "secret") {
     return <SecretField stored={v.set && !edited} value={value} onChange={onChange} />;
   }
   const val = value ?? "";
+  // Model fields get a live, probe-backed dropdown (fallback to text).
+  const modelCfg = MODEL_KEYS[v.key];
+  if (modelCfg) {
+    return (
+      <ModelPicker
+        ptype={modelCfg.ptype}
+        endpoint={valueOf(modelCfg.endpointKey)}
+        apiKey={modelCfg.apiKeyKey ? valueOf(modelCfg.apiKeyKey) : undefined}
+        value={val}
+        onChange={(s) => onChange(s)}
+        placeholder={v.default}
+      />
+    );
+  }
   if (v.type === "bool") {
     return <Toggle checked={val === "true"} onChange={(c) => onChange(c ? "true" : "false")} />;
   }
