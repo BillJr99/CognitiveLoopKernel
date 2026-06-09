@@ -97,6 +97,11 @@ def _subprocess_env() -> Dict[str, str]:
             env[key] = value
     except Exception:  # noqa: BLE001
         logger.debug("could not load .env for subprocess env", exc_info=True)
+    # Every `clk <cmd>` auto-starts its own background REST API unless told
+    # not to. A run launched by *this* server would then try to bind the
+    # same port and fail with "address already in use". The web server is
+    # already the API, so disable the child's.
+    env["CLK_DISABLE_API"] = "1"
     return env
 
 logger = logging.getLogger(__name__)

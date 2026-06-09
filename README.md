@@ -340,14 +340,29 @@ the **＋** and name your project (e.g. `markdown-cli`). A workspace is one
 isolated project directory; the whole UI focuses on one at a time.
 
 **3. Configure a provider.** Open the **Configure** tab:
-   - On **.env (global)**, set your provider and key — e.g. `CLK_PROVIDER`
-     = `claude` and `ANTHROPIC_API_KEY` = your key (secrets show as
-     `••••••••` and are preserved on save). Click **Save**.
-   - On **Providers**, pick the **active** provider. The **Health** strip
-     at the top runs `doctor` and flags anything missing (e.g. an unset
-     key or an uninstalled CLI).
+   - On **Providers**, pick the **active** provider and click **make
+     active**. **This matters:** the default active provider is `shell` —
+     a *stub that echoes prompts and never calls an LLM*. If you leave it
+     on `shell`, runs will complete instantly and "do things" without ever
+     touching your model (the Health strip flags this). Choose a real
+     provider (claude / codex / gemini / pi / ollama / openwebui).
+   - For HTTP providers (**ollama**, **openwebui**), set the `endpoint`,
+     then click **models** next to the `model` field — CLK probes the
+     endpoint and offers a **dropdown of installed models** (falling back
+     to a text box if the endpoint is unreachable, which also tells you
+     the server isn't reachable from where CLK runs).
+   - On **.env (global)**, set any keys your provider needs — e.g.
+     `ANTHROPIC_API_KEY` (secrets show as `••••••••` and are preserved on
+     save). Click **Save**.
    - Auth: set `CLK_AUTH_MODE` to `apikey` to use the keys above, or `cli`
      to trust a provider CLI you've already logged in to.
+
+   > **Running CLK in Docker with a local Ollama/OpenWebUI?** A
+   > `localhost` endpoint points at the *container*, not your host. CLK
+   > auto-retries `host.docker.internal`, but the host must be reachable —
+   > run the container with `--add-host=host.docker.internal:host-gateway`
+   > on Linux (Docker Desktop adds it automatically). The model dropdown is
+   > the quickest way to confirm the endpoint resolves.
 
 **4. Kick off a job.** Open the **Run** tab:
    - Type your idea / problem statement (e.g. *"Build a Markdown-to-HTML
