@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, Save, XCircle, RefreshCw, Wifi, WifiOff, Pencil } from "lucide-react";
 import { useProviders, useSaveProviders, useProbeModels } from "../../api/hooks";
 import { useActiveWorkspace } from "../../state/activeWorkspace";
@@ -164,18 +164,30 @@ function ModelField({
   const probe = useProbeModels();
   const [result, setResult] = useState<ProbeResponse | null>(null);
   const [manual, setManual] = useState(false);
+  const probedFor = useRef<string | null>(null);
 
   const ptype = String(block.type || providerName);
   const httpProvider = ptype === "ollama" || ptype === "openwebui";
   const current = value == null ? "" : String(value);
+  const endpointStr = block.endpoint ? String(block.endpoint) : "";
 
   async function doProbe() {
     const api_key = block.api_key && block.api_key !== MASK ? String(block.api_key) : undefined;
-    const endpoint = block.endpoint ? String(block.endpoint) : undefined;
-    const r = await probe.mutateAsync({ type: ptype, endpoint, api_key });
+    const r = await probe.mutateAsync({ type: ptype, endpoint: endpointStr || undefined, api_key });
     setResult(r);
     setManual(false);
   }
+
+  // Auto-probe once per (type, endpoint) so the model dropdown populates
+  // without a manual click; re-probes when you edit the endpoint.
+  useEffect(() => {
+    if (!httpProvider) return;
+    const key = `${ptype}|${endpointStr}`;
+    if (probedFor.current === key) return;
+    probedFor.current = key;
+    doProbe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [httpProvider, ptype, endpointStr]);
 
   const inputCls =
     "min-w-0 flex-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-ink-900)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-brand)]";

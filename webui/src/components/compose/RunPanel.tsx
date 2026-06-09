@@ -1,14 +1,37 @@
 import { useEffect, useRef, useState } from "react";
-import { Play, Square, Lightbulb, Repeat, Wand2, Terminal } from "lucide-react";
-import { useCancelTask, useStartTask, useTaskStatus, useWorkflows } from "../../api/hooks";
+import { Play, Square, Lightbulb, Repeat, Wand2, Terminal, AlertTriangle } from "lucide-react";
+import { useCancelTask, useDoctor, useStartTask, useTaskStatus, useWorkflows } from "../../api/hooks";
 import { useActiveWorkspace } from "../../state/activeWorkspace";
 import { Badge, Spinner } from "../common/ui";
 
 type Mode = "run" | "loop" | "idea" | "plan";
 
+// Banner shown when the active provider is the shell stub: it echoes prompts
+// and never calls an LLM, so we block real workflows until a provider is set.
+export function ShellGuardBanner() {
+  return (
+    <div className="card flex items-start gap-3 border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 p-4">
+      <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--color-warn)]" />
+      <div className="text-sm">
+        <div className="font-semibold text-[var(--color-warn)]">
+          Active provider is <code>shell</code> — a stub that never calls an LLM.
+        </div>
+        <div className="mt-1 text-[var(--color-mist)]">
+          Workflows are disabled because <code>shell</code> only echoes prompts (no real
+          model is invoked). Open <span className="font-semibold text-[var(--color-frost)]">Configure → Providers</span>,
+          pick a real provider (e.g. <code>ollama</code>), set its endpoint/model, and click
+          <span className="font-semibold text-[var(--color-frost)]"> make active</span>.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function RunPanel() {
   const { activeId } = useActiveWorkspace();
   const { data: wfData } = useWorkflows();
+  const { data: doctor } = useDoctor(activeId);
+  const isShell = doctor?.active_provider === "shell";
   const start = useStartTask();
   const cancel = useCancelTask();
 
@@ -49,7 +72,7 @@ export function RunPanel() {
   }, [lines.length]);
 
   async function launch() {
-    if (!activeId) return;
+    if (!activeId || isShell) return;
     const body: { command: string; args?: string[]; workspace_id: string; workflow?: string } = {
       command: mode,
       workspace_id: activeId,
@@ -75,6 +98,7 @@ export function RunPanel() {
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4">
+      {isShell && <ShellGuardBanner />}
       <div className="card p-5">
         <h2 className="mb-1 text-lg font-semibold">Kick off the agents</h2>
         <p className="mb-4 text-sm text-[var(--color-mist)]">
@@ -170,7 +194,8 @@ export function RunPanel() {
             ) : (
               <button
                 onClick={launch}
-                disabled={start.isPending || (mode === "idea" && !idea.trim())}
+                disabled={isShell || start.isPending || (mode === "idea" && !idea.trim())}
+                title={isShell ? "Active provider is 'shell' — pick a real provider in Configure → Providers" : undefined}
                 className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-[var(--color-brand)] to-[var(--color-good)] px-5 py-2 text-sm font-semibold text-[var(--color-ink-950)] disabled:opacity-50"
               >
                 {start.isPending ? <Spinner size={15} /> : <Play size={15} />} Start
