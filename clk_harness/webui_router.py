@@ -20,6 +20,7 @@ Scope notes
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import re
@@ -312,8 +313,14 @@ async def workspace_doctor(workspace_id: str) -> Dict[str, Any]:
     if active != "shell" and active not in probe_blocks:
         default_block = (DEFAULT_PROVIDERS.get("providers") or {}).get(active)
         if default_block is not None:
-            probe_blocks[active] = default_block
-    avail = available_providers({"providers": probe_blocks})
+            # Deep-copy so a probe that rewrites 'endpoint' in place
+            # (ollama/openwebui docker-host fallback) can't mutate the shared
+            # module-global DEFAULT_PROVIDERS across requests.
+            probe_blocks[active] = copy.deepcopy(default_block)
+    # available_providers() does blocking TCP/network probes; run it off the
+    # event loop (as the Providers tab does) so the doctor endpoint can't stall
+    # the server while a probe waits on its socket timeout.
+    avail = await asyncio.to_thread(available_providers, {"providers": probe_blocks})
     findings: List[Dict[str, str]] = []
     # The most common "it runs but does nothing" trap: the active provider is
     # the shell stub (echoes prompts, never calls an LLM), or it points at a
