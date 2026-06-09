@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, Save, XCircle, RefreshCw, Wifi, WifiOff, Pencil } from "lucide-react";
-import { useProviders, useSaveProviders, useProbeModels } from "../../api/hooks";
+import { useEffect, useState } from "react";
+import { CheckCircle2, Save, XCircle } from "lucide-react";
+import { useProviders, useSaveProviders } from "../../api/hooks";
 import { useActiveWorkspace } from "../../state/activeWorkspace";
-import type { ProbeResponse } from "../../api/types";
 import { Badge, Spinner } from "../common/ui";
 import { SecretField } from "./SecretField";
+import { ModelPicker } from "./ModelPicker";
 
 const MASK = "••••••••";
 const SECRET_FIELDS = ["api_key", "apikey", "token", "secret", "password"];
@@ -146,10 +146,7 @@ export function ProvidersForm() {
   );
 }
 
-// Model field with live discovery: for HTTP providers (ollama / openwebui)
-// it can probe the endpoint and offer a dropdown of installed models;
-// otherwise (or when the endpoint is unreachable) it falls back to a plain
-// text box so you can always type a model id by hand.
+// Provider-card model field: thin wrapper over the shared ModelPicker.
 function ModelField({
   providerName,
   block,
@@ -161,88 +158,13 @@ function ModelField({
   value: any;
   onChange: (v: string) => void;
 }) {
-  const probe = useProbeModels();
-  const [result, setResult] = useState<ProbeResponse | null>(null);
-  const [manual, setManual] = useState(false);
-  const probedFor = useRef<string | null>(null);
-
-  const ptype = String(block.type || providerName);
-  const httpProvider = ptype === "ollama" || ptype === "openwebui";
-  const current = value == null ? "" : String(value);
-  const endpointStr = block.endpoint ? String(block.endpoint) : "";
-
-  async function doProbe() {
-    const api_key = block.api_key && block.api_key !== MASK ? String(block.api_key) : undefined;
-    const r = await probe.mutateAsync({ type: ptype, endpoint: endpointStr || undefined, api_key });
-    setResult(r);
-    setManual(false);
-  }
-
-  // Auto-probe once per (type, endpoint) so the model dropdown populates
-  // without a manual click; re-probes when you edit the endpoint.
-  useEffect(() => {
-    if (!httpProvider) return;
-    const key = `${ptype}|${endpointStr}`;
-    if (probedFor.current === key) return;
-    probedFor.current = key;
-    doProbe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [httpProvider, ptype, endpointStr]);
-
-  const inputCls =
-    "min-w-0 flex-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-ink-900)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-brand)]";
-  const btnCls =
-    "flex shrink-0 items-center gap-1 rounded-lg border border-[var(--color-line)] px-2 py-1.5 text-xs text-[var(--color-mist)] hover:bg-[var(--color-ink-800)] hover:text-[var(--color-frost)]";
-
-  const showDropdown = httpProvider && !!result?.supported && (result?.models.length ?? 0) > 0 && !manual;
-
   return (
-    <div className="flex flex-col gap-1">
-      {showDropdown ? (
-        <div className="flex gap-1.5">
-          <select value={current} onChange={(e) => onChange(e.target.value)} className={inputCls}>
-            {current && !result!.models.includes(current) && (
-              <option value={current}>{current} (current)</option>
-            )}
-            {result!.models.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-          <button type="button" onClick={() => setManual(true)} className={btnCls} title="Type a model id manually">
-            <Pencil size={13} />
-          </button>
-          <button type="button" onClick={doProbe} className={btnCls} title="Refresh model list">
-            <RefreshCw size={13} className={probe.isPending ? "animate-spin" : ""} />
-          </button>
-        </div>
-      ) : (
-        <div className="flex gap-1.5">
-          <input
-            value={current}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder={ptype === "ollama" ? "e.g. llama3.1" : "model id"}
-            className={inputCls}
-          />
-          {httpProvider && (
-            <button type="button" onClick={doProbe} disabled={probe.isPending} className={btnCls} title="Fetch models from the endpoint">
-              {probe.isPending ? <Spinner size={12} /> : <RefreshCw size={13} />} models
-            </button>
-          )}
-        </div>
-      )}
-      {httpProvider && result && (
-        <div className="flex items-center gap-1 text-[11px]">
-          {result.reachable ? (
-            <span className="flex items-center gap-1 text-[var(--color-good)]">
-              <Wifi size={11} /> reachable — {result.models.length} model{result.models.length === 1 ? "" : "s"}
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 text-[var(--color-warn)]">
-              <WifiOff size={11} /> endpoint unreachable — type the model id manually
-            </span>
-          )}
-        </div>
-      )}
-    </div>
+    <ModelPicker
+      ptype={String(block.type || providerName)}
+      endpoint={block.endpoint ? String(block.endpoint) : undefined}
+      apiKey={block.api_key ? String(block.api_key) : undefined}
+      value={value == null ? "" : String(value)}
+      onChange={onChange}
+    />
   );
 }

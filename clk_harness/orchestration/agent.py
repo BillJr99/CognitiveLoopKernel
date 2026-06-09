@@ -179,8 +179,26 @@ class AgentRunner:
         return AgentSpec.from_config(name, cfg)
 
     def get_provider(self, name: Optional[str]) -> AgentProvider:
-        target = name or self.providers_cfg.get("active") or self.clk_cfg.get("default_provider") or "shell"
+        import os as _os
+        from ..config import DEFAULT_PROVIDERS
+        # CLK_PROVIDER (set in the global .env) is an explicit, authoritative
+        # choice, so it overrides the workspace's saved `active`. Precedence:
+        # per-agent pin > env CLK_PROVIDER > providers.json active >
+        # clk.config default_provider > shell.
+        env_provider = (_os.environ.get("CLK_PROVIDER") or "").strip()
+        target = (
+            name
+            or env_provider
+            or self.providers_cfg.get("active")
+            or self.clk_cfg.get("default_provider")
+            or "shell"
+        )
         prov_cfg = (self.providers_cfg.get("providers") or {}).get(target)
+        if prov_cfg is None:
+            # No saved block (e.g. an env-selected provider, or a dropped
+            # block) -> use the built-in default block for known providers so
+            # we still call the real provider instead of silently echoing.
+            prov_cfg = (DEFAULT_PROVIDERS.get("providers") or {}).get(target)
         if prov_cfg is None:
             log(f"unknown provider '{target}', falling back to shell", level="WARN")
             target = "shell"

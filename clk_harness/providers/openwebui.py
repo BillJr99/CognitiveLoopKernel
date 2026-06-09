@@ -21,6 +21,7 @@ dependency on ``requests``.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -76,13 +77,19 @@ class OpenWebUIProvider(AgentProvider):
     type_name = "openwebui"
 
     def _endpoint(self) -> str:
-        return (self.config.get("endpoint") or "http://localhost:8080").rstrip("/")
+        # .env knobs win when set so the global config can drive the
+        # connection without editing providers.json.
+        return (
+            os.environ.get("CLK_OPENWEBUI_ENDPOINT")
+            or self.config.get("endpoint")
+            or "http://localhost:8080"
+        ).rstrip("/")
 
     def _api_key(self) -> str:
-        return self.config.get("api_key") or ""
+        return os.environ.get("CLK_OPENWEBUI_API_KEY") or self.config.get("api_key") or ""
 
     def _model(self) -> str:
-        return self.config.get("model") or "llama3.1"
+        return os.environ.get("CLK_OPENWEBUI_MODEL") or self.config.get("model") or "llama3.1"
 
     def available(self) -> bool:
         endpoint = self._endpoint()
