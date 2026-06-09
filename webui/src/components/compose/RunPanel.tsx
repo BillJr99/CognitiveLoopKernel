@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Play, Square, Lightbulb, Repeat, Wand2, Terminal, AlertTriangle } from "lucide-react";
 import { useCancelTask, useCreateWorkspace, useDoctor, useStartTask, useTaskStatus, useWorkflows } from "../../api/hooks";
+import { apiGet } from "../../api/client";
 import { useActiveWorkspace } from "../../state/activeWorkspace";
 import { Badge, Spinner } from "../common/ui";
 
@@ -87,6 +88,15 @@ export function RunPanel() {
       const ws = await createWorkspace.mutateAsync(name);
       wsId = ws.workspace_id;
       setActiveId(wsId);
+      // New workspaces default to the shell stub. Honor the same gate (the
+      // doctor is .env CLK_PROVIDER-aware) -- if it's truly shell, keep the
+      // workspace active so the ShellGuard banner explains it, and don't run.
+      try {
+        const doc = await apiGet<{ active_provider: string }>(`/api/workspaces/${wsId}/doctor`);
+        if (doc.active_provider === "shell") return;
+      } catch {
+        /* if the doctor check fails, fall through and let the run report */
+      }
     } else if (!doctorLoaded || isShell) {
       return;
     }

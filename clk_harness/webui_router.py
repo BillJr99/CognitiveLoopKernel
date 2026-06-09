@@ -20,7 +20,6 @@ Scope notes
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import os
 import re
@@ -29,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import env_file
@@ -283,7 +282,12 @@ async def workspace_doctor(workspace_id: str) -> Dict[str, Any]:
     prov_cfg = load_providers_config(paths)
     auth_mode = (clk_cfg.get("auth_mode") or "cli").lower()
     avail = available_providers(prov_cfg)
-    active = prov_cfg.get("active") or clk_cfg.get("default_provider") or "shell"
+    env = env_file.read_env()
+    # CLK_PROVIDER in the global .env overrides the workspace 'active' at
+    # runtime (see AgentRunner.get_provider), so the doctor must reflect it --
+    # otherwise it would report 'shell' even when .env makes runs use Ollama.
+    env_provider = (env.get("CLK_PROVIDER") or os.environ.get("CLK_PROVIDER") or "").strip()
+    active = env_provider or prov_cfg.get("active") or clk_cfg.get("default_provider") or "shell"
     findings: List[Dict[str, str]] = []
     # The most common "it runs but does nothing" trap: the active provider is
     # the shell stub (echoes prompts, never calls an LLM), or it points at a
@@ -293,11 +297,14 @@ async def workspace_doctor(workspace_id: str) -> Dict[str, Any]:
             "level": "warn", "name": "active_provider",
             "message": "active provider is 'shell' — a stub that echoes prompts and never calls an LLM. Pick a real provider on this tab.",
         })
-    elif active not in (prov_cfg.get("providers") or {}):
-        findings.append({
-            "level": "fail", "name": "active_provider",
-            "message": f"active provider '{active}' has no config block — runs will silently fall back to the shell stub.",
-        })
+    else:
+        from .config import DEFAULT_PROVIDERS
+        known = set(prov_cfg.get("providers") or {}) | set(DEFAULT_PROVIDERS.get("providers") or {})
+        if active not in known:
+            findings.append({
+                "level": "fail", "name": "active_provider",
+                "message": f"active provider '{active}' has no config block — runs will silently fall back to the shell stub.",
+            })
     for name, ok in sorted(avail.items()):
         if ok:
             findings.append({"level": "ok", "name": name, "message": "available"})
@@ -306,7 +313,6 @@ async def workspace_doctor(workspace_id: str) -> Dict[str, Any]:
                 "level": "fail" if name == active else "warn",
                 "name": name, "message": "unavailable",
             })
-    env = env_file.read_env()
     if active == "claude" and auth_mode == "apikey" and not (env.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")):
         findings.append({"level": "fail", "name": "anthropic_key", "message": "auth=apikey but ANTHROPIC_API_KEY unset"})
     if active == "codex" and auth_mode == "apikey" and not (env.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")):
@@ -488,7 +494,7 @@ async def list_files(workspace_id: str) -> Dict[str, Any]:
 
 
 @router.get("/api/workspaces/{workspace_id}/download")
-async def download_workspace(workspace_id: str) -> Response:
+async def download_workspace(workspace_id: str) -> FileResponse:
     """Download the workspace's deliverables as a zip.
 
     Mirrors the file listing: harness-internal directories (``.clk``,
@@ -498,9 +504,13 @@ async def download_workspace(workspace_id: str) -> Response:
     paths = _require_workspace(workspace_id)
     root = paths.root.resolve()
 
-    def _build_zip() -> bytes:
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    def _build_zip_to_tempfile() -> str:
+        # Build to a temp file on disk so we stream it back in chunks rather
+        # than holding the whole archive in memory.
+        import tempfile
+        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="clk-ws-")
+        os.close(fd)
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
             if root.exists():
                 for dirpath, dirnames, filenames in os.walk(root):
                     dirnames[:] = [d for d in dirnames if d not in _HIDDEN_DIRS]
@@ -512,16 +522,18 @@ async def download_workspace(workspace_id: str) -> Response:
                             zf.write(fp, fp.relative_to(root).as_posix())
                         except OSError:
                             continue
-        return buf.getvalue()
+        return tmp_path
 
-    data = await asyncio.to_thread(_build_zip)
+    tmp_path = await asyncio.to_thread(_build_zip_to_tempfile)
     entry = _api().WORKSPACES.get(workspace_id) or {}
     raw_name = str(entry.get("name") or workspace_id[:8])
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_name).strip("-") or "workspace"
-    return Response(
-        content=data,
+    from starlette.background import BackgroundTask
+    return FileResponse(
+        tmp_path,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{safe}.zip"'},
+        filename=f"{safe}.zip",
+        background=BackgroundTask(lambda: os.path.exists(tmp_path) and os.remove(tmp_path)),
     )
 
 
