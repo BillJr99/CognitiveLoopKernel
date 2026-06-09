@@ -51,7 +51,7 @@ export function useRenameWorkspace() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, name }: { id: string; name: string }) =>
-      apiPatch<{ ok: boolean }>(`/api/workspaces/${id}`, { name }),
+      apiPatch<{ ok: boolean; workspace: Workspace }>(`/api/workspaces/${id}`, { name }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
   });
 }

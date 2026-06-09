@@ -61,6 +61,11 @@ export function FilesView() {
           <a
             href={`/api/workspaces/${activeId}/download`}
             download
+            aria-disabled={files.length === 0}
+            tabIndex={files.length === 0 ? -1 : 0}
+            onClick={(e) => {
+              if (files.length === 0) e.preventDefault();
+            }}
             title="Download the workspace as a .zip"
             className={`ml-auto rounded-lg p-1 text-[var(--color-mist)] hover:bg-[var(--color-ink-800)] hover:text-[var(--color-brand-bright)] ${
               files.length === 0 ? "pointer-events-none opacity-40" : ""
