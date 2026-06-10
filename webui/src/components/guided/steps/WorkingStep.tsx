@@ -1,8 +1,9 @@
 // Step 4: friendly live progress while the agents work.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, FileText, Square, Terminal } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, FileText, RefreshCw, Square, Terminal } from "lucide-react";
 import { useCancelTask, useSnapshot } from "../../../api/hooks";
 import { useSharedActivity } from "../../../state/activity";
+import { useStuckWatchdog } from "../../../hooks/useStuckWatchdog";
 import { Spinner } from "../../common/ui";
 import { StepShell } from "../StepShell";
 import { STAGES, friendlyEvent, friendlyRole, stageFor } from "../friendly";
@@ -30,6 +31,7 @@ export function WorkingStep({
   failedMessage,
   onRetry,
   onBack,
+  onNudged,
 }: {
   wsId: string;
   taskId: string | null;
@@ -37,10 +39,13 @@ export function WorkingStep({
   failedMessage: string | null;
   onRetry: () => void;
   onBack: () => void;
+  onNudged?: (newTaskId: string) => void;
 }) {
   const { data: snapData } = useSnapshot(wsId);
   const { events } = useSharedActivity();
   const cancel = useCancelTask();
+  const lastSeq = events.length > 0 ? events[events.length - 1].seq : undefined;
+  const { healing } = useStuckWatchdog(wsId, snapData?.snapshot?.busy ?? false, lastSeq, onNudged);
   const [showLog, setShowLog] = useState(false);
 
   const snapshot = snapData?.snapshot;
@@ -109,8 +114,14 @@ export function WorkingStep({
             <div className="relative overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-ink-950)]/50 px-4 py-3">
               <div className="activity-sweep pointer-events-none absolute inset-x-0 top-0 h-px" />
               <div className="flex items-center gap-2.5 text-sm">
-                <span className="live-dot h-2 w-2 shrink-0 rounded-full bg-[var(--color-brand)]" />
-                <span key={nowLine} className="fade-up min-w-0 truncate text-[var(--color-frost)]">{nowLine}</span>
+                {healing ? (
+                  <RefreshCw size={13} className="shrink-0 animate-spin text-[var(--color-warn)]" />
+                ) : (
+                  <span className="live-dot h-2 w-2 shrink-0 rounded-full bg-[var(--color-brand)]" />
+                )}
+                <span key={healing ? "healing" : nowLine} className="fade-up min-w-0 truncate text-[var(--color-frost)]">
+                  {healing ? "Auto-healing stalled agent…" : nowLine}
+                </span>
                 {filesCount > 0 && (
                   <span className="ml-auto flex shrink-0 items-center gap-1 text-[11px] text-[var(--color-good)]">
                     <FileText size={12} /> {filesCount} file{filesCount === 1 ? "" : "s"} so far

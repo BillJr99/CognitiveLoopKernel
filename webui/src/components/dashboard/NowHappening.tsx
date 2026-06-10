@@ -5,7 +5,7 @@ import type { ActivityEvent, Snapshot } from "../../api/types";
 // A prominent, glanceable "what's happening right now" banner. It pulses
 // with the latest activity event so the user always sees the live state of
 // the system without reading the full timeline.
-export function NowHappening({ snap, latest }: { snap?: Snapshot; latest?: ActivityEvent }) {
+export function NowHappening({ snap, latest, healing }: { snap?: Snapshot; latest?: ActivityEvent; healing?: boolean }) {
   const [bump, setBump] = useState(0);
 
   useEffect(() => {
@@ -15,16 +15,18 @@ export function NowHappening({ snap, latest }: { snap?: Snapshot; latest?: Activ
   const busy = snap?.busy;
   const workingAgent = snap ? Object.values(snap.agents).find((a) => a.status === "working") : undefined;
 
-  const headline = busy
-    ? workingAgent
-      ? `${workingAgent.name} is working…`
-      : "Agents are working…"
-    : snap && snap.event_count > 0
-      ? "Cycle complete — idle"
-      : "Ready when you are";
+  const headline = healing
+    ? "Auto-healing stalled agent…"
+    : busy
+      ? workingAgent
+        ? `${workingAgent.name} is working…`
+        : "Agents are working…"
+      : snap && snap.event_count > 0
+        ? "Cycle complete — idle"
+        : "Ready when you are";
 
   return (
-    <div className="card-lux relative overflow-hidden px-5 py-6">
+    <div className="card-lux relative overflow-hidden px-5 py-7">
       {busy && <div className="activity-sweep absolute inset-x-0 top-0 h-0.5" />}
       <div className="flex items-center gap-3">
         <div

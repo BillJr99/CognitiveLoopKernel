@@ -66,7 +66,7 @@ export function TopBar() {
 
 function MiniStat({ label, icon, children }: { label: string; icon: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col">
+    <div className="flex min-w-[4.75rem] flex-col">
       <span className="text-[10px] uppercase tracking-wider text-[var(--color-mist)]">{label}</span>
       <span className="flex items-center gap-1 text-lg font-semibold tabular-nums">
         {icon}
