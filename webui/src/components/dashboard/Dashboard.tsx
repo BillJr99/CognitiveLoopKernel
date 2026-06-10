@@ -3,6 +3,7 @@ import { FileCode2, Lightbulb, Users } from "lucide-react";
 import { useSnapshot } from "../../api/hooks";
 import { useActiveWorkspace } from "../../state/activeWorkspace";
 import { useSharedActivity } from "../../state/activity";
+import { useUiMode } from "../../state/uiMode";
 import type { ActivityEvent } from "../../api/types";
 import { AgentCard } from "./AgentCard";
 import { ActivityTimeline } from "./ActivityTimeline";
@@ -15,6 +16,7 @@ export function Dashboard() {
   const { activeId } = useActiveWorkspace();
   const { data } = useSnapshot(activeId);
   const { events, connected } = useSharedActivity();
+  const { setMode } = useUiMode();
   const [inspect, setInspect] = useState<ActivityEvent | null>(null);
 
   const snap = data?.snapshot;
@@ -39,7 +41,15 @@ export function Dashboard() {
         <div>
           <SectionHeader icon={<Users size={15} />} title={`Agents (${agents.length})`} />
           {agents.length === 0 ? (
-            <EmptyState title="No agents have run yet" hint="Head to the Run tab, set an idea, and start a workflow to watch the team assemble." />
+            <EmptyState
+              title="No agents have run yet"
+              hint="Head to the Run tab, set an idea, and start a workflow to watch the team assemble."
+              action={
+                <button onClick={() => setMode("guided")} className="btn btn-ghost text-xs">
+                  Or let Guided mode walk you through it
+                </button>
+              }
+            />
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {agents.map((a, i) => (

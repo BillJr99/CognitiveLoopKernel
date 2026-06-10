@@ -678,16 +678,193 @@ def _probe_blocking(ptype: str, endpoint: str, api_key: str) -> Dict[str, Any]:
     if ptype == "ollama":
         from .providers.ollama import list_models as _ollama_models
         ep = normalize_endpoint(endpoint) or "http://localhost:11434"
-        models = _ollama_models(ep)
+        _list = _ollama_models
     elif ptype == "openwebui":
         from .providers.openwebui import list_models as _owui_models
         ep = normalize_endpoint(endpoint) or "http://localhost:8080"
-        models = _owui_models(ep, api_key)
+        _list = lambda e: _owui_models(e, api_key)  # noqa: E731
     else:
-        return {"ok": True, "supported": False, "reachable": None, "models": []}
+        return {"ok": True, "supported": False, "reachable": None, "models": [], "endpoint": None}
+    models = _list(ep)
+    resolved = ep
     swap = docker_host_swap(ep)
-    reachable = bool(models) or probe_endpoint(ep) or (bool(swap) and probe_endpoint(swap))
-    return {"ok": True, "supported": True, "reachable": reachable, "models": models}
+    if not models and swap:
+        # Model listing must benefit from the docker-host fallback too,
+        # not just the reachability bit — otherwise a containerised CLK
+        # reports the server "reachable" but offers an empty model menu.
+        swap_models = _list(swap)
+        if swap_models:
+            models, resolved = swap_models, swap
+        elif not probe_endpoint(ep) and probe_endpoint(swap):
+            # No models either way (e.g. OpenWebUI waiting on an API key)
+            # but only the docker host answers: report the endpoint that
+            # actually works so callers persist a usable URL.
+            resolved = swap
+    reachable = bool(models) or probe_endpoint(resolved)
+    return {
+        "ok": True, "supported": True, "reachable": reachable,
+        "models": models, "endpoint": resolved,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Provider discovery (guided mode)
+# ---------------------------------------------------------------------------
+
+# Which env var unlocks each key-capable provider (gemini accepts either).
+_DISCOVER_KEY_ENVS: Dict[str, List[str]] = {
+    "claude": ["ANTHROPIC_API_KEY"],
+    "codex": ["OPENAI_API_KEY"],
+    "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+}
+
+_DISCOVER_LABELS: Dict[str, str] = {
+    "claude": "Claude",
+    "codex": "OpenAI Codex",
+    "gemini": "Google Gemini",
+    "pi": "Pi",
+    "ollama": "Ollama",
+    "openwebui": "OpenWebUI",
+}
+
+
+def _discover_blocking() -> List[Dict[str, Any]]:
+    """Probe every built-in provider (except the shell stub) in one pass.
+
+    Workspace-independent: overlays the global project providers.json (if
+    any) and the global .env on top of the built-in defaults, then checks
+    each provider the same way its runtime ``available()`` would — CLI on
+    PATH / API key present for CLI providers, endpoint probe with docker
+    host fallback (and model listing) for HTTP providers.
+    """
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .config import DEFAULT_PROVIDERS, project_paths
+    from .providers import load_provider
+
+    blocks: Dict[str, Any] = copy.deepcopy(DEFAULT_PROVIDERS.get("providers") or {})
+    try:
+        saved = load_providers_config(project_paths()).get("providers") or {}
+        for name, block in saved.items():
+            if name in blocks and isinstance(block, dict):
+                blocks[name] = {**blocks[name], **block}
+    except Exception:
+        pass
+    env: Dict[str, str] = {}
+    try:
+        env = env_file.read_env()
+    except Exception:
+        pass
+
+    def _env(*keys: str) -> str:
+        for k in keys:
+            v = (env.get(k) or os.environ.get(k) or "").strip()
+            if v:
+                return v
+        return ""
+
+    # Env overrides mirror the runtime precedence (ollama.py / openwebui.py
+    # prefer env vars over the config block).
+    for var, name, field in (
+        ("CLK_OLLAMA_ENDPOINT", "ollama", "endpoint"),
+        ("CLK_OLLAMA_MODEL", "ollama", "model"),
+        ("CLK_OPENWEBUI_ENDPOINT", "openwebui", "endpoint"),
+        ("CLK_OPENWEBUI_MODEL", "openwebui", "model"),
+        ("CLK_OPENWEBUI_API_KEY", "openwebui", "api_key"),
+    ):
+        if _env(var):
+            blocks.setdefault(name, {})[field] = _env(var)
+
+    def _http_entry(name: str) -> Dict[str, Any]:
+        block = blocks.get(name) or {}
+        probe = _probe_blocking(name, block.get("endpoint") or "", block.get("api_key") or "")
+        models = probe.get("models") or []
+        reachable = bool(probe.get("reachable"))
+        return {
+            "name": name,
+            "type": name,
+            "kind": "http",
+            "label": _DISCOVER_LABELS.get(name, name),
+            "available": reachable,
+            "endpoint": probe.get("endpoint") or block.get("endpoint"),
+            "models": models,
+            # OpenWebUI can answer the TCP probe yet refuse the model list
+            # until a key is supplied; surface that so the wizard asks.
+            "needs_api_key": name == "openwebui" and reachable and not models,
+            "api_key_env": None,
+            "mode": None,
+        }
+
+    def _cli_entry(name: str) -> Dict[str, Any]:
+        block = blocks.get(name) or {}
+        cli_found = shutil.which(block.get("command") or name) is not None
+        key_envs = _DISCOVER_KEY_ENVS.get(name, [])
+        key_set = bool(_env(*key_envs)) if key_envs else False
+        mode = "cli" if cli_found else ("api" if key_set else None)
+        return {
+            "name": name,
+            "type": name,
+            "kind": "cli",
+            "label": _DISCOVER_LABELS.get(name, name),
+            "available": cli_found or key_set,
+            "endpoint": None,
+            "models": [],
+            "needs_api_key": not cli_found and not key_set and bool(key_envs),
+            "api_key_env": key_envs[0] if key_envs else None,
+            "cli_found": cli_found,
+            "key_set": key_set,
+            "mode": mode,
+        }
+
+    def _pi_entry() -> Dict[str, Any]:
+        block = blocks.get("pi") or {}
+        try:
+            ok = load_provider("pi", block).available()
+        except Exception:
+            ok = False
+        return {
+            "name": "pi",
+            "type": "pi",
+            "kind": "cli",
+            "label": _DISCOVER_LABELS["pi"],
+            "available": ok,
+            "endpoint": None,
+            "models": [],
+            "needs_api_key": False,
+            "api_key_env": None,
+            "cli_found": ok,
+            "key_set": bool(block.get("api_key")),
+            "mode": None,
+        }
+
+    # The two HTTP probes each block on socket timeouts (~1s worst case);
+    # run them concurrently so discovery stays snappy.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ollama_f = pool.submit(_http_entry, "ollama")
+        owui_f = pool.submit(_http_entry, "openwebui")
+        cli_entries = [_cli_entry(n) for n in ("claude", "codex", "gemini")]
+        pi_entry = _pi_entry()
+        http_entries = [ollama_f.result(), owui_f.result()]
+
+    providers = http_entries + cli_entries + [pi_entry]
+    # Available providers first so the wizard's menu leads with what works.
+    providers.sort(key=lambda p: (not p["available"], p["name"]))
+    return providers
+
+
+@router.get("/api/providers/discover")
+async def discover_providers() -> Dict[str, Any]:
+    """Scan for usable providers (guided-mode setup).
+
+    Checks local HTTP servers (Ollama/OpenWebUI, with the docker-host
+    fallback) and preconfigured CLI providers (binary on PATH or API key
+    in the global ``.env``). The ``shell`` stub is intentionally omitted —
+    it never calls an LLM and is exactly the trap guided mode exists to
+    avoid. Blocking probes run off the event loop.
+    """
+    providers = await asyncio.to_thread(_discover_blocking)
+    return {"ok": True, "providers": providers}
 
 
 @router.post("/api/providers/probe")

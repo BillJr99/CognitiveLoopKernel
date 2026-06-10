@@ -113,6 +113,27 @@ export interface ProbeResponse {
   supported: boolean;
   reachable: boolean | null;
   models: string[];
+  endpoint?: string | null;
+}
+
+export interface DiscoveredProvider {
+  name: string;
+  type: string;
+  kind: "http" | "cli";
+  label: string;
+  available: boolean;
+  endpoint: string | null;
+  models: string[];
+  needs_api_key: boolean;
+  api_key_env: string | null;
+  cli_found?: boolean;
+  key_set?: boolean;
+  mode: "cli" | "api" | null;
+}
+
+export interface DiscoverResponse {
+  ok: boolean;
+  providers: DiscoveredProvider[];
 }
 
 export interface FileEntry {

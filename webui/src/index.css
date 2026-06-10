@@ -2,20 +2,31 @@
 
 /* CLK dark theme tokens (Tailwind v4 @theme). */
 @theme {
-  --color-ink-950: #060912;
+  --color-ink-950: #05070f;
   --color-ink-900: #0a0e1c;
   --color-ink-850: #0d1226;
   --color-ink-800: #11172f;
   --color-ink-700: #1a2143;
   --color-line: #283156;
+  --color-line-bright: #36437a;
   --color-mist: #9aabd6;
   --color-frost: #eaf0ff;
   --color-brand: #7aa2ff;
   --color-brand-bright: #b3c8ff;
+  --color-brand-deep: #4c6fff;
   --color-iris: #a78bfa;
   --color-good: #4ade80;
   --color-warn: #fbbf24;
   --color-bad: #fb7185;
+  --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  --font-display: "Space Grotesk", var(--font-sans);
+  --shadow-card:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 10px 30px -12px rgba(3, 6, 18, 0.8);
 }
 
 html,
@@ -27,8 +38,9 @@ body,
 body {
   margin: 0;
   color: var(--color-frost);
-  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   background-color: var(--color-ink-950);
   background-image:
     radial-gradient(900px 520px at 85% -8%, rgba(122, 162, 255, 0.16), transparent 60%),
@@ -37,16 +49,32 @@ body {
   background-attachment: fixed;
 }
 
-/* Animated aurora layer behind everything (very subtle). */
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.015em;
+}
+
+/* Animated aurora layers behind everything (very subtle). */
 body::before {
   content: "";
   position: fixed;
   inset: -20%;
-  z-index: -1;
+  z-index: -2;
   background:
-    conic-gradient(from 120deg at 30% 30%, rgba(122, 162, 255, 0.06), transparent 25%, rgba(167, 139, 250, 0.06) 50%, transparent 75%);
+    conic-gradient(from 120deg at 30% 30%, rgba(122, 162, 255, 0.06), transparent 25%, rgba(167, 139, 250, 0.06) 50%, transparent 75%),
+    conic-gradient(from 300deg at 72% 64%, rgba(74, 222, 128, 0.035), transparent 30%, rgba(122, 162, 255, 0.045) 55%, transparent 80%);
   filter: blur(40px);
   animation: aurora 26s ease-in-out infinite alternate;
+}
+
+/* Faint vignette so content pops against the aurora. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 40%, transparent 55%, rgba(3, 5, 12, 0.55) 100%);
 }
 
 @keyframes aurora {
@@ -63,11 +91,22 @@ body::before {
 *::-webkit-scrollbar-thumb { background: var(--color-line); border-radius: 8px; }
 *::-webkit-scrollbar-thumb:hover { background: #34406e; }
 
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: rgba(122, 162, 255, 0.35);
+}
+
 /* ---- Reusable surfaces ---- */
 .card {
   background: linear-gradient(180deg, rgba(17, 23, 47, 0.92), rgba(13, 18, 38, 0.92));
   border: 1px solid var(--color-line);
-  border-radius: 16px;
+  border-radius: 18px;
+  box-shadow: var(--shadow-card);
   transition: border-color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
 }
 .card-hover:hover {
@@ -75,16 +114,119 @@ body::before {
   box-shadow: 0 12px 40px -16px rgba(122, 162, 255, 0.45);
   transform: translateY(-2px);
 }
+/* Hero / wizard surface: 1px gradient border that fades downward. */
+.card-lux {
+  position: relative;
+  border-radius: 20px;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, rgba(17, 23, 47, 0.94), rgba(11, 15, 32, 0.94)) padding-box,
+    linear-gradient(180deg, rgba(122, 162, 255, 0.4), rgba(167, 139, 250, 0.12) 45%, rgba(122, 162, 255, 0.04)) border-box;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 24px 60px -24px rgba(3, 6, 18, 0.9);
+}
 .glass {
   background: rgba(13, 18, 38, 0.72);
   backdrop-filter: blur(14px);
   border: 1px solid var(--color-line);
 }
 .gradient-text {
+  font-family: var(--font-display);
+  letter-spacing: -0.015em;
   background: linear-gradient(92deg, var(--color-brand-bright), var(--color-iris) 60%, var(--color-good));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+/* ---- Controls ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid transparent;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-primary {
+  color: var(--color-ink-950);
+  background: linear-gradient(120deg, var(--color-brand), var(--color-iris));
+  box-shadow: 0 8px 24px -10px rgba(122, 162, 255, 0.65);
+}
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 30px -10px rgba(122, 162, 255, 0.85);
+  filter: brightness(1.06);
+}
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+.btn-ghost {
+  color: var(--color-mist);
+  border-color: var(--color-line);
+  background: color-mix(in srgb, var(--color-ink-800) 55%, transparent);
+}
+.btn-ghost:hover:not(:disabled) {
+  color: var(--color-frost);
+  border-color: var(--color-line-bright);
+  background: var(--color-ink-800);
+}
+.btn-danger {
+  color: var(--color-bad);
+  border-color: color-mix(in srgb, var(--color-bad) 35%, transparent);
+  background: color-mix(in srgb, var(--color-bad) 10%, transparent);
+}
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-bad) 18%, transparent);
+}
+
+.input {
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid var(--color-line);
+  background: rgba(10, 14, 28, 0.85);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  color: var(--color-frost);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.input::placeholder { color: color-mix(in srgb, var(--color-mist) 60%, transparent); }
+.input:focus {
+  outline: none;
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 3px rgba(122, 162, 255, 0.22);
+}
+
+.select {
+  appearance: none;
+  border-radius: 0.75rem;
+  border: 1px solid var(--color-line);
+  background-color: rgba(10, 14, 28, 0.85);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239aabd6' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.65rem center;
+  padding: 0.5rem 2rem 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  color: var(--color-frost);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  cursor: pointer;
+}
+.select:focus {
+  outline: none;
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 3px rgba(122, 162, 255, 0.22);
 }
 
 /* ---- Motion ---- */
@@ -140,6 +282,36 @@ body::before {
   to { opacity: 1; transform: scale(1) translateY(0); }
 }
 .float-in { animation: float-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* Wizard step cross-fade. */
+@keyframes step-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.step-in { animation: step-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* Skeleton loading shimmer. */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.shimmer {
+  background: linear-gradient(
+    100deg,
+    rgba(26, 33, 67, 0.5) 40%,
+    rgba(54, 67, 122, 0.55) 50%,
+    rgba(26, 33, 67, 0.5) 60%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* Glowing progress accent (working step). */
+@keyframes progress-glow {
+  0%, 100% { box-shadow: 0 0 12px 0 rgba(122, 162, 255, 0.35); }
+  50% { box-shadow: 0 0 24px 2px rgba(167, 139, 250, 0.55); }
+}
+.progress-glow { animation: progress-glow 2.2s ease-in-out infinite; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

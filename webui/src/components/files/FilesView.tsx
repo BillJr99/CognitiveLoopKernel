@@ -348,12 +348,12 @@ function AgentChat({ ws, selectedPath }: { ws: string; selectedPath: string | nu
             }}
             rows={2}
             placeholder="e.g. Add error handling to the parser and a test for empty input… (⌘/Ctrl+Enter to send)"
-            className="min-w-0 flex-1 resize-y rounded-xl border border-[var(--color-line)] bg-[var(--color-ink-900)] p-2.5 text-sm outline-none focus:border-[var(--color-brand)]"
+            className="input min-w-0 flex-1 resize-y !p-2.5"
           />
           {running ? (
             <button
               onClick={stop}
-              className="flex items-center gap-1.5 rounded-xl bg-[var(--color-bad)]/90 px-4 py-2.5 text-sm font-semibold text-white hover:bg-[var(--color-bad)]"
+              className="btn btn-danger !py-2.5"
             >
               <Square size={14} /> Stop
             </button>
@@ -368,7 +368,7 @@ function AgentChat({ ws, selectedPath }: { ws: string; selectedPath: string | nu
                     ? "Active provider is 'shell' — pick a real provider in Configure → Providers"
                     : undefined
               }
-              className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[var(--color-brand)] to-[var(--color-iris)] px-4 py-2.5 text-sm font-semibold text-[var(--color-ink-950)] disabled:opacity-40"
+              className="btn btn-primary !py-2.5"
             >
               {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Send
             </button>

@@ -47,7 +47,17 @@ export function Stat({ label, value, sub }: { label: string; value: ReactNode; s
   );
 }
 
-export function EmptyState({ icon, title, hint }: { icon?: ReactNode; title: string; hint?: string }) {
+export function EmptyState({
+  icon,
+  title,
+  hint,
+  action,
+}: {
+  icon?: ReactNode;
+  title: string;
+  hint?: string;
+  action?: ReactNode;
+}) {
   return (
     <div className="float-in flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-[var(--color-line)] bg-[var(--color-ink-900)]/30 p-12 text-center text-[var(--color-mist)]">
       {icon && (
@@ -55,8 +65,9 @@ export function EmptyState({ icon, title, hint }: { icon?: ReactNode; title: str
           {icon}
         </div>
       )}
-      <div className="text-lg font-semibold text-[var(--color-frost)]">{title}</div>
+      <div className="font-display text-lg font-semibold text-[var(--color-frost)]">{title}</div>
       {hint && <div className="max-w-md text-sm leading-relaxed">{hint}</div>}
+      {action && <div className="mt-1">{action}</div>}
     </div>
   );
 }

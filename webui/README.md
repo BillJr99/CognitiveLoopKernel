@@ -4,6 +4,24 @@ The browser dashboard for the Cognitive Loop Kernel — a Vite + React +
 TypeScript single-page app served by CLK's FastAPI server
 (`clk_harness/api.py` + `clk_harness/webui_router.py`).
 
+## Two modes
+
+- **Guided** (`src/components/guided/`) — a full-screen, step-by-step
+  wizard for people new to agents: it scans for usable providers
+  (`GET /api/providers/discover` — local Ollama/OpenWebUI with the
+  docker-host fallback, plus CLI providers found on PATH or unlocked by
+  an API key), offers the installed models as a simple menu, captures
+  the idea in plain language, runs the `idea` → `run` task pipeline with
+  a friendly progress view, presents the files, and loops on follow-up
+  requests. First-time visitors (no workspaces) land here.
+- **Advanced** — the full console: Dashboard, Run, Think, Files, and
+  Configure tabs with every setting editable. Returning users land here.
+
+The toggle lives in the sidebar (Advanced) and the top strip (Guided);
+the preference persists in `localStorage["clk.uiMode"]`. Both modes
+drive the same workspace, so you can switch mid-run and watch the same
+agents live on the Dashboard.
+
 ## Quick start
 
 From the repo root, the easiest path is the CLI:
