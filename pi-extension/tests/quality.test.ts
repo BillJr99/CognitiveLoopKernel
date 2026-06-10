@@ -54,11 +54,23 @@ describe("scoreResponse — failure modes", () => {
     assert.equal(q.recoverable, false);
   });
 
-  test("missing END_ACTION imbalance is flagged", () => {
+  test("multiple unclosed ACTION blocks are flagged", () => {
     const text = "Plenty of text here so we beat the empty threshold easily " +
-      "and definitely.\nACTION: write_file\nfoo\n"; // no END_ACTION
+      "and definitely.\n" +
+      "ACTION: write\nPATH: a.md\nfoo\n" + // no END_ACTION
+      "ACTION: write\nPATH: b.md\nbar\n"; // no END_ACTION
     const q = scoreResponse(text);
     assert.ok(q.flags.includes("malformed_action"));
+  });
+
+  test("single EOF-truncated ACTION block is tolerated", () => {
+    // Providers routinely cut the final block off at the response cap and
+    // the parser accepts an EOF-terminated last block, so one unclosed
+    // block must not flag (mirrors the Python act_balance > 1 rule).
+    const text = "Plenty of text here so we beat the empty threshold easily " +
+      "and definitely.\nACTION: write\nPATH: a.md\nfoo\n"; // no END_ACTION
+    const q = scoreResponse(text);
+    assert.ok(!q.flags.includes("malformed_action"));
   });
 
   test("missing END_POST imbalance is flagged", () => {
@@ -89,6 +101,15 @@ describe("scoreResponse — failure modes", () => {
     const q = scoreResponse(text, { expectedOutputs: ["foo", "missing_one"] });
     assert.ok(q.flags.includes("outputs_missing"));
     assert.match(q.reasons.join(" "), /missing_one/);
+  });
+
+  test("outputs_missing repair reason shows a concrete POST example", () => {
+    const text = "A response body comfortably exceeding the minimum length threshold.";
+    const q = scoreResponse(text, { expectedOutputs: ["post_draft", "summary"] });
+    const reason = q.reasons.join("\n");
+    assert.match(reason, /POST: finding/);
+    assert.match(reason, /PRODUCES: post_draft, summary/);
+    assert.match(reason, /END_POST/);
   });
 
   test("requireConfidence flag fires when CONFIDENCE absent", () => {
