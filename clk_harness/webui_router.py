@@ -685,22 +685,29 @@ def _probe_blocking(ptype: str, endpoint: str, api_key: str) -> Dict[str, Any]:
         _list = lambda e: _owui_models(e, api_key)  # noqa: E731
     else:
         return {"ok": True, "supported": False, "reachable": None, "models": [], "endpoint": None}
-    models = _list(ep)
-    resolved = ep
+    # Probe each candidate explicitly — the configured endpoint first, then
+    # the docker-host swap — and report the endpoint that actually answered
+    # so callers persist a URL that works. list_models() is only called on
+    # TCP-reachable candidates; this matters because ollama's list_models
+    # has its own silent internal fallback, which would return models found
+    # at the swap while we attribute them to the dead original endpoint.
+    candidates = [ep]
     swap = docker_host_swap(ep)
-    if not models and swap:
-        # Model listing must benefit from the docker-host fallback too,
-        # not just the reachability bit — otherwise a containerised CLK
-        # reports the server "reachable" but offers an empty model menu.
-        swap_models = _list(swap)
-        if swap_models:
-            models, resolved = swap_models, swap
-        elif not probe_endpoint(ep) and probe_endpoint(swap):
-            # No models either way (e.g. OpenWebUI waiting on an API key)
-            # but only the docker host answers: report the endpoint that
-            # actually works so callers persist a usable URL.
-            resolved = swap
-    reachable = bool(models) or probe_endpoint(resolved)
+    if swap and swap != ep:
+        candidates.append(swap)
+    models: list = []
+    resolved = ep
+    reachable = False
+    for cand in candidates:
+        if not probe_endpoint(cand):
+            continue
+        if not reachable:
+            reachable = True
+            resolved = cand
+        found = _list(cand)
+        if found:
+            models, resolved = found, cand
+            break
     return {
         "ok": True, "supported": True, "reachable": reachable,
         "models": models, "endpoint": resolved,
