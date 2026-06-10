@@ -4,6 +4,7 @@ import { useSnapshot } from "../../api/hooks";
 import { useActiveWorkspace } from "../../state/activeWorkspace";
 import { useSharedActivity } from "../../state/activity";
 import { useUiMode } from "../../state/uiMode";
+import { useStuckWatchdog } from "../../hooks/useStuckWatchdog";
 import type { ActivityEvent } from "../../api/types";
 import { AgentCard } from "./AgentCard";
 import { ActivityTimeline } from "./ActivityTimeline";
@@ -22,12 +23,14 @@ export function Dashboard() {
   const snap = data?.snapshot;
   const agents = snap ? Object.values(snap.agents) : [];
   const peak = snap?.totals.peak_run_tokens ?? 0;
+  const lastSeq = events.length > 0 ? events[events.length - 1].seq : undefined;
+  const { healing } = useStuckWatchdog(activeId, snap?.busy ?? false, lastSeq);
 
   return (
     <div className="grid h-full min-h-0 grid-cols-1 gap-4 xl:grid-cols-3">
       {/* Left/main column */}
       <div className="flex min-h-0 flex-col gap-4 xl:col-span-2">
-        <NowHappening snap={snap} latest={events[events.length - 1]} />
+        <NowHappening snap={snap} latest={events[events.length - 1]} healing={healing} />
         {snap?.idea && (
           <div className="card flex items-start gap-2 p-3">
             <Lightbulb size={16} className="mt-0.5 shrink-0 text-[var(--color-warn)]" />

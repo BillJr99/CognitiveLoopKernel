@@ -559,6 +559,63 @@ async def cancel_task(task_id: str) -> Dict[str, Any]:
     return {"ok": True}
 
 
+@app.post("/api/workspaces/{workspace_id}/nudge")
+async def nudge_workspace(workspace_id: str) -> Dict[str, Any]:
+    """Cancel the stalled running task for *workspace_id* and restart it.
+
+    Called automatically by the frontend watchdog when the workspace is busy
+    but no activity events have arrived for an extended period.  Returns the
+    new task_id so the client can switch its polling target.
+    """
+    if workspace_id not in WORKSPACES:
+        raise _err("workspace_not_found", f"Workspace {workspace_id!r} not found.", 404)
+
+    candidates = [
+        (k, v) for k, v in TASKS.items()
+        if v["workspace_id"] == workspace_id and v["status"] in ("running", "pending")
+    ]
+    if not candidates:
+        return {"ok": True, "action": "none", "reason": "no_running_task"}
+
+    # Take the most recently created running task.
+    candidates.sort(key=lambda kv: kv[1].get("created_at", ""), reverse=True)
+    old_id, old_task = candidates[0]
+
+    command = old_task["command"]
+    args = list(old_task["args"])
+
+    # Cancel the stalled task the same way cancel_task does.
+    old_task["status"] = "cancelled"
+    old_task["finished_at"] = _now_iso()
+    old_task["exit_code"] = -1
+    proc = old_task.get("proc")
+    if proc is not None:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+    if old_id in _task_handles:
+        _task_handles[old_id].cancel()
+
+    new_task_id = str(uuid.uuid4())
+    new_task: Dict[str, Any] = {
+        "task_id": new_task_id,
+        "workspace_id": workspace_id,
+        "command": command,
+        "args": args,
+        "status": "pending",
+        "created_at": _now_iso(),
+        "started_at": None,
+        "finished_at": None,
+        "exit_code": None,
+        "lines": [],
+        "proc": None,
+    }
+    TASKS[new_task_id] = new_task
+    _task_handles[new_task_id] = asyncio.create_task(_run_task(new_task_id))
+    return {"ok": True, "action": "restarted", "task_id": new_task_id}
+
+
 # ---------------------------------------------------------------------------
 # Web UI: extra REST surface (config/.env/activity) + the React SPA.
 # Registered last so the SPA catch-all does not shadow the /api routes.

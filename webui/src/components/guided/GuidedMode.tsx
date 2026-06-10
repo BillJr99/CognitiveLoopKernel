@@ -350,6 +350,9 @@ export function GuidedMode() {
             failedMessage={state.error}
             onRetry={() => void retry()}
             onBack={() => dispatch({ type: "GO", step: "idea" })}
+            onNudged={(newId) =>
+              dispatch({ type: "TASK_STARTED", taskId: newId, pipeline: state.pipeline ?? "build" })
+            }
           />
         )}
         {state.step === "files" && state.wsId && (

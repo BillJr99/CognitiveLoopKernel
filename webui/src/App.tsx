@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Activity, Brain, FolderOpen, Rocket, Settings, Sparkles } from "lucide-react";
+import { Activity, Brain, FolderOpen, Rocket, ScrollText, Settings, Sparkles } from "lucide-react";
 import { useWorkspaces } from "./api/hooks";
 import { useActiveWorkspace } from "./state/activeWorkspace";
 import { useUiMode } from "./state/uiMode";
@@ -10,16 +10,18 @@ import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { RunPanel } from "./components/compose/RunPanel";
 import { ThinkStream } from "./components/think/ThinkStream";
 import { FilesView } from "./components/files/FilesView";
+import { LogView } from "./components/log/LogView";
 import { Onboarding } from "./components/Onboarding";
 import { GuidedMode } from "./components/guided/GuidedMode";
 
-type View = "dashboard" | "run" | "think" | "files" | "configure";
+type View = "dashboard" | "run" | "think" | "files" | "log" | "configure";
 
 const NAV: { id: View; label: string; icon: typeof Activity }[] = [
   { id: "dashboard", label: "Dashboard", icon: Activity },
   { id: "run", label: "Run", icon: Rocket },
   { id: "think", label: "Think", icon: Brain },
   { id: "files", label: "Files", icon: FolderOpen },
+  { id: "log", label: "Log", icon: ScrollText },
   { id: "configure", label: "Configure", icon: Settings },
 ];
 
@@ -106,6 +108,8 @@ export default function App() {
           <div key={view} className="fade-up flex h-full min-h-0 flex-col">
             {view === "run" ? (
               <RunPanel />
+            ) : view === "log" ? (
+              <LogView />
             ) : !activeId ? (
               <Onboarding />
             ) : view === "dashboard" ? (
