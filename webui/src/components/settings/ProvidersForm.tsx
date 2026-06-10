@@ -58,7 +58,7 @@ export function ProvidersForm() {
         <button
           onClick={onSave}
           disabled={save.isPending}
-          className="ml-auto flex items-center gap-1.5 rounded-lg bg-[var(--color-brand)] px-4 py-1.5 text-sm font-semibold text-[var(--color-ink-950)] disabled:opacity-40"
+          className="btn btn-primary ml-auto !py-1.5"
         >
           {save.isPending ? <Spinner size={14} /> : <Save size={14} />} Save
         </button>

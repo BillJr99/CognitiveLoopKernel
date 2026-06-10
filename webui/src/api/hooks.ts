@@ -197,6 +197,15 @@ export function useSaveIdea(ws: string | null) {
   });
 }
 
+export function useDiscoverProviders(enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: ["discover"],
+    queryFn: () => apiGet<import("./types").DiscoverResponse>("/api/providers/discover"),
+    staleTime: 10_000,
+  });
+}
+
 export function useProbeModels() {
   return useMutation({
     mutationFn: (body: { type: string; endpoint?: string; api_key?: string }) =>

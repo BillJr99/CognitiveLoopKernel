@@ -127,7 +127,7 @@ export function RunPanel() {
     <div className="mx-auto flex max-w-4xl flex-col gap-4">
       {isShell && <ShellGuardBanner />}
       <div className="card p-5">
-        <h2 className="mb-1 text-lg font-semibold">Kick off the agents</h2>
+        <h2 className="font-display mb-1 text-lg font-semibold">Kick off the agents</h2>
         <p className="mb-4 text-sm text-[var(--color-mist)]">
           Capture an idea and the chief will cast a team, then run a workflow or an iterative loop —
           watch it all unfold on the Dashboard.
@@ -141,7 +141,7 @@ export function RunPanel() {
           onChange={(e) => setIdea(e.target.value)}
           rows={4}
           placeholder="e.g. Build a CLI todo app with tags, due dates, and a JSON store…"
-          className="w-full resize-y rounded-xl border border-[var(--color-line)] bg-[var(--color-ink-900)] p-3 text-sm outline-none focus:border-[var(--color-brand)]"
+          className="input resize-y !p-3"
         />
 
         {/* Mode selector */}
@@ -173,7 +173,7 @@ export function RunPanel() {
               <select
                 value={workflow}
                 onChange={(e) => setWorkflow(e.target.value)}
-                className="rounded-lg border border-[var(--color-line)] bg-[var(--color-ink-900)] px-3 py-2 text-sm outline-none focus:border-[var(--color-brand)]"
+                className="select"
               >
                 {workflows.length === 0 && <option value="engineering">engineering</option>}
                 {workflows.map((w) => (
@@ -191,7 +191,7 @@ export function RunPanel() {
                 <select
                   value={loopMode}
                   onChange={(e) => setLoopMode(e.target.value as "ralph" | "autoresearch")}
-                  className="rounded-lg border border-[var(--color-line)] bg-[var(--color-ink-900)] px-3 py-2 text-sm outline-none focus:border-[var(--color-brand)]"
+                  className="select"
                 >
                   <option value="ralph">ralph (refine)</option>
                   <option value="autoresearch">autoresearch</option>
@@ -204,7 +204,7 @@ export function RunPanel() {
                   max={50}
                   value={iterations}
                   onChange={(e) => setIterations(Number(e.target.value))}
-                  className="w-24 rounded-lg border border-[var(--color-line)] bg-[var(--color-ink-900)] px-3 py-2 text-sm outline-none focus:border-[var(--color-brand)]"
+                  className="input w-24"
                 />
               </Field>
             </>
@@ -219,7 +219,7 @@ export function RunPanel() {
             {running ? (
               <button
                 onClick={() => taskId && cancel.mutate(taskId)}
-                className="flex items-center gap-2 rounded-xl bg-[var(--color-bad)]/90 px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--color-bad)]"
+                className="btn btn-danger"
               >
                 <Square size={15} /> Stop
               </button>
@@ -241,7 +241,7 @@ export function RunPanel() {
                         ? "Active provider is 'shell' — pick a real provider in Configure → Providers"
                         : undefined
                 }
-                className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-[var(--color-brand)] to-[var(--color-good)] px-5 py-2 text-sm font-semibold text-[var(--color-ink-950)] disabled:opacity-50"
+                className="btn btn-primary !px-5"
               >
                 {start.isPending ? <Spinner size={15} /> : <Play size={15} />} Start
               </button>

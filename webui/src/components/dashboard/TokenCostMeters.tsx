@@ -35,9 +35,17 @@ export function TokenCostMeters({ snap }: { snap: Snapshot }) {
                 contentStyle={{ background: "#0b1020", border: "1px solid #263056", borderRadius: 10, fontSize: 12 }}
                 formatter={(v: number, k) => (k === "tokens" ? [fmtTokens(v), "tokens"] : [fmtUsd(v), "cost"])}
               />
+              <defs>
+                {COLORS.map((c, i) => (
+                  <linearGradient key={i} id={`barFill${i}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={c} stopOpacity={0.95} />
+                    <stop offset="100%" stopColor={c} stopOpacity={0.35} />
+                  </linearGradient>
+                ))}
+              </defs>
               <Bar dataKey="tokens" radius={[6, 6, 0, 0]}>
                 {perAgent.map((_, i) => (
-                  <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                  <Cell key={i} fill={`url(#barFill${i % COLORS.length})`} />
                 ))}
               </Bar>
             </BarChart>

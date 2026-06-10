@@ -2,12 +2,14 @@ import { useState } from "react";
 import { ArrowRight, Brain, FileCog, Rocket, Sparkles, Workflow } from "lucide-react";
 import { useCreateWorkspace } from "../api/hooks";
 import { useActiveWorkspace } from "../state/activeWorkspace";
+import { useUiMode } from "../state/uiMode";
 import { Spinner } from "./common/ui";
 
 // A warm, one-click first-run experience: name a project and you're in.
 export function Onboarding() {
   const create = useCreateWorkspace();
   const { setActiveId } = useActiveWorkspace();
+  const { setMode } = useUiMode();
   const [name, setName] = useState("");
 
   async function go() {
@@ -25,7 +27,7 @@ export function Onboarding() {
       </div>
 
       <div className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight">
+        <h1 className="font-display text-3xl font-bold tracking-tight">
           Welcome to <span className="gradient-text">Cognitive Loop Kernel</span>
         </h1>
         <p className="max-w-lg text-[var(--color-mist)]">
@@ -41,18 +43,26 @@ export function Onboarding() {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && go()}
           placeholder="my-first-project"
-          className="min-w-0 flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-ink-900)] px-4 py-3 text-sm outline-none transition-colors focus:border-[var(--color-brand)]"
+          className="input min-w-0 flex-1 !px-4 !py-3"
         />
         <button
           onClick={go}
           disabled={create.isPending}
-          className="flex shrink-0 items-center gap-2 rounded-xl bg-gradient-to-r from-[var(--color-brand)] to-[var(--color-iris)] px-5 py-3 text-sm font-semibold text-[var(--color-ink-950)] transition-transform hover:scale-[1.03] disabled:opacity-50"
+          className="btn btn-primary shrink-0 !px-5 !py-3"
         >
           {create.isPending ? <Spinner size={16} /> : <Rocket size={16} />}
           Create workspace
           {!create.isPending && <ArrowRight size={16} />}
         </button>
       </div>
+
+      <button
+        onClick={() => setMode("guided")}
+        className="flex items-center gap-1.5 text-xs text-[var(--color-mist)] underline-offset-4 transition-colors hover:text-[var(--color-frost)] hover:underline"
+      >
+        <Sparkles size={13} className="text-[var(--color-iris)]" />
+        New to agents? Try Guided mode — a step-by-step walkthrough
+      </button>
 
       <div className="mt-4 grid w-full grid-cols-1 gap-3 sm:grid-cols-3">
         <Feature icon={<Workflow size={18} />} title="Kick off workflows" body="Capture an idea; the chief casts a team and runs it." />

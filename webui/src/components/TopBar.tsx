@@ -21,11 +21,16 @@ export function TopBar() {
         <div className="text-base font-semibold tracking-tight">{name}</div>
         {activeId && (
           <span className="flex items-center gap-1.5 text-[11px] text-[var(--color-mist)]">
-            <span
-              className={`h-2 w-2 rounded-full ${
-                connected ? "bg-[var(--color-good)] live-dot" : "bg-[var(--color-mist)]"
-              }`}
-            />
+            <span className="relative flex h-2 w-2">
+              {connected && (
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--color-good)] opacity-50" />
+              )}
+              <span
+                className={`relative inline-flex h-2 w-2 rounded-full ${
+                  connected ? "bg-[var(--color-good)]" : "bg-[var(--color-mist)]"
+                }`}
+              />
+            </span>
             {connected ? "live" : "connecting"}
           </span>
         )}
@@ -38,7 +43,7 @@ export function TopBar() {
         )}
       </div>
 
-      <div className="ml-auto flex items-center gap-6">
+      <div className="ml-auto flex items-center divide-x divide-[var(--color-line)]/60 [&>*]:px-5 first:[&>*]:pl-0 last:[&>*]:pr-0">
         <MiniStat label="Tokens" icon={<Zap size={14} className="text-[var(--color-warn)]" />}>
           <AnimatedNumber value={totals?.total_tokens ?? 0} format={fmtTokens} />
         </MiniStat>

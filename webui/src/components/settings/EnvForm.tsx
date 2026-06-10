@@ -93,7 +93,7 @@ export function EnvForm() {
           <button
             onClick={onSave}
             disabled={!dirty || save.isPending}
-            className="flex items-center gap-1.5 rounded-lg bg-[var(--color-brand)] px-4 py-1.5 text-sm font-semibold text-[var(--color-ink-950)] disabled:opacity-40"
+            className="btn btn-primary !py-1.5"
           >
             {save.isPending ? <Spinner size={14} /> : <Save size={14} />} Save
           </button>

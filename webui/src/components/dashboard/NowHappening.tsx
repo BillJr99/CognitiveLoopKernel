@@ -24,7 +24,7 @@ export function NowHappening({ snap, latest }: { snap?: Snapshot; latest?: Activ
       : "Ready when you are";
 
   return (
-    <div className="card relative overflow-hidden px-5 py-6">
+    <div className="card-lux relative overflow-hidden px-5 py-6">
       {busy && <div className="activity-sweep absolute inset-x-0 top-0 h-0.5" />}
       <div className="flex items-center gap-3">
         <div
@@ -41,7 +41,7 @@ export function NowHappening({ snap, latest }: { snap?: Snapshot; latest?: Activ
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold">{headline}</div>
+          <div className="font-display text-sm font-semibold">{headline}</div>
           <div key={bump} className="slide-in truncate text-xs text-[var(--color-mist)]">
             {latest ? (
               <>
