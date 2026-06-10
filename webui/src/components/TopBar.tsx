@@ -47,7 +47,7 @@ export function TopBar() {
         <MiniStat label="Tokens" icon={<Zap size={14} className="text-[var(--color-warn)]" />}>
           <AnimatedNumber value={totals?.total_tokens ?? 0} format={fmtTokens} />
         </MiniStat>
-        <MiniStat label="Est. cost" icon={<DollarSign size={14} className="text-[var(--color-good)]" />}>
+        <MiniStat label="Est. cost" icon={<DollarSign size={14} className="text-[var(--color-good)]" />} wide>
           <AnimatedNumber value={totals?.total_usd ?? 0} format={fmtUsd} />
         </MiniStat>
         <MiniStat label="Files" icon={<FileCode2 size={14} className="text-[var(--color-brand)]" />}>
@@ -64,9 +64,19 @@ export function TopBar() {
   );
 }
 
-function MiniStat({ label, icon, children }: { label: string; icon: React.ReactNode; children: React.ReactNode }) {
+function MiniStat({
+  label,
+  icon,
+  children,
+  wide,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+  wide?: boolean;
+}) {
   return (
-    <div className="flex min-w-[4.75rem] flex-col">
+    <div className={`flex flex-col ${wide ? "min-w-[8rem]" : "min-w-[4.75rem]"}`}>
       <span className="text-[10px] uppercase tracking-wider text-[var(--color-mist)]">{label}</span>
       <span className="flex items-center gap-1 text-lg font-semibold tabular-nums">
         {icon}

@@ -166,7 +166,9 @@ export function useWorkspaceFiles(ws: string | null) {
     enabled: !!ws,
     queryKey: ["files", ws],
     queryFn: () => apiGet<FilesResponse>(`/api/workspaces/${ws}/files`),
-    refetchInterval: 5_000,
+    refetchInterval: 2_000,
+    refetchOnMount: "always",
+    staleTime: 0,
   });
 }
 

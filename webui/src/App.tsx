@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Activity, Brain, FolderOpen, Rocket, ScrollText, Settings, Sparkles } from "lucide-react";
-import { useWorkspaces } from "./api/hooks";
+import { useWorkspaces, useWorkspaceFiles } from "./api/hooks";
 import { useActiveWorkspace } from "./state/activeWorkspace";
 import { useUiMode } from "./state/uiMode";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
@@ -30,6 +30,8 @@ export default function App() {
   const { mode, setMode } = useUiMode();
   const { data: wsData } = useWorkspaces();
   const [view, setView] = useState<View>("dashboard");
+  // Keep the files cache warm at all times so the Files tab shows live data.
+  useWorkspaceFiles(activeId);
 
   // No stored preference yet: newcomers (no workspaces) land in the guided
   // wizard; returning users go straight to the console they know.
