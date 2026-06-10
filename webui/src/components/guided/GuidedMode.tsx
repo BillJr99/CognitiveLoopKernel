@@ -28,6 +28,7 @@ interface GuidedState {
   model: string;
   wsId: string | null;
   question: string;
+  stopWhen: string;
   pipeline: GuidedPipeline;
   taskId: string | null;
   rounds: string[];
@@ -39,6 +40,7 @@ type Action =
   | { type: "BACK" }
   | { type: "PICK_PROVIDER"; provider: DiscoveredProvider }
   | { type: "PICK_MODEL"; model: string }
+  | { type: "SET_STOP_WHEN"; stopWhen: string }
   | { type: "LAUNCHED"; wsId: string; taskId: string; pipeline: Exclude<GuidedPipeline, null>; question: string }
   | { type: "TASK_STARTED"; taskId: string; pipeline: Exclude<GuidedPipeline, null> }
   | { type: "TASK_DONE" }
@@ -51,6 +53,7 @@ const INITIAL: GuidedState = {
   model: "",
   wsId: null,
   question: "",
+  stopWhen: "",
   pipeline: null,
   taskId: null,
   rounds: [],
@@ -85,6 +88,8 @@ function reducer(state: GuidedState, action: Action): GuidedState {
     }
     case "PICK_MODEL":
       return { ...state, model: action.model, step: "idea", error: null };
+    case "SET_STOP_WHEN":
+      return { ...state, stopWhen: action.stopWhen };
     case "LAUNCHED":
       return {
         ...state,
@@ -208,6 +213,7 @@ export function GuidedMode() {
           args: [question],
           workspace_id: wsId,
           then_run: "engineering",
+          stop_when: state.stopWhen || undefined,
         });
         dispatch({ type: "LAUNCHED", wsId, taskId: res.task_id, pipeline: "cast", question });
       } catch (e) {
@@ -216,7 +222,7 @@ export function GuidedMode() {
         setBusy(false);
       }
     },
-    [state.provider, state.model, busy, setActiveId],
+    [state.provider, state.model, state.stopWhen, busy, setActiveId],
   );
 
   const startBuild = useCallback(async () => {
@@ -349,6 +355,8 @@ export function GuidedMode() {
             model={state.model}
             launching={busy}
             error={state.error}
+            stopWhen={state.stopWhen}
+            onStopWhenChange={(v) => dispatch({ type: "SET_STOP_WHEN", stopWhen: v })}
             onLaunch={launch}
             onBack={() => dispatch({ type: "BACK" })}
           />

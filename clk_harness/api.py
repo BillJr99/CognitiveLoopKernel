@@ -341,6 +341,7 @@ class ResearchRequest(BaseModel):
     # `run --workflow <then_run>` task in the same workspace (server-side, so
     # the chain survives page reloads and mode switches).
     then_run: Optional[str] = None
+    stop_when: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +474,13 @@ async def create_research(body: ResearchRequest) -> Dict[str, Any]:
     }
     if body.then_run:
         task["then_run"] = body.then_run
+    if body.stop_when:
+        try:
+            state_dir = _workspace_path(workspace_id) / ".clk" / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "stop_when.txt").write_text(body.stop_when.strip(), encoding="utf-8")
+        except Exception:
+            pass
     TASKS[task_id] = task
     _task_handles[task_id] = asyncio.create_task(_run_task(task_id))
     return {"ok": True, "task_id": task_id, "workspace_id": workspace_id}
@@ -572,6 +580,14 @@ async def cancel_task(task_id: str) -> Dict[str, Any]:
     task["status"] = "cancelled"
     task["finished_at"] = _now_iso()
     task["exit_code"] = -1
+    ws_id = task.get("workspace_id")
+    if ws_id and ws_id in WORKSPACES:
+        try:
+            state_dir = _workspace_path(ws_id) / ".clk" / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "cancel_requested.txt").write_text("cancel\n", encoding="utf-8")
+        except Exception:
+            pass
     proc = task.get("proc")
     if proc is not None:
         try:
@@ -581,6 +597,34 @@ async def cancel_task(task_id: str) -> Dict[str, Any]:
     if task_id in _task_handles:
         _task_handles[task_id].cancel()
     return {"ok": True}
+
+
+@app.get("/api/workspaces/{workspace_id}/stop-when")
+async def get_stop_when(workspace_id: str) -> Dict[str, Any]:
+    if workspace_id not in WORKSPACES:
+        raise _err("workspace_not_found", f"Workspace {workspace_id!r} not found.", 404)
+    stop_file = _workspace_path(workspace_id) / ".clk" / "state" / "stop_when.txt"
+    condition = stop_file.read_text(encoding="utf-8").strip() if stop_file.exists() else None
+    return {"ok": True, "condition": condition or None}
+
+
+class StopWhenRequest(BaseModel):
+    condition: Optional[str] = None
+
+
+@app.put("/api/workspaces/{workspace_id}/stop-when")
+async def set_stop_when(workspace_id: str, body: StopWhenRequest) -> Dict[str, Any]:
+    if workspace_id not in WORKSPACES:
+        raise _err("workspace_not_found", f"Workspace {workspace_id!r} not found.", 404)
+    state_dir = _workspace_path(workspace_id) / ".clk" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    stop_file = state_dir / "stop_when.txt"
+    if body.condition and body.condition.strip():
+        stop_file.write_text(body.condition.strip(), encoding="utf-8")
+    else:
+        stop_file.unlink(missing_ok=True)
+    condition = stop_file.read_text(encoding="utf-8").strip() if stop_file.exists() else None
+    return {"ok": True, "condition": condition or None}
 
 
 @app.post("/api/workspaces/{workspace_id}/nudge")

@@ -8,6 +8,7 @@ import type {
   FilesResponse,
   ProvidersConfig,
   Snapshot,
+  StopWhenResponse,
   TaskRef,
   TaskStatus,
   Workspace,
@@ -150,8 +151,26 @@ export function useSnapshot(ws: string | null) {
 
 export function useStartTask() {
   return useMutation({
-    mutationFn: (body: { command: string; args?: string[]; workspace_id: string; workflow?: string }) =>
+    mutationFn: (body: { command: string; args?: string[]; workspace_id: string; workflow?: string; stop_when?: string }) =>
       apiPost<TaskRef>("/api/research", body),
+  });
+}
+
+export function useStopWhen(ws: string | null) {
+  return useQuery({
+    enabled: !!ws,
+    queryKey: ["stopWhen", ws],
+    queryFn: () => apiGet<StopWhenResponse>(`/api/workspaces/${ws}/stop-when`),
+    staleTime: 5_000,
+  });
+}
+
+export function useSetStopWhen(ws: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (condition: string | null) =>
+      apiPut<StopWhenResponse>(`/api/workspaces/${ws}/stop-when`, { condition }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["stopWhen", ws] }),
   });
 }
 

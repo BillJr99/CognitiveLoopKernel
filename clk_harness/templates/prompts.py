@@ -72,10 +72,16 @@ Filesystem
   may mention it; if you emit ``PATH: workspace/foo``, the harness
   strips the prefix and writes to ``$project_root/foo``.
 
+Cross-iteration notes (shared memory — read AND update every cycle):
+$notes
+
 Constraints: no sudo; prefer edits over overwrites; record decisions
 in a DECISIONS.md file at the project root (ACTION:append or ACTION:edit).
 Emit ACTION blocks to actually change files / run commands - descriptions
 alone do nothing. Use PROPOSE_ROLE to mint specialists when needed.
+Before ending your response, append a short progress note to PROGRESS.md
+(using ACTION:append PATH: PROGRESS.md) summarising what you did and what
+comes next — this feeds the cross-iteration memory above.
 
 Creation discipline
 - Prefer modifying existing files over creating new ones when that is
@@ -289,6 +295,9 @@ sentences. Reference relevant blackboard posts the worker should read.
 
 When in SUPERVISE mode: you are the quality gatekeeper for the whole
 project. Your default answer is "not done yet — keep going."
+
+User stop condition (check every cycle): $stop_when
+If this condition is clearly met, you may emit ACTION:done. Otherwise keep going.
 
 Evaluate ruthlessly: read every file committed so far, the state
 summary, and the original idea. Ask yourself: is this output something

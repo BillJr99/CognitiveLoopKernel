@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config import Paths
-from ..git_ops import add_all, commit as git_commit, has_changes
+from ..git_ops import add_all, commit as git_commit, has_changes, head_sha, revert_to
 from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
 from . import blackboard as _blackboard
@@ -418,6 +418,11 @@ class WorkflowRunner:
         cfg = (self.runner.clk_cfg.get("supervise") or {})
         return int(cfg.get("max_cycles") or self.DEFAULT_MAX_SUPERVISE_CYCLES)
 
+    @property
+    def max_consecutive_no_progress(self) -> int:
+        cfg = (self.runner.clk_cfg.get("supervise") or {})
+        return int(cfg.get("max_consecutive_no_progress") or 5)
+
     def run(self, workflow: Workflow, *, dry_run: Optional[bool] = None) -> List[StageResult]:
         """Execute the workflow, looping it under chief supervision.
 
@@ -441,10 +446,21 @@ class WorkflowRunner:
         """
         all_results: List[StageResult] = []
         stopped_for_provider_failure = False
+        no_progress = 0
         for cycle in range(1, self.max_supervise_cycles + 1):
             if (self.paths.state / "done.md").exists():
                 log(f"workflow {workflow.name}: done.md present, stopping supervise loop")
                 break
+
+            cancel_file = self.paths.state / "cancel_requested.txt"
+            if cancel_file.exists():
+                try:
+                    cancel_file.unlink()
+                except Exception:
+                    pass
+                log(f"workflow {workflow.name}: graceful cancel requested; stopping after cycle {cycle - 1}")
+                break
+
             if cycle > 1:
                 log(f"workflow {workflow.name}: supervise cycle {cycle}/{self.max_supervise_cycles}")
             try:
@@ -453,6 +469,32 @@ class WorkflowRunner:
                 refreshed = workflow
             cycle_results = self._run_once(refreshed, dry_run=dry_run, cycle=cycle)
             all_results.extend(cycle_results)
+
+            # Check for no-progress (nothing committed, no files written)
+            progress = any(
+                r.committed or bool(r.run.files_written)
+                for r in cycle_results
+                if r.run.response.ok
+            )
+            if not progress:
+                no_progress += 1
+                log(
+                    f"workflow {workflow.name}: cycle {cycle} made no progress "
+                    f"({no_progress}/{self.max_consecutive_no_progress})",
+                    level="WARN" if no_progress >= 2 else "INFO",
+                )
+                if no_progress >= self.max_consecutive_no_progress:
+                    log(
+                        f"workflow {workflow.name}: stopping after {no_progress} consecutive "
+                        "no-progress cycles (set supervise.max_consecutive_no_progress to change)",
+                        level="ERROR",
+                    )
+                    log_event(self.paths, "workflow_stalled", workflow=workflow.name,
+                              no_progress_cycles=no_progress)
+                    break
+            else:
+                no_progress = 0
+
             if any(self._is_provider_failure((r.run.response.error or "")) for r in cycle_results if not r.run.response.ok):
                 log(
                     f"workflow {workflow.name}: stopping supervise cycles after provider failure",
@@ -628,6 +670,8 @@ class WorkflowRunner:
         """
         result_by_id = result_by_id or {}
 
+        pre_stage_sha: Optional[str] = head_sha(self.paths.root) if stage.commit and not dry_run else None
+
         # Build objective: chief-review stages get a synthesized prompt
         # that includes the upstream stages' blackboard posts.
         if stage.phase == "review" and stage.depends_on:
@@ -670,6 +714,11 @@ class WorkflowRunner:
         }
         if stage.phase:
             base_extra["phase"] = stage.phase
+
+        stop_when_file = self.paths.state / "stop_when.txt"
+        stop_when = stop_when_file.read_text(encoding="utf-8").strip() if stop_when_file.exists() else ""
+        if stop_when:
+            base_extra["stop_when"] = stop_when
 
         # Turn-based rounds: keep dispatching until the worker emits
         # ROUND_STATUS: done (or absent), or the round cap is reached.
@@ -758,6 +807,16 @@ class WorkflowRunner:
             committed = True
         elif ok and v_ok and stage.commit and not dry_run:
             committed = self._commit(workflow, stage, run, v_out)
+
+        if not v_ok and pre_stage_sha and not dry_run:
+            log(f"stage {stage.id}: validation failed; rolling back to {pre_stage_sha[:8]}", level="WARN")
+            log_event(self.paths, "workflow_stage_rollback",
+                      agent=stage.agent, workflow=workflow.name,
+                      stage_id=stage.id, sha=pre_stage_sha)
+            from ..git_ops import revert_to as _revert_to
+            if _revert_to(self.paths.root, pre_stage_sha):
+                committed = False
+
         failure_reason = ""
         if not ok:
             failure_reason = (run.response.error or "agent_failed")[:200]

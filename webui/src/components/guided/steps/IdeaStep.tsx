@@ -11,6 +11,8 @@ export function IdeaStep({
   model,
   launching,
   error,
+  stopWhen,
+  onStopWhenChange,
   onLaunch,
   onBack,
 }: {
@@ -18,6 +20,8 @@ export function IdeaStep({
   model: string;
   launching: boolean;
   error: string | null;
+  stopWhen: string;
+  onStopWhenChange: (v: string) => void;
   onLaunch: (question: string) => void;
   onBack: () => void;
 }) {
@@ -55,6 +59,19 @@ export function IdeaStep({
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="mt-3">
+        <label className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-mist)]">
+          Stop when <span className="font-normal normal-case opacity-60">(optional)</span>
+        </label>
+        <input
+          type="text"
+          value={stopWhen}
+          onChange={(e) => onStopWhenChange(e.target.value)}
+          placeholder="e.g. working prototype with README"
+          className="input mt-1 w-full text-sm"
+        />
       </div>
 
       {error && (

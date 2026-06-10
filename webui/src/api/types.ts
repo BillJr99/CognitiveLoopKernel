@@ -188,3 +188,8 @@ export interface HarnessLogResponse {
   lines: HarnessLogLine[];
   count: number;
 }
+
+export interface StopWhenResponse {
+  ok: boolean;
+  condition: string | null;
+}
