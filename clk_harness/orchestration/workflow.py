@@ -422,7 +422,7 @@ class WorkflowRunner:
     @property
     def max_consecutive_no_progress(self) -> int:
         cfg = (self.runner.clk_cfg.get("supervise") or {})
-        return int(cfg.get("max_consecutive_no_progress") or 5)
+        return int(cfg.get("max_consecutive_no_progress") or 8)
 
     @property
     def stall_rescue_enabled(self) -> bool:

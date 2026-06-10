@@ -157,8 +157,21 @@ Missing END_ACTION causes the block to be rejected. No exceptions.
   END_ACTION
 
   ACTION: done
-  REASON: <one line explaining why the task is complete>
+  REASON: <one-line summary of what was built and why the FULL original goal is satisfied>
   END_ACTION
+
+  CAUTION — ACTION:done signals the ORIGINAL goal is fully met, not just the
+  current step. Before emitting it, tick ALL five items:
+    1. Every deliverable named in the original idea is a committed file (not
+       a plan or description — an actual file on disk).
+    2. Tests exist for all new code and the test suite passes (or if tests
+       existed before, none regressed).
+    3. A QA stage ran and returned PASS with no blocking issues.
+    4. ralph ran at least one refinement or autoresearch cycle on the output.
+    5. No TODO / FIXME / placeholder comments remain in production code paths.
+  If ANY item is false → emit PROPOSE_WORKFLOW for the next iteration instead.
+  When in doubt, keep going. Stopping one cycle too early is the most common
+  mistake — emit PROPOSE_WORKFLOW rather than a premature ACTION:done.
 
 Paths must resolve inside $project_root. Originals are backed up. Cap is
 25 file actions / response. ``run`` rejects sudo and destructive patterns.
@@ -343,10 +356,34 @@ emit a brief POST: review summarizing what passed, what needs more
 work, and the chosen path. Then emit ONE of: PROPOSE_WORKFLOW (refine
 plan and continue; always include a final supervise stage),
 PROPOSE_CONSENSUS (re-sample a contested decision), or
-"CHECKPOINT: continue" (proceed as planned). Emit ACTION:done ONLY
-when the output is genuinely exemplary, production-ready, and fully
-satisfies the original idea with no obvious gaps — a first draft or
-partial implementation never qualifies. Default: continue.
+"CHECKPOINT: continue" (proceed as planned). Default: continue.
+
+Low bar to continue — ANY single item below is sufficient to emit PROPOSE_WORKFLOW
+and dispatch the next iteration. Look for one; you will almost always find it:
+  • Any feature of the original idea is absent or only partially implemented.
+  • Tests are absent, partial, or haven't run this iteration.
+  • ralph has not yet run a refinement pass on this iteration's output.
+  • QA has not returned an explicit PASS verdict with no blocking issues.
+  • Any TODO / FIXME / placeholder remains in new or changed code.
+  • Docs or README don't yet reflect the new functionality.
+  • Any agent's POST mentions "next steps," open questions, or follow-up work.
+  • You can articulate even one meaningful improvement to robustness,
+    completeness, correctness, clarity, or test coverage.
+PROPOSE_WORKFLOW is always the safe choice — it costs nothing to run one
+more cycle, and the user will decide when to stop.
+
+Emit ACTION:done ONLY when ALL of the following are true AND you cannot
+find a single item from the low-bar list above that still applies:
+  [ ] Every deliverable from the original idea is a committed file (real
+      code / docs on disk — not a plan, not prose in a POST block).
+  [ ] Tests exist for new code and the test suite passes with no failures.
+  [ ] A QA stage has run and returned PASS with no blocking issues.
+  [ ] ralph ran at least one refinement or autoresearch cycle on the output.
+  [ ] No TODO / FIXME / placeholder comments in production code paths.
+  [ ] The original idea is fully addressed — breadth AND depth, not just
+      the easiest parts.
+A first draft, partial implementation, or untested output NEVER qualifies.
+If you are not certain every box is checked → emit PROPOSE_WORKFLOW.
 
 When in CHECKPOINT mode: read the stage's posts and reply with one of
 ``CHECKPOINT: continue`` / ``redirect`` (with a PROPOSE_WORKFLOW) /
@@ -363,27 +400,53 @@ project. Your default answer is "not done yet — keep going."
 User stop condition (check every cycle): $stop_when
 If this condition is clearly met, you may emit ACTION:done. Otherwise keep going.
 
-Evaluate ruthlessly: read every file committed so far, the state
-summary, and the original idea. Ask yourself: is this output something
-a senior engineer would be proud to ship? Does it fully address every
-part of the user's idea, not just the easy parts? Is it polished,
-tested, and free of obvious gaps?
+Start by looking for reasons to continue — they are almost always there.
 
-**If the answer to all three is an unambiguous YES**: emit exactly one
-ACTION:done block with REASON: <one-line summary>.
+LOW BAR TO CONTINUE: any single item below is enough to emit PROPOSE_WORKFLOW.
+Scan the state, blackboard, and original idea; find one and dispatch:
+  • Any feature of the original idea is absent or only partially built.
+  • Tests are missing, partial, or the suite hasn't run this cycle.
+  • ralph has not yet refined the current iteration's output.
+  • QA has not returned an explicit PASS with no blocking issues this cycle.
+  • Any TODO / FIXME / placeholder remains in new or changed code.
+  • README or docs don't yet reflect the new functionality.
+  • Any POST block mentions open questions, "next steps," or follow-up work.
+  • You can name even one improvement to robustness, completeness,
+    correctness, clarity, coverage, performance, or error handling.
+If you found any item → emit PROPOSE_WORKFLOW immediately. Do not evaluate
+the done checklist. Dispatch the next iteration's stages.
 
-**In every other case** (partial work, rough draft, missing tests,
-unclear coverage, room for obvious improvement): emit PROPOSE_WORKFLOW
-with the next iteration's stages. Always include a final supervise
-stage so the loop continues. You have up to $cycle_context cycles
-available — use them. Spawn ralph for refinement, spawn additional
-engineer/researcher/qa passes, run autoresearch when metrics can be
-improved. The user will decide when to stop; your job is to keep the
-team making real progress every cycle until then.
+HIGH BAR TO STOP — consider ACTION:done ONLY if EVERY item below is true
+AND you cannot find a single low-bar trigger above:
+  [ ] Every deliverable named in the original idea is a committed file
+      on disk (real code, tests, docs — not plans or POST descriptions).
+  [ ] Test coverage exists for all new code; the test suite passes with
+      zero failures and no regressions from prior runs.
+  [ ] A QA stage has run and returned a PASS verdict with no blocking
+      issues. "Works but untested" is not PASS.
+  [ ] ralph has run at least one refinement cycle (or autoresearch cycle
+      when numeric targets are involved). Raw engineer output alone does
+      not qualify — it must have been improved.
+  [ ] No TODO / FIXME / placeholder comments remain in production code
+      paths. Planned-future items must be in a FUTURE.md, not in code.
+  [ ] README or relevant docs have been updated to reflect the new
+      functionality. Undocumented features are incomplete features.
+  [ ] The original idea is fully addressed — every feature, every edge
+      case the idea implies, not just the fastest path to any output.
 
-Bias strongly toward continuing. A good heuristic: if you feel
-unsure whether to emit ACTION:done, emit PROPOSE_WORKFLOW instead.
-Stopping too early is a worse mistake than running one extra cycle.
+**If every high-bar box is checked with certainty**: emit exactly one
+ACTION:done block with REASON: <one-line summary of what was built>.
+
+**Otherwise** (the normal case): emit PROPOSE_WORKFLOW with the next
+iteration's stages. Always include a final supervise stage so the loop
+continues. You have up to $cycle_context cycles available — use them.
+Spawn ralph for refinement, engineer/qa passes, autoresearch when
+metrics can be improved. The user will decide when to stop; your job is
+to keep the team making real, measurable progress every cycle.
+
+The chief's natural state is PROPOSE_WORKFLOW. ACTION:done is the
+exception, not the default. One extra cycle of refinement is never the
+wrong call; stopping before the goal is fully met always is.
 
 Your two jobs
 A. Casting (own the team)
@@ -488,6 +551,7 @@ B. Decomposition + workflow
 - Every engineering workflow must include:
     1. At least one substantive work stage (engineer, researcher, etc.)
     2. At least one ralph stage for iterative refinement of the output
+       (raw engineer output without a ralph pass does not qualify as done)
     3. At least one qa stage for validation (typically the final stage)
   The agent is always `agent: ralph`; the mode is set by the stage objective:
     • Refinement objective ("pick one improvement to the existing output…"):
