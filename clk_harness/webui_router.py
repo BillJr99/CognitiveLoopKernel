@@ -764,11 +764,17 @@ def _discover_blocking() -> List[Dict[str, Any]]:
                 return v
         return ""
 
-    # Env overrides mirror the runtime precedence (ollama.py prefers env).
-    if _env("CLK_OLLAMA_ENDPOINT"):
-        blocks.get("ollama", {})["endpoint"] = _env("CLK_OLLAMA_ENDPOINT")
-    if _env("CLK_OLLAMA_MODEL"):
-        blocks.get("ollama", {})["model"] = _env("CLK_OLLAMA_MODEL")
+    # Env overrides mirror the runtime precedence (ollama.py / openwebui.py
+    # prefer env vars over the config block).
+    for var, name, field in (
+        ("CLK_OLLAMA_ENDPOINT", "ollama", "endpoint"),
+        ("CLK_OLLAMA_MODEL", "ollama", "model"),
+        ("CLK_OPENWEBUI_ENDPOINT", "openwebui", "endpoint"),
+        ("CLK_OPENWEBUI_MODEL", "openwebui", "model"),
+        ("CLK_OPENWEBUI_API_KEY", "openwebui", "api_key"),
+    ):
+        if _env(var):
+            blocks.setdefault(name, {})[field] = _env(var)
 
     def _http_entry(name: str) -> Dict[str, Any]:
         block = blocks.get(name) or {}

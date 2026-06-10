@@ -71,8 +71,9 @@ function reducer(state: GuidedState, action: Action): GuidedState {
     case "BACK": {
       const prev = BACK_FROM[state.step];
       if (!prev) return state;
-      // Going back from idea to a provider with a model menu re-enters via model.
-      if (state.step === "idea" && state.provider?.kind === "http") {
+      // Going back from idea to a provider with a model menu re-enters via
+      // model; if the model step was skipped (no models), skip it again.
+      if (state.step === "idea" && state.provider?.kind === "http" && state.provider.models.length > 0) {
         return { ...state, step: "model", error: null };
       }
       return { ...state, step: prev, error: null };
@@ -189,6 +190,13 @@ export function GuidedMode() {
         if (provider.name === "ollama") {
           if (provider.endpoint) envValues.CLK_OLLAMA_ENDPOINT = provider.endpoint;
           if (state.model) envValues.CLK_OLLAMA_MODEL = state.model;
+        }
+        if (provider.name === "openwebui") {
+          // openwebui.py prefers these env vars over the config block, so a
+          // stale .env would silently override the wizard's selections.
+          if (provider.endpoint) envValues.CLK_OPENWEBUI_ENDPOINT = provider.endpoint;
+          if (state.model) envValues.CLK_OPENWEBUI_MODEL = state.model;
+          if (apiKeyRef.current) envValues.CLK_OPENWEBUI_API_KEY = apiKeyRef.current;
         }
         await apiPut("/api/env", { values: envValues });
 

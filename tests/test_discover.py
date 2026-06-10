@@ -116,6 +116,43 @@ async def test_discover_cli_key_classification(client: AsyncClient, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_discover_openwebui_env_overrides_reach_probe(
+    client: AsyncClient, monkeypatch
+) -> None:
+    import shutil
+
+    # The OpenWebUI runtime prefers CLK_OPENWEBUI_* env vars over the config
+    # block, so discovery must overlay them too — otherwise a key already in
+    # .env would still show the provider as needing one.
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    env_file.write_env({
+        "CLK_OPENWEBUI_ENDPOINT": "http://example:9999",
+        "CLK_OPENWEBUI_API_KEY": "owui-secret",
+    })
+    seen: dict = {}
+
+    def capturing_probe(ptype: str, endpoint: str, api_key: str) -> dict:
+        if ptype == "openwebui":
+            seen.update({"endpoint": endpoint, "api_key": api_key})
+            return {
+                "ok": True, "supported": True, "reachable": True,
+                "models": ["gpt-x"], "endpoint": endpoint,
+            }
+        return {
+            "ok": True, "supported": True, "reachable": False,
+            "models": [], "endpoint": endpoint,
+        }
+
+    monkeypatch.setattr(webui_router, "_probe_blocking", capturing_probe)
+    r = await client.get("/api/providers/discover")
+    by_name = {p["name"]: p for p in r.json()["providers"]}
+    assert seen == {"endpoint": "http://example:9999", "api_key": "owui-secret"}
+    owui = by_name["openwebui"]
+    assert owui["available"] is True
+    assert owui["needs_api_key"] is False  # models listed with the env key
+
+
+@pytest.mark.asyncio
 async def test_discover_cli_on_path(client: AsyncClient, monkeypatch) -> None:
     import shutil
 

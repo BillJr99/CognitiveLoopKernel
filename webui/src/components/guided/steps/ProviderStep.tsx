@@ -57,12 +57,16 @@ export function ProviderStep({
     setKeyError(null);
     if (p.name === "openwebui") {
       // Re-probe with the key so the model menu fills in.
-      const res = await probe.mutateAsync({ type: "openwebui", endpoint: p.endpoint ?? undefined, api_key: key });
-      if (!res.models?.length) {
-        setKeyError("That key didn't unlock any models. Double-check it and try again.");
-        return;
+      try {
+        const res = await probe.mutateAsync({ type: "openwebui", endpoint: p.endpoint ?? undefined, api_key: key });
+        if (!res.models?.length) {
+          setKeyError("That key didn't unlock any models. Double-check it and try again.");
+          return;
+        }
+        onPick({ ...p, models: res.models, endpoint: res.endpoint ?? p.endpoint, needs_api_key: false }, key);
+      } catch (e) {
+        setKeyError((e as Error).message || "Couldn't reach the server with that key. Try again.");
       }
-      onPick({ ...p, models: res.models, endpoint: res.endpoint ?? p.endpoint, needs_api_key: false }, key);
       return;
     }
     onPick({ ...p, available: true, mode: "api" }, key);
@@ -119,7 +123,12 @@ export function ProviderStep({
                   onClick={() => (p.available || keyable ? choose(p) : undefined)}
                   role="button"
                   tabIndex={p.available || keyable ? 0 : -1}
-                  onKeyDown={(e) => e.key === "Enter" && (p.available || keyable) && choose(p)}
+                  onKeyDown={(e) => {
+                    if ((e.key === "Enter" || e.key === " ") && (p.available || keyable)) {
+                      e.preventDefault();
+                      choose(p);
+                    }
+                  }}
                 >
                   <div className="flex items-start gap-3 p-4">
                     <div
