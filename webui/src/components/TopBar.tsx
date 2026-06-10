@@ -44,7 +44,7 @@ export function TopBar() {
       </div>
 
       <div className="ml-auto flex items-center divide-x divide-[var(--color-line)]/60 [&>*]:px-5 first:[&>*]:pl-0 last:[&>*]:pr-0">
-        <MiniStat label="Tokens" icon={<Zap size={14} className="text-[var(--color-warn)]" />}>
+        <MiniStat label="Tokens" icon={<Zap size={14} className="text-[var(--color-warn)]" />} wide>
           <AnimatedNumber value={totals?.total_tokens ?? 0} format={fmtTokens} />
         </MiniStat>
         <MiniStat label="Est. cost" icon={<DollarSign size={14} className="text-[var(--color-good)]" />} wide>
@@ -76,9 +76,9 @@ function MiniStat({
   wide?: boolean;
 }) {
   return (
-    <div className={`flex flex-col ${wide ? "min-w-[8rem]" : "min-w-[4.75rem]"}`}>
+    <div className={`flex flex-col ${wide ? "min-w-[8.5rem]" : "min-w-[6rem]"}`}>
       <span className="text-[10px] uppercase tracking-wider text-[var(--color-mist)]">{label}</span>
-      <span className="flex items-center gap-1 text-lg font-semibold tabular-nums">
+      <span className="flex items-center gap-1 whitespace-nowrap text-lg font-semibold tabular-nums">
         {icon}
         {children}
       </span>

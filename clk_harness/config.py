@@ -184,6 +184,17 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
     "supervise": {
         "max_cycles": 100,
         "max_consecutive_no_progress": 5,
+        # When the no-progress cap is hit, dispatch the chief once in
+        # rescue mode (restructure / unblock / declare done) before the
+        # supervise loop gives up.
+        "stall_rescue": True,
+    },
+    "recovery": {
+        # Chief recovery dispatches per stage with unmet dependencies.
+        "max_per_stage": 3,
+        # Dispatch the chief when a stage's declared outputs contract
+        # (POST PRODUCES keys) goes unsatisfied, instead of warning only.
+        "dispatch_on_unmet_outputs": True,
     },
     "consensus": {
         "max_samples": 6,
