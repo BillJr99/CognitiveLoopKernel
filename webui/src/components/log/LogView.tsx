@@ -72,10 +72,12 @@ function HarnessLog({ wsId }: { wsId: string | null }) {
   const ref = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
 
+  // Follow new output whenever the payload changes — keying off count alone
+  // stops following once the server-side tail cap keeps count constant.
   useEffect(() => {
     const el = ref.current;
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
-  }, [data?.count]);
+  }, [data]);
 
   if (!wsId) {
     return <div className="card p-4 text-sm text-[var(--color-mist)]">Pick a workspace to see its harness log.</div>;

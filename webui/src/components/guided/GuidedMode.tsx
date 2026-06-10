@@ -260,7 +260,7 @@ export function GuidedMode() {
   }, [state.wsId, state.pipeline, state.question, startBuild]);
 
   const followUp = useCallback(
-    async (request: string) => {
+    async (request: string, stopWhen?: string) => {
       if (!state.wsId || busy) return;
       setBusy(true);
       try {
@@ -269,6 +269,7 @@ export function GuidedMode() {
           command: "run",
           workspace_id: state.wsId,
           workflow: "engineering",
+          stop_when: stopWhen || undefined,
         });
         dispatch({ type: "FOLLOWUP_LAUNCHED", taskId: res.task_id, question: request });
       } catch (e) {

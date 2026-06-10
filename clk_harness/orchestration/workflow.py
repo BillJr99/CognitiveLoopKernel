@@ -837,8 +837,13 @@ class WorkflowRunner:
                 expected=list(stage.outputs),
                 missing=list(unmet_outputs),
             )
+            # Only when the stage otherwise succeeded: a failed response or
+            # failed validation already keeps the stage incomplete (and may
+            # roll back), so a recovery pass here couldn't unblock anything.
             if (
                 not dry_run
+                and ok
+                and v_ok
                 and stage.agent != "chief"
                 and self._outputs_recovery_enabled
             ):

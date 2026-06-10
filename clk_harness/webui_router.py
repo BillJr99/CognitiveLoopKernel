@@ -436,6 +436,10 @@ async def get_harness_logs(
     paths = _require_workspace(workspace_id)
     logs_dir = paths.logs
     entries: List[Dict[str, Any]] = []
+    # The UI polls this every few seconds, so reads must stay bounded as
+    # logs grow: read at most ~120 bytes/line of tail from the end of each
+    # file instead of the whole file.
+    max_bytes = tail * 120
     if logs_dir.is_dir():
         files = sorted(
             (p for p in logs_dir.glob("*.log") if p.is_file()),
@@ -444,7 +448,12 @@ async def get_harness_logs(
         # Read newest files last so the tail keeps the most recent lines.
         for p in files:
             try:
-                text = p.read_text(encoding="utf-8", errors="replace")
+                size = p.stat().st_size
+                with p.open("rb") as fh:
+                    if size > max_bytes:
+                        fh.seek(size - max_bytes)
+                        fh.readline()  # drop the partial first line
+                    text = fh.read().decode("utf-8", errors="replace")
             except OSError:
                 continue
             for line in text.splitlines():

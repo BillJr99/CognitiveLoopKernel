@@ -190,7 +190,9 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         "stall_rescue": True,
     },
     "recovery": {
-        # Chief recovery dispatches per stage with unmet dependencies.
+        # Chief recovery passes per stage: dispatched when a stage's
+        # dependencies are unmet, and (below) when its outputs contract
+        # goes unsatisfied.
         "max_per_stage": 3,
         # Dispatch the chief when a stage's declared outputs contract
         # (POST PRODUCES keys) goes unsatisfied, instead of warning only.
