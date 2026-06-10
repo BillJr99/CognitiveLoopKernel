@@ -57,35 +57,54 @@ stages:
 """,
 
     "engineering.yaml": """name: engineering
-description: Baseline development cycle. The chief overwrites this file on
-  the first casting pass, replacing it with a workflow tailored to the
-  project's idea and roster. The supervise stage is always re-added by
-  the chief at the end so no agent is "done" until the user's full
-  prompt has been addressed. Ralph/autoresearch refinement should come
-  after a runnable or inspectable candidate output exists and a rubric
-  has been defined.
+description: |
+  Iterative development cycle. The chief overwrites this file on the first
+  casting pass with a tailored workflow. Runs continue until the chief
+  judges the output exemplary; the supervise stage is always re-added so
+  no agent stops until the work is genuinely production-ready.
+  Default: 100 supervise cycles available — use them all if needed.
 stages:
   - id: cast
     agent: chief
-    objective: Decompose the next slice, cast or refresh the roster, and
-      author the project-specific engineering workflow.
+    objective: >
+      Decompose the full idea into concrete sub-objectives. Cast or refresh
+      the roster (spawn engineer, ralph, qa, researcher, analyst, critic as
+      needed). Author a multi-stage project-specific engineering workflow
+      that covers ALL aspects of the idea — not just the first slice.
+      Plan at least 3-5 substantive stages: parallel research + engineer
+      tracks, at least one ralph refinement pass, a qa validation stage,
+      and a final supervise stage. Err on the side of more stages and more
+      agents rather than fewer.
     commit: true
   - id: implement
     agent: engineer
-    objective: Implement the smallest vertical slice that advances the slice
-      flagged by the chief.
+    objective: >
+      Implement the smallest vertical slice that advances the chief's plan.
+      Produce working, committed code or content — not a stub or placeholder.
     depends_on: [cast]
+    commit: true
+  - id: refine
+    agent: ralph
+    objective: >
+      Pick the single highest-value measurable improvement to the engineer's
+      output. Implement it, validate it with a shell command, and record
+      the finding in PROGRESS.md.
+    depends_on: [implement]
     commit: true
   - id: qa
     agent: qa
-    objective: Test and audit the implemented slice.
-    depends_on: [implement]
+    objective: >
+      Validate the implemented slice thoroughly. Run all available tests.
+      Flag every gap, broken assumption, and missing edge case.
+    depends_on: [refine]
     commit: true
   - id: supervise
     agent: chief
-    objective: Supervise. Has the user's prompt been fully addressed? If yes,
-      emit ACTION done with a one-line reason. If no, PROPOSE_WORKFLOW
-      with the next set of stages (which becomes the next iteration).
+    objective: >
+      Supervise. Is the output exemplary, complete, and production-ready?
+      Only emit ACTION:done if the answer is an unambiguous YES.
+      Otherwise PROPOSE_WORKFLOW with the next iteration's stages —
+      continue improving. Default: keep going.
     depends_on: [qa]
     commit: false
 """,

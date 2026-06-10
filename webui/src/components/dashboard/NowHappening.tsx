@@ -26,7 +26,7 @@ export function NowHappening({ snap, latest, healing }: { snap?: Snapshot; lates
         : "Ready when you are";
 
   return (
-    <div className="card-lux relative overflow-hidden px-5 py-7">
+    <div className="card-lux relative px-5 py-8">
       {busy && <div className="activity-sweep absolute inset-x-0 top-0 h-0.5" />}
       <div className="flex items-center gap-3">
         <div
@@ -44,7 +44,7 @@ export function NowHappening({ snap, latest, healing }: { snap?: Snapshot; lates
         </div>
         <div className="min-w-0 flex-1">
           <div className="font-display text-sm font-semibold">{headline}</div>
-          <div key={bump} className="slide-in truncate text-xs text-[var(--color-mist)]">
+          <div key={bump} className="slide-in line-clamp-2 text-xs text-[var(--color-mist)]">
             {latest ? (
               <>
                 <span className="font-medium text-[var(--color-frost)]">{latest.agent || latest.kind}</span>
