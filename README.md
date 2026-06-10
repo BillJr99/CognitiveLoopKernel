@@ -25,6 +25,28 @@ If you've used CLK before, the highlights of this release:
   and watch the agents work in real time with live cards, a colour-coded
   activity timeline, and animated token/cost meters. See
   [Web dashboard](#web-dashboard).
+- **Guided mode.** A beginner-friendly step-by-step wizard in the web
+  console: scan for available LLM providers, pick a model, describe your
+  idea in plain language, watch a friendly progress view, browse and
+  download the files, then loop with follow-up requests. First-time
+  visitors land here automatically; the full console is one click away.
+- **Files tab with git history.** Browse the live workspace, toggle to a
+  commit **History** view (agent badge, relative time, +/− stats, colored
+  diff per commit), time-travel any single file to a past version, and
+  see **uncommitted changes** as a pseudo-entry with new/modified/deleted
+  badges — files changed since the last commit carry an amber dot.
+- **Work is never silently lost.** Failed stage validations no longer
+  hard-reset the workspace by default (`validation.rollback_on_failure:
+  careful` — only `careful: true` stages roll back, and even then the
+  discarded work is preserved behind a `refs/clk/rollbacks/` snapshot
+  ref). Agent `PATH:`s are resolved chroot-style, so absolute paths no
+  longer cause writes to be silently skipped.
+- **A chief that keeps going.** Supervise/review prompts now carry an
+  explicit low-bar-to-continue / high-bar-to-stop asymmetry, stalled
+  cycles trigger a one-shot chief **stall rescue** before the loop gives
+  up (`supervise.stall_rescue`), unmet outputs contracts dispatch a
+  chief recovery pass, and dynamic agents receive the full ACTION/POST
+  protocol automatically so first dispatches comply.
 - **Robustness loops by default.** Every meaningful dispatch is now
   scored after the provider returns; empty / malformed / contract-
   violating / low-confidence responses are re-dispatched with a repair
@@ -419,7 +441,23 @@ from `http://localhost:8001`.
   in-browser (Save writes back to the workspace), and **chat with the
   agents**: each follow-up message seeds a workflow run scoped to your
   request (optionally with a selected file as context) and streams the
-  result back into the thread.
+  result back into the thread. A **History** toggle shows the commit
+  timeline (agent badge parsed from the commit subject, relative time,
+  +/− line stats); clicking a commit opens its changed-file list and a
+  colored diff. The file editor's history button **time-travels a single
+  file** to any past version (read-only, "Back to latest" banner). When
+  the working tree is dirty, an **Uncommitted changes** entry tops the
+  history with new/modified/deleted badges and the working-tree diff,
+  and changed files carry an amber dot in the list. The file list reads
+  live from disk (2 s refresh), so it always shows the latest state —
+  committed or not.
+- **Guided mode** — a full-screen step-by-step wizard for newcomers:
+  provider discovery (Ollama/OpenWebUI probed with a docker-host
+  fallback, CLI providers detected on PATH or unlocked by an API key) →
+  model pick → plain-language idea → friendly progress view → files →
+  follow-up loop. First visit with no workspaces lands here; the
+  sidebar's sparkle button or "Advanced mode" toggles between the wizard
+  and the full console mid-run without losing the workspace.
 - **Configure** — tabbed settings for the global **`.env`** (grouped,
   typed widgets; secrets masked with `••••••••` and preserved on save),
   per-workspace **harness config** (`clk.config.json`), **providers**
@@ -1254,7 +1292,16 @@ scoring and consensus fan-out as **real tools** (`clk_consensus`,
 relying on chief compliance — every parallel sample is scored by the
 same rules `clk_harness/orchestration/response_quality.py` uses, the
 winner is picked in code, and Ralph branches are created by the tool so
-the protocol can't be skipped. See [`pi-extension/README.md`](pi-extension/README.md)
+the protocol can't be skipped.
+
+It also ports the **supervise loop** as a run watchdog: every chief
+turn that ends without `clk_done` gets re-prompted with the run state,
+consecutive no-progress turns trigger a one-shot stall-rescue prompt,
+and a cycle cap bounds token spend — so a run keeps iterating without
+the user babysitting it. `clk_merge`/`clk_done` accept `validate` shell
+commands and **refuse** on a non-zero exit, and `clk_ralph` refuses a
+fourth identical attempt after three consecutive reverted iterations
+(plateau guard). See [`pi-extension/README.md`](pi-extension/README.md)
 for the full tool reference, state layout, error handling, and
 customisation notes.
 
@@ -1272,8 +1319,9 @@ customisation notes.
 
 | Command | Effect |
 |---------|--------|
-| `/clk <idea>` | Capture the idea and hand off to the chief. Resumes if state exists. |
-| `/clk-abort` | End the active run. State is preserved; resume with `/clk` later. |
+| `/clk <idea>` | Capture the idea and hand off to the chief. The watchdog keeps the chief iterating until `clk_done`. |
+| `/clk-resume` | Continue an interrupted run (session restart, abort, or watchdog stall-stop) from persisted state with a fresh stall budget. |
+| `/clk-abort` | End the active run. State is preserved; `/clk-resume` continues it later. |
 | `/clk-help` | List every CLK slash command, every orchestration tool the chief uses, and the active safety nets. |
 | `/clk-doctor` | Health-check tmux, git, the workspace `.clk/` layout, the pre-push hook, and (when a remote exists) the count of local commits not yet pushed. |
 | `/clk-undo` | Preview the last CLK commit; `/clk-undo confirm` creates a revert commit on top of it. |
@@ -1287,16 +1335,18 @@ customisation notes.
 | `clk_subagent_quality` | One subagent + automatic repair-preamble re-rolls on quality failures. |
 | `clk_consensus` | Fan out N parallel samples (default 3, max 6), score each, return the winner plus every candidate's score. |
 | `clk_autoresearch` | Bounded researcher + critic alternation; each iteration recorded on the progress log. |
-| `clk_ralph` | Create a `ralph/<iter>` branch and run a consensus fan-out in one call; chief then calls `clk_merge` or `clk_revert`. |
-| `clk_branch` / `clk_merge` / `clk_revert` / `clk_checkpoint` | Git plumbing for the Ralph iteration cycle. |
+| `clk_ralph` | Create a `ralph/<iter>` branch and run a consensus fan-out in one call; chief then calls `clk_merge` or `clk_revert`. Refuses a 4th attempt after 3 consecutive reverts (plateau guard) until the chief acknowledges with a different approach. |
+| `clk_branch` / `clk_merge` / `clk_revert` / `clk_checkpoint` | Git plumbing for the Ralph iteration cycle. `clk_merge({ validate })` runs the command first and refuses the merge on a non-zero exit. |
 | `clk_progress` | Append a one-line entry to `.clk/state/progress.md`. |
-| `clk_done` | Mark the run complete and write `.clk/state/done.md`. |
+| `clk_done` | Mark the run complete and write `.clk/state/done.md`. `clk_done({ validate: [...] })` refuses completion while any command fails. |
 
 **Optional env vars:**
 
 | Variable | Effect |
 |---|---|
 | `CLK_GITHUB_PUSH_ON_COMMIT=true` | After every `clk_checkpoint` and `clk_merge`, run `git push origin HEAD` best-effort and surface an `↑N` ahead counter if the push fails. Same env var as the Python TUI. |
+| `CLK_STALL_CAP` | Consecutive no-progress chief turns before the watchdog's one-shot stall-rescue prompt (default 3). |
+| `CLK_MAX_AUTO_CONTINUES` | Hard cap on watchdog auto-continuations per run (default 100) — the extension's `supervise.max_cycles`. |
 
 A typical session:
 
@@ -1338,14 +1388,18 @@ tests/                   # pytest regression suite (CI-gated)
 user_tests/              # pytest end-to-end suite (drives CLI + REST API)
 pi-extension/            # standalone Pi extension (TypeScript)
   src/
-    index.ts             # /clk + /clk-help + /clk-doctor + /clk-undo, session lifecycle
+    index.ts             # /clk + /clk-resume + /clk-help + /clk-doctor + /clk-undo,
+                         #   session lifecycle + watchdog wiring
     prompts.ts           # the chief's operator's manual
     tools.ts             # clk_cast / clk_progress / clk_checkpoint / clk_branch /
                          #   clk_merge / clk_revert / clk_consensus / clk_subagent_quality /
                          #   clk_autoresearch / clk_ralph / clk_done
+    watchdog.ts          # supervise loop: continue → stall rescue → stop ladder
+    validate.ts          # shell validation gate for clk_merge / clk_done
     subagent.ts          # raw clk_subagent — spawnSubagent() exposed for consensus
     consensus.ts         # dispatchWithQuality + runConsensus (port of agent.py)
-    quality.ts           # scoreResponse + repairHint (port of response_quality.py)
+    quality.ts           # scoreResponse + repairHint + progressSignal
+                         #   (port of response_quality.py)
     git.ts               # checkpoint, branch, merge, revert + hasRemote / commitsAhead /
                          #   pushBestEffort (port of git_ops.py auto-push helpers)
     state.ts / abort.ts / errors.ts / types.ts
@@ -1617,9 +1671,21 @@ The chief either:
 - emits `PROPOSE_WORKFLOW` with the next iteration's stages — the
   workflow runner picks them up and runs another cycle.
 
-So no agent is ever truly "done" until the chief signals completion.
-Capped at `clk.config.json::supervise.max_cycles` (default 5) to avoid
-runaway loops.
+The prompts enforce an explicit asymmetry: a **low bar to continue**
+(any single trigger — missing tests, no ralph pass on the latest
+output, open TODOs, stale docs, any nameable improvement — starts the
+next cycle immediately) and a **high bar to stop** (`ACTION: done`
+requires every done-checklist item: deliverables on disk, tests
+passing, a QA PASS, a ralph refinement pass, docs updated). So no agent
+is ever truly "done" until the chief proves completion. Capped at
+`clk.config.json::supervise.max_cycles` (default 100).
+
+Stall handling: a cycle with no commits, no file writes, and/or an
+explicit `PROGRESS: no` self-report counts against
+`supervise.max_consecutive_no_progress` (default 8). Hitting the cap
+dispatches the chief once in **stall-rescue** mode (restructure the
+plan, unblock, or justify done) before the loop gives up — disable via
+`supervise.stall_rescue: false`.
 
 ## Dynamic agents (casting)
 
@@ -1661,7 +1727,11 @@ parses and applies — descriptions alone do nothing. Supported kinds:
 
 - `ACTION: write` / `edit` / `append` / `delete` — file mutations
   (paths must resolve inside the project root; originals are backed up
-  to `.clk/backups/<run_id>/`).
+  to `.clk/backups/<run_id>/`). Paths are resolved **chroot-style**: a
+  leading `/` maps to the project root and a fully-qualified workspace
+  path has the root prefix stripped, so agents that emit absolute paths
+  don't silently lose their work. Escapes (`../`) and `.clk/` stay
+  rejected.
 - `ACTION: run` — shell command, runs in project root, output captured
   to the log; rejects `sudo` and obvious-foot-gun patterns.
 - `ACTION: done` — writes `.clk/state/done.md`, signaling the loops to
@@ -1681,10 +1751,26 @@ emit `ACTION` blocks that fix the upstream failure, or `PROPOSE_ROLE`
 a specialist that can. Capped at 3 recovery passes per stage
 (configurable via `clk.config.json::recovery::max_per_stage`).
 
-This section is about *dependency* failures. *Content* failures —
-empty, malformed, or low-confidence agent output that nonetheless
-returned `ok=True` — are handled by the response-quality re-dispatch
-loop documented in **Robustness loops** above.
+Two more recovery paths run automatically:
+
+- **Unmet outputs contracts.** When a stage's declared `outputs:` keys
+  never land in any POST block's `PRODUCES` line, the chief gets a
+  recovery dispatch to fill the gap (re-dispatch the worker, post a
+  substitute, or accept it) instead of letting downstream stages consume
+  missing inputs. Toggle via `recovery.dispatch_on_unmet_outputs`.
+- **Failed validations keep the work.** A failed stage validation no
+  longer hard-resets the workspace by default — the failure is recorded
+  and later cycles repair forward, so batch-committed files stay on disk
+  and visible in the Files tab. Policy via
+  `validation.rollback_on_failure`: `never` | `careful` (default — only
+  `careful: true` stages roll back) | `always` (legacy). When a rollback
+  does run, the discarded work is first preserved behind a
+  `refs/clk/rollbacks/<stage>-<ts>` ref so it stays recoverable in git.
+
+This section is about *dependency and stage* failures. *Content*
+failures — empty, malformed, or low-confidence agent output that
+nonetheless returned `ok=True` — are handled by the response-quality
+re-dispatch loop documented in **Robustness loops** above.
 
 ## Workflows
 

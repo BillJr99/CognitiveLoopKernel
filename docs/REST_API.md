@@ -361,6 +361,28 @@ Has no effect on tasks that are already `done`, `failed`, or `cancelled`.
 { "ok": true }
 ```
 
+### Workspace files & git history
+
+The web console's Files tab is backed by these endpoints (the full
+web-UI surface — config, providers, doctor, activity stream — lives in
+`clk_harness/webui_router.py`; the highlights):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/workspaces/{id}/files` | List the workspace's files (live from disk; `.clk`, `.git`, `node_modules` etc. excluded). |
+| `GET /api/workspaces/{id}/file?path=` | Read one file (binary detection, 1 MB truncation flag). |
+| `PUT /api/workspaces/{id}/file` | Write one file (`{path, content}`). |
+| `GET /api/workspaces/{id}/download` | Download the workspace deliverables as a zip. |
+| `GET /api/workspaces/{id}/git/log?path=&limit=` | Commit history, newest first, with per-commit file stats; `path` filters to one file (renames followed). Harness-internal paths are excluded. |
+| `GET /api/workspaces/{id}/git/commit/{sha}` | One commit's metadata plus its unified diff (truncated past ~200 KB). |
+| `GET /api/workspaces/{id}/git/file?sha=&path=` | A file's content as of a specific commit — read-only time travel. |
+| `GET /api/workspaces/{id}/git/status` | Uncommitted working-tree changes vs HEAD as `{path, state}` entries (`new` / `modified` / `deleted` / `renamed`). |
+| `GET /api/workspaces/{id}/git/diff` | Unified diff of uncommitted changes vs HEAD (untracked files appear in `/git/status`, not in the patch). |
+| `GET /api/workspaces/{id}/logs?tail=` | Tail the harness session logs (`.clk/logs/*.log`) — bounded reads, safe to poll. |
+
+All of them apply the same traversal and hidden-dir guards as the file
+editor, and commit SHAs are validated as hex before reaching git.
+
 ---
 
 ## Complete workflow example
