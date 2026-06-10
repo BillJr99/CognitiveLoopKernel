@@ -224,3 +224,12 @@ export function useTaskStatus(taskId: string | null) {
     },
   });
 }
+
+export function useHarnessLogs(wsId: string | null, enabled = true) {
+  return useQuery({
+    enabled: enabled && !!wsId,
+    queryKey: ["harness-logs", wsId],
+    queryFn: () => apiGet<import("./types").HarnessLogResponse>(`/api/workspaces/${wsId}/logs?tail=600`),
+    refetchInterval: 3000,
+  });
+}

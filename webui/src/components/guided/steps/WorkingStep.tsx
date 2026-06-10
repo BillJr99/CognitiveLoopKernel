@@ -45,7 +45,13 @@ export function WorkingStep({
   const { events, connected } = useSharedActivity();
   const cancel = useCancelTask();
   const lastSeq = events.length > 0 ? events[events.length - 1].seq : undefined;
-  const { healing } = useStuckWatchdog(wsId, snapData?.snapshot?.busy ?? false, connected, lastSeq, onNudged);
+  const { healing } = useStuckWatchdog({
+    wsId,
+    busy: snapData?.snapshot?.busy ?? false,
+    connected,
+    lastSeq,
+    onNudged,
+  });
   const [showLog, setShowLog] = useState(false);
 
   const snapshot = snapData?.snapshot;
@@ -53,13 +59,15 @@ export function WorkingStep({
   const stage = stageFor(pipeline, agents.length);
   const filesCount = snapshot?.files_changed?.length ?? 0;
 
-  // Latest plain-English line (skip internal noise).
+  // Latest plain-English line (skip internal noise). Before any events
+  // arrive the workspace is initializing (first run creates a virtualenv
+  // and installs tools — ~30-60 s), so reassure rather than sit silent.
   const nowLine = useMemo(() => {
     for (let i = events.length - 1; i >= 0; i--) {
       const line = friendlyEvent(events[i]);
       if (line) return line;
     }
-    return "Warming up…";
+    return "Setting up your project — the first run installs a few tools and can take a minute…";
   }, [events]);
 
   return (

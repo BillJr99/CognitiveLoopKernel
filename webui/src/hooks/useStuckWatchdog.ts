@@ -6,13 +6,15 @@ import { apiPost } from "../api/client";
 const STUCK_MS = 90_000;    // fire after 90 s of silence while busy
 const COOLDOWN_MS = 90_000; // don't re-fire within 90 s of last nudge
 
-export function useStuckWatchdog(
-  wsId: string | null | undefined,
-  busy: boolean,
-  connected: boolean,
-  lastSeq: number | undefined,
-  onNudged?: (newTaskId: string) => void,
-) {
+export interface StuckWatchdogOptions {
+  wsId: string | null | undefined;
+  busy: boolean;
+  connected: boolean;
+  lastSeq: number | undefined;
+  onNudged?: (newTaskId: string) => void;
+}
+
+export function useStuckWatchdog({ wsId, busy, connected, lastSeq, onNudged }: StuckWatchdogOptions) {
   const lastSeqRef = useRef<number | undefined>(lastSeq);
   const lastMovedRef = useRef<number>(Date.now());
   const lastNudgeRef = useRef<number>(0);

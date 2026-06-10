@@ -302,6 +302,23 @@ async def _run_task(task_id: str) -> None:
         task["proc"] = None
         _task_handles.pop(task_id, None)
 
+    # Server-side pipeline chaining: when this task completes successfully
+    # and declared a follow-up (e.g. guided mode's idea -> run), spawn the
+    # next task here so the chain survives the browser navigating away.
+    then_run = task.get("then_run")
+    if then_run and task["status"] == "done":
+        chained_id = str(uuid.uuid4())
+        chained: Dict[str, Any] = {
+            "task_id": chained_id, "workspace_id": task["workspace_id"],
+            "command": "run", "args": ["--workflow", str(then_run)],
+            "status": "pending", "created_at": _now_iso(),
+            "started_at": None, "finished_at": None, "exit_code": None,
+            "lines": [], "proc": None,
+        }
+        TASKS[chained_id] = chained
+        task["chained_task_id"] = chained_id
+        _task_handles[chained_id] = asyncio.create_task(_run_task(chained_id))
+
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -320,6 +337,10 @@ class ResearchRequest(BaseModel):
     args: List[str] = Field(default_factory=list)
     workspace_id: Optional[str] = None
     workflow: Optional[str] = None
+    # When set, a successful completion of this task automatically spawns a
+    # `run --workflow <then_run>` task in the same workspace (server-side, so
+    # the chain survives page reloads and mode switches).
+    then_run: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +471,8 @@ async def create_research(body: ResearchRequest) -> Dict[str, Any]:
         "args": args, "status": "pending", "created_at": _now_iso(),
         "started_at": None, "finished_at": None, "exit_code": None, "lines": [], "proc": None,
     }
+    if body.then_run:
+        task["then_run"] = body.then_run
     TASKS[task_id] = task
     _task_handles[task_id] = asyncio.create_task(_run_task(task_id))
     return {"ok": True, "task_id": task_id, "workspace_id": workspace_id}
@@ -465,6 +488,7 @@ async def get_task(task_id: str) -> Dict[str, Any]:
         "command": task["command"], "status": task["status"], "created_at": task.get("created_at"),
         "started_at": task["started_at"], "finished_at": task["finished_at"],
         "exit_code": task["exit_code"], "line_count": len(task["lines"]),
+        "chained_task_id": task.get("chained_task_id"),
     }
 
 
