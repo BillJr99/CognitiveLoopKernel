@@ -158,8 +158,13 @@ export function scoreResponse(
     );
     recoverable = false;
   }
+  // Tolerate a single unclosed block: providers routinely truncate the
+  // final ACTION block at the response cap, and the parser accepts an
+  // EOF-terminated last block. Two or more unclosed blocks means the
+  // worker genuinely doesn't emit END_ACTION. (Mirrors the Python
+  // harness's `act_balance > 1` rule.)
   const actBal = actionBlockImbalance(raw);
-  if (actBal > 0) {
+  if (actBal > 1) {
     flags.push("malformed_action");
     reasons.push(
       `${actBal} ACTION header(s) had no matching END_ACTION. Every ACTION block must terminate with a line END_ACTION.`,
@@ -175,10 +180,21 @@ export function scoreResponse(
   const missing = missingOutputs(raw, expected);
   if (missing.length > 0) {
     flags.push("outputs_missing");
+    // Concrete copy-paste example with the actual missing keys filled in —
+    // a generic "include a PRODUCES list" hint left small models guessing.
+    const producesLine = missing.join(", ");
     reasons.push(
       "Declared output contract keys not satisfied: " +
         missing.join(", ") +
-        ". Each key must appear in some POST block's PRODUCES: list.",
+        ". You MUST emit a POST block that lists every missing key in its " +
+        "PRODUCES line. Exact format:\n" +
+        "  POST: finding\n" +
+        `  PRODUCES: ${producesLine}\n` +
+        "  BODY:\n" +
+        "  <your summary here>\n" +
+        "  END_POST\n" +
+        "The PRODUCES line must contain every unsatisfied key above, " +
+        "comma-separated on a single line.",
     );
   }
   if (confidence !== undefined && confidence < 0.5) {

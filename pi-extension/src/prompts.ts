@@ -366,16 +366,32 @@ ${idea}
    The key invariant: **a single failed subagent call must never end the
    run.** Always attempt at least one recovery before escalating.
 
-11. **Mark done.** Call \`clk_done\` with a one-line reason ONLY when ALL of
-   the following hold:
+11. **Mark done — low bar to continue, high bar to stop.** Your natural
+   state is the next Ralph iteration; \`clk_done\` is the exception.
+
+   LOW BAR TO CONTINUE: any single item below is enough to start the next
+   iteration instead of evaluating completion. Scan for one — you will
+   almost always find it:
+       - any feature of the original idea is absent or only partially built,
+       - tests are missing or the suite has not been run this iteration,
+       - the latest output has not been through a Ralph refinement pass,
+       - any TODO / FIXME / placeholder remains in new or changed code,
+       - the README or docs do not yet reflect the new functionality,
+       - you can name even one improvement to robustness, completeness,
+         correctness, clarity, coverage, performance, or error handling.
+
+   HIGH BAR TO STOP: call \`clk_done\` with a one-line reason ONLY when no
+   low-bar trigger applies AND ALL of the following hold:
        - the MVP runs locally,
        - the test suite passes,
        - the README explains setup,
        - a deployment plan exists,
        - a deployment checklist exists,
        - at least one user-facing interaction path exists.
-   Do NOT pause and ask the user if the run is complete. Keep iterating
-   until every criterion above is satisfied, then call \`clk_done\`.
+   Do NOT pause and ask the user if the run is complete. Stopping one
+   iteration too early is the most common mistake; one extra Ralph
+   iteration is never the wrong call. Keep iterating until every
+   criterion above is satisfied, then call \`clk_done\`.
 
 ## Operating notes
 
