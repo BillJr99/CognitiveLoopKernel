@@ -158,6 +158,46 @@ export interface FileContent {
   content?: string;
 }
 
+export interface GitCommitFile {
+  path: string;
+  insertions: number;
+  deletions: number;
+}
+
+export interface GitCommit {
+  sha: string;
+  short: string;
+  author: string;
+  date: string;
+  subject: string;
+  insertions: number;
+  deletions: number;
+  files: GitCommitFile[];
+}
+
+export interface GitLogResponse {
+  ok: boolean;
+  commits: GitCommit[];
+  count: number;
+}
+
+export interface GitCommitDetail {
+  ok: boolean;
+  commit: GitCommit | null;
+  patch: string;
+  patch_truncated: boolean;
+}
+
+export interface GitFileAt {
+  ok: boolean;
+  path: string;
+  sha: string;
+  binary: boolean;
+  size: number;
+  truncated?: boolean;
+  content?: string;
+}
+
 export interface TaskRef {
   ok: boolean;
   task_id: string;

@@ -645,6 +645,93 @@ async def write_file(workspace_id: str, body: FileWrite) -> Dict[str, Any]:
     return {"ok": True, "path": body.path, "size": len(data)}
 
 
+# ---------------------------------------------------------------------------
+# Git history: the Files tab's "how did these files evolve" view
+# ---------------------------------------------------------------------------
+
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{4,40}$")
+
+
+def _require_sha(sha: str) -> str:
+    if not _SHA_RE.match(sha or ""):
+        raise _api()._err("invalid_sha", "A hex commit sha is required.", 400)
+    return sha
+
+
+@router.get("/api/workspaces/{workspace_id}/git/log")
+async def git_log(
+    workspace_id: str,
+    path: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+) -> Dict[str, Any]:
+    """Commit history (newest first) for the workspace, or for one file.
+
+    Harness-internal paths (.clk, .git, …) are filtered out so the
+    history mirrors what the Files tab lists.
+    """
+    from . import git_ops
+
+    paths = _require_workspace(workspace_id)
+    if path:
+        _safe_ws_file(paths, path)  # traversal + hidden-dir guard
+    commits = await asyncio.to_thread(
+        git_ops.log_entries, paths.root, path=path, limit=limit
+    )
+    return {"ok": True, "commits": commits, "count": len(commits)}
+
+
+@router.get("/api/workspaces/{workspace_id}/git/commit/{sha}")
+async def git_commit_detail(workspace_id: str, sha: str) -> Dict[str, Any]:
+    """One commit's metadata + unified diff (internal paths excluded)."""
+    from . import git_ops
+
+    paths = _require_workspace(workspace_id)
+    _require_sha(sha)
+    commits = await asyncio.to_thread(
+        git_ops.log_entries, paths.root, limit=1, rev=sha
+    )
+    meta = commits[0] if commits else None
+    patch = await asyncio.to_thread(git_ops.commit_patch, paths.root, sha)
+    if meta is None and patch is None:
+        raise _api()._err("commit_not_found", f"Commit {sha!r} not found.", 404)
+    return {
+        "ok": True,
+        "commit": meta,
+        "patch": (patch or {}).get("patch", ""),
+        "patch_truncated": bool((patch or {}).get("truncated")),
+    }
+
+
+@router.get("/api/workspaces/{workspace_id}/git/file")
+async def git_file_at(
+    workspace_id: str, sha: str = Query(...), path: str = Query(...)
+) -> Dict[str, Any]:
+    """File content as of a specific commit (read-only time travel)."""
+    from . import git_ops
+
+    paths = _require_workspace(workspace_id)
+    _require_sha(sha)
+    _safe_ws_file(paths, path)  # traversal + hidden-dir guard
+    raw = await asyncio.to_thread(git_ops.file_at, paths.root, sha, path)
+    if raw is None:
+        raise _api()._err(
+            "file_not_found", f"File {path!r} not found at commit {sha[:12]}.", 404
+        )
+    too_big = len(raw) > _MAX_FILE_BYTES
+    chunk = raw[:_MAX_FILE_BYTES]
+    if _is_probably_binary(chunk):
+        return {"ok": True, "path": path, "sha": sha, "binary": True, "size": len(raw)}
+    return {
+        "ok": True,
+        "path": path,
+        "sha": sha,
+        "binary": False,
+        "size": len(raw),
+        "truncated": too_big,
+        "content": chunk.decode("utf-8", errors="replace"),
+    }
+
+
 @router.put("/api/workspaces/{workspace_id}/idea")
 async def set_idea(workspace_id: str, body: IdeaUpdate) -> Dict[str, Any]:
     """Seed the workspace idea/brief used by the next ``run``.
