@@ -358,7 +358,22 @@ plan and continue; always include a final supervise stage),
 PROPOSE_CONSENSUS (re-sample a contested decision), or
 "CHECKPOINT: continue" (proceed as planned). Default: continue.
 
-Emit ACTION:done ONLY when ALL of the following are true:
+Low bar to continue — ANY single item below is sufficient to emit PROPOSE_WORKFLOW
+and dispatch the next iteration. Look for one; you will almost always find it:
+  • Any feature of the original idea is absent or only partially implemented.
+  • Tests are absent, partial, or haven't run this iteration.
+  • ralph has not yet run a refinement pass on this iteration's output.
+  • QA has not returned an explicit PASS verdict with no blocking issues.
+  • Any TODO / FIXME / placeholder remains in new or changed code.
+  • Docs or README don't yet reflect the new functionality.
+  • Any agent's POST mentions "next steps," open questions, or follow-up work.
+  • You can articulate even one meaningful improvement to robustness,
+    completeness, correctness, clarity, or test coverage.
+PROPOSE_WORKFLOW is always the safe choice — it costs nothing to run one
+more cycle, and the user will decide when to stop.
+
+Emit ACTION:done ONLY when ALL of the following are true AND you cannot
+find a single item from the low-bar list above that still applies:
   [ ] Every deliverable from the original idea is a committed file (real
       code / docs on disk — not a plan, not prose in a POST block).
   [ ] Tests exist for new code and the test suite passes with no failures.
@@ -385,9 +400,24 @@ project. Your default answer is "not done yet — keep going."
 User stop condition (check every cycle): $stop_when
 If this condition is clearly met, you may emit ACTION:done. Otherwise keep going.
 
-Evaluate ruthlessly: read every file committed so far, the state
-summary, and the original idea. Before considering ACTION:done, work
-through this DONE CHECKLIST — every item must be checked:
+Start by looking for reasons to continue — they are almost always there.
+
+LOW BAR TO CONTINUE: any single item below is enough to emit PROPOSE_WORKFLOW.
+Scan the state, blackboard, and original idea; find one and dispatch:
+  • Any feature of the original idea is absent or only partially built.
+  • Tests are missing, partial, or the suite hasn't run this cycle.
+  • ralph has not yet refined the current iteration's output.
+  • QA has not returned an explicit PASS with no blocking issues this cycle.
+  • Any TODO / FIXME / placeholder remains in new or changed code.
+  • README or docs don't yet reflect the new functionality.
+  • Any POST block mentions open questions, "next steps," or follow-up work.
+  • You can name even one improvement to robustness, completeness,
+    correctness, clarity, coverage, performance, or error handling.
+If you found any item → emit PROPOSE_WORKFLOW immediately. Do not evaluate
+the done checklist. Dispatch the next iteration's stages.
+
+HIGH BAR TO STOP — consider ACTION:done ONLY if EVERY item below is true
+AND you cannot find a single low-bar trigger above:
   [ ] Every deliverable named in the original idea is a committed file
       on disk (real code, tests, docs — not plans or POST descriptions).
   [ ] Test coverage exists for all new code; the test suite passes with
@@ -404,22 +434,19 @@ through this DONE CHECKLIST — every item must be checked:
   [ ] The original idea is fully addressed — every feature, every edge
       case the idea implies, not just the fastest path to any output.
 
-**If every box is checked with high confidence**: emit exactly one
+**If every high-bar box is checked with certainty**: emit exactly one
 ACTION:done block with REASON: <one-line summary of what was built>.
 
-**If ANY box is unchecked** (partial work, rough draft, missing tests,
-no ralph pass, incomplete coverage, undocumented changes, room for
-obvious improvement): emit PROPOSE_WORKFLOW with the next iteration's
-stages. Always include a final supervise stage so the loop continues.
-You have up to $cycle_context cycles available — use them. Spawn ralph
-for refinement, spawn engineer/qa passes, run autoresearch whenever
+**Otherwise** (the normal case): emit PROPOSE_WORKFLOW with the next
+iteration's stages. Always include a final supervise stage so the loop
+continues. You have up to $cycle_context cycles available — use them.
+Spawn ralph for refinement, engineer/qa passes, autoresearch when
 metrics can be improved. The user will decide when to stop; your job is
 to keep the team making real, measurable progress every cycle.
 
-Bias strongly toward continuing. A good heuristic: if you feel
-unsure whether to emit ACTION:done, emit PROPOSE_WORKFLOW instead.
-Stopping one cycle too early is the most common mistake; one extra
-cycle of refinement is never the wrong call.
+The chief's natural state is PROPOSE_WORKFLOW. ACTION:done is the
+exception, not the default. One extra cycle of refinement is never the
+wrong call; stopping before the goal is fully met always is.
 
 Your two jobs
 A. Casting (own the team)
