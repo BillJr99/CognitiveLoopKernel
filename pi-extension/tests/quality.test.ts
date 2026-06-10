@@ -11,6 +11,7 @@ import {
   repairHint,
   isRecoverable,
   summarise,
+  progressSignal,
 } from "../src/quality.ts";
 
 describe("scoreResponse — happy paths", () => {
@@ -143,5 +144,25 @@ describe("repairHint / isRecoverable / summarise", () => {
     assert.match(summarise(ok), /^ok score=/);
     const bad = scoreResponse("");
     assert.match(summarise(bad), /^flags=empty score=/);
+  });
+});
+
+describe("progressSignal", () => {
+  test("explicit yes / no are parsed", () => {
+    assert.equal(progressSignal("did work\nPROGRESS: yes"), true);
+    assert.equal(progressSignal("blocked\nPROGRESS: no"), false);
+    assert.equal(progressSignal("PROGRESS: true"), true);
+    assert.equal(progressSignal("PROGRESS: false"), false);
+  });
+
+  test("absent marker returns undefined", () => {
+    assert.equal(progressSignal("no marker here"), undefined);
+    assert.equal(progressSignal(""), undefined);
+    assert.equal(progressSignal(null), undefined);
+  });
+
+  test("the last marker wins when several appear", () => {
+    assert.equal(progressSignal("PROGRESS: no\nmore work\nPROGRESS: yes"), true);
+    assert.equal(progressSignal("PROGRESS: yes\nthen failed\nPROGRESS: no"), false);
   });
 });

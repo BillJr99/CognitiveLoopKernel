@@ -1,7 +1,16 @@
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { setRoster, appendProgress, markDone, setHomeBranch, getHomeBranch } from "./state.js";
+import {
+  setRoster,
+  appendProgress,
+  markDone,
+  setHomeBranch,
+  getHomeBranch,
+  recordRalphOutcome,
+  consecutiveRalphReverts,
+} from "./state.js";
+import { runValidation, runValidations } from "./validate.js";
 import {
   checkpoint,
   head,
@@ -262,6 +271,9 @@ export function registerClkTools(pi: ExtensionAPI): void {
           details: { error: String(err) },
         };
       }
+      if (abandonedBranch.startsWith("ralph/")) {
+        await recordRalphOutcome(ctx.cwd, abandonedBranch, "reverted", pi);
+      }
       await appendProgress(
         ctx.cwd,
         { kind: "revert", message: `rejected branch preserved: ${abandonedBranch} — ${params.reason}` },
@@ -332,10 +344,20 @@ export function registerClkTools(pi: ExtensionAPI): void {
     label: "CLK Merge",
     description:
       "Merge the current feature branch into the home branch after a successful Ralph " +
-      "iteration. Commits any pending changes first, then merges and switches back to home.",
-    promptSnippet: "Merge accepted feature branch into home branch; call after validation passes.",
+      "iteration. Commits any pending changes first, then merges and switches back to home. " +
+      "Pass `validate` (a shell command, e.g. the test suite) and the merge is REFUSED unless " +
+      "it exits 0 — the code-enforced quality gate. Always pass it when the project has tests.",
+    promptSnippet:
+      "Merge accepted feature branch into home branch; `validate` runs first and a non-zero exit refuses the merge.",
     parameters: Type.Object({
       message: Type.String({ description: "Commit message describing the accepted improvement." }),
+      validate: Type.Optional(
+        Type.String({
+          description:
+            "Shell command that must exit 0 for the merge to proceed (e.g. 'npm test', 'pytest -q'). " +
+            "Runs on the feature branch after the checkpoint commit.",
+        }),
+      ),
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
       if (looksRedacted(params.message)) {
@@ -366,6 +388,22 @@ export function registerClkTools(pi: ExtensionAPI): void {
           () => checkpoint(ctx.cwd, `[clk] ${params.message}`, sig),
           { signal: sig },
         );
+        if (params.validate) {
+          const v = await runValidation(ctx.cwd, params.validate, { signal: sig });
+          if (!v.ok) {
+            return {
+              content: [{
+                type: "text",
+                text:
+                  `clk_merge REFUSED: validation command failed (exit ${v.exitCode ?? "?"}).\n` +
+                  `  $ ${v.command}\n${v.output}\n\n` +
+                  `Still on feature branch ${featureBranch}. Fix the failure and call clk_merge ` +
+                  "again, or abandon the iteration with clk_revert.",
+              }],
+              details: { validationFailed: true, exitCode: v.exitCode, featureBranch },
+            };
+          }
+        }
         await withRetry(() => checkoutBranch(ctx.cwd, home, sig), { signal: sig });
         try {
           await withRetry(() => mergeBranch(ctx.cwd, featureBranch, sig), { signal: sig });
@@ -389,6 +427,9 @@ export function registerClkTools(pi: ExtensionAPI): void {
       }
       // Use post-merge HEAD so the displayed SHA reflects the merge commit.
       const mergeHead = await head(ctx.cwd, sig);
+      if (featureBranch.startsWith("ralph/")) {
+        await recordRalphOutcome(ctx.cwd, featureBranch, "merged", pi);
+      }
       await appendProgress(
         ctx.cwd,
         { kind: "merge", message: `merged ${featureBranch} → ${home}: ${params.message}` },
@@ -439,6 +480,13 @@ export function registerClkTools(pi: ExtensionAPI): void {
       minChars: Type.Optional(
         Type.Integer({ minimum: 0, description: "Override minimum-response-length flag threshold (default 40)." }),
       ),
+      expectedOutputs: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Outputs-contract keys each sample must list in a POST block's PRODUCES line. " +
+            "Samples missing any key are scored down.",
+        }),
+      ),
     }),
     async execute(_id, params, signal, onUpdate, ctx) {
       if (signal?.aborted || activeSignal()?.aborted) {
@@ -469,7 +517,10 @@ export function registerClkTools(pi: ExtensionAPI): void {
           cwd: ctx.cwd,
           signal: sig,
           samples,
-          scoreOpts: params.minChars !== undefined ? { minChars: params.minChars } : {},
+          scoreOpts: {
+            ...(params.minChars !== undefined ? { minChars: params.minChars } : {}),
+            ...(params.expectedOutputs?.length ? { expectedOutputs: params.expectedOutputs } : {}),
+          },
           onSample: (idx, message) =>
             onUpdate?.({
               content: [{ type: "text", text: `[consensus #${idx}] ${message}` }],
@@ -536,6 +587,13 @@ export function registerClkTools(pi: ExtensionAPI): void {
         Type.Integer({ minimum: 0, maximum: 4, description: "Extra dispatches on quality failures. Default 1." }),
       ),
       minChars: Type.Optional(Type.Integer({ minimum: 0 })),
+      expectedOutputs: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Outputs-contract keys the response must list in a POST block's PRODUCES line; " +
+            "missing keys trigger the repair re-roll with a concrete POST example.",
+        }),
+      ),
     }),
     async execute(_id, params, signal, onUpdate, ctx) {
       if (signal?.aborted || activeSignal()?.aborted) {
@@ -562,7 +620,10 @@ export function registerClkTools(pi: ExtensionAPI): void {
           cwd: ctx.cwd,
           signal: sig,
           maxRetries: params.maxRetries ?? 1,
-          scoreOpts: params.minChars !== undefined ? { minChars: params.minChars } : {},
+          scoreOpts: {
+            ...(params.minChars !== undefined ? { minChars: params.minChars } : {}),
+            ...(params.expectedOutputs?.length ? { expectedOutputs: params.expectedOutputs } : {}),
+          },
           onRetry: (attempt, q) =>
             onUpdate?.({
               content: [{
@@ -739,10 +800,41 @@ export function registerClkTools(pi: ExtensionAPI): void {
         Type.Integer({ minimum: 1, maximum: 6, description: "Consensus samples per iteration. Default 3." }),
       ),
       preferredModel: Type.Optional(Type.String()),
+      expectedOutputs: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Outputs-contract keys the worker must list in a POST block's PRODUCES line. " +
+            "Declare them whenever the task produces a named artifact.",
+        }),
+      ),
+      acknowledgePlateau: Type.Optional(
+        Type.Boolean({
+          description:
+            "Required to proceed after 3+ consecutive reverted Ralph iterations. Set true ONLY " +
+            "when the task is a qualitatively different approach, not another marginal tweak.",
+        }),
+      ),
     }),
     async execute(_id, params, signal, onUpdate, ctx) {
       if (signal?.aborted || activeSignal()?.aborted) {
         return { content: [{ type: "text", text: "clk_ralph cancelled before start." }], details: {} };
+      }
+      // Plateau guard — same signal the Python harness derives from its
+      // plateau_window: consecutive rejected iterations mean another
+      // marginal tweak will likely fail too. Force an explicit reframe.
+      const reverts = consecutiveRalphReverts();
+      if (reverts >= 3 && !params.acknowledgePlateau) {
+        return {
+          content: [{
+            type: "text",
+            text:
+              `clk_ralph PLATEAU: the last ${reverts} Ralph iterations were all reverted. ` +
+              "Do NOT retry a variation of the same change. Choose a qualitatively different " +
+              "approach (new design, different metric, clk_autoresearch on the blocker first), " +
+              "then re-call clk_ralph with acknowledgePlateau: true and the new approach in the task.",
+          }],
+          details: { plateau: true, consecutiveReverts: reverts },
+        };
       }
       if (!(await tmuxAvailable())) {
         return {
@@ -787,6 +879,9 @@ export function registerClkTools(pi: ExtensionAPI): void {
           cwd: ctx.cwd,
           signal: sig,
           samples: params.samples ?? 3,
+          scoreOpts: params.expectedOutputs?.length
+            ? { expectedOutputs: params.expectedOutputs }
+            : {},
           onSample: (idx, message) =>
             onUpdate?.({
               content: [{ type: "text", text: `[ralph/${branchName} #${idx}] ${message}` }],
@@ -835,13 +930,39 @@ export function registerClkTools(pi: ExtensionAPI): void {
     description:
       "Mark the project complete. Writes .clk/state/done.md and ends the orchestration run. " +
       "Only call when the MVP runs, tests pass, README, deployment plan + checklist, and at " +
-      "least one user-facing path all exist.",
+      "least one user-facing path all exist. Pass `validate` (shell commands, e.g. the test " +
+      "suite) and completion is REFUSED while any of them exits non-zero — always pass it " +
+      "when the project has tests so 'done' is provable, not asserted.",
     promptSnippet:
-      "Mark the run complete; only when every completion criterion is satisfied.",
+      "Mark the run complete; `validate` commands must all exit 0 or completion is refused.",
     parameters: Type.Object({
       reason: Type.String({ description: "One-line summary of why the run is complete." }),
+      validate: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Shell commands that must ALL exit 0 for the run to be marked done " +
+            "(e.g. ['npm test', 'npm run build']).",
+        }),
+      ),
     }),
-    async execute(_id, params, _signal, _onUpdate, ctx) {
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      const sig = mergeSignals(signal, activeSignal());
+      if (params.validate && params.validate.length > 0) {
+        const { ok, results } = await runValidations(ctx.cwd, params.validate, { signal: sig });
+        if (!ok) {
+          const failed = results[results.length - 1]!;
+          return {
+            content: [{
+              type: "text",
+              text:
+                `clk_done REFUSED: validation command failed (exit ${failed.exitCode ?? "?"}).\n` +
+                `  $ ${failed.command}\n${failed.output}\n\n` +
+                "The run is NOT done while validation fails. Fix the failure and keep iterating.",
+            }],
+            details: { validationFailed: true, command: failed.command, exitCode: failed.exitCode },
+          };
+        }
+      }
       await markDone(ctx.cwd, params.reason, pi);
       await appendProgress(ctx.cwd, { kind: "done", message: params.reason }, pi);
       ctx.ui.setStatus("clk-done", `done: ${params.reason}`);

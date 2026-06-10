@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:unit": "tsx --test tests/errors.test.ts tests/prompts.test.ts tests/state.test.ts tests/git.test.ts tests/index.test.ts tests/runtime_smoke.test.ts tests/safety_nets.test.ts tests/quality.test.ts tests/consensus.test.ts",
+    "test:unit": "tsx --test tests/errors.test.ts tests/prompts.test.ts tests/state.test.ts tests/git.test.ts tests/index.test.ts tests/runtime_smoke.test.ts tests/safety_nets.test.ts tests/quality.test.ts tests/consensus.test.ts tests/watchdog.test.ts tests/autonomy.test.ts",
     "test": "npm run test:unit",
     "test:strict": "npm run typecheck && npm run test:unit"
   },

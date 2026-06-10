@@ -49,6 +49,7 @@ prompt — the tools enforce the shape.
 | Command | What it does |
 |---|---|
 | `/clk <idea>` | Start a CLK run. Casts a team, dispatches them, runs Ralph + autoresearch. |
+| `/clk-resume` | Continue an interrupted run (session restart, abort, or watchdog stall-stop) from persisted state. The chief gets a recap and the watchdog re-arms. |
 | `/clk-abort` | End the active run. State is preserved for resume. |
 | `/clk-help` | List every CLK command, every orchestration tool the chief uses, and the safety nets active in the workspace. |
 | `/clk-doctor` | Health-check tmux, git, the `.clk/` layout, `.gitignore`, the pre-push hook, and (when a remote exists) the count of local commits not yet pushed. Pure environment checks; no Pi calls. |
@@ -81,11 +82,11 @@ when you read the progress log or notifications.
 | Tool | Use when… |
 |---|---|
 | `clk_branch({ name })` | Manually open a feature branch for an iteration. Records the home branch automatically. |
-| `clk_ralph({ iterationName, agent, task, samples?, preferredModel? })` | One-call Ralph iteration: creates `ralph/<iterationName>`, fans out a consensus dispatch, returns the winner. Chief then runs validation and calls `clk_merge` (accept) or `clk_revert` (reject). The branch creation + fan-out happen in one step and can't be skipped. |
+| `clk_ralph({ iterationName, agent, task, samples?, expectedOutputs?, acknowledgePlateau?, preferredModel? })` | One-call Ralph iteration: creates `ralph/<iterationName>`, fans out a consensus dispatch, returns the winner. Chief then runs validation and calls `clk_merge` (accept) or `clk_revert` (reject). After 3+ consecutive reverted iterations the tool refuses another attempt (**plateau guard**) until the chief acknowledges with a qualitatively different approach. |
 | `clk_checkpoint({ message })` | Stage all working-tree changes and create a `[clk] <message>` commit. Returns the new HEAD SHA. When `CLK_GITHUB_PUSH_ON_COMMIT=true` and an `origin` remote exists, also runs `git push origin HEAD` best-effort. |
-| `clk_merge({ message })` | Commit any pending changes on the feature branch, merge it into the home branch with `--no-ff`, return to home. Same auto-push behavior as `clk_checkpoint`. |
+| `clk_merge({ message, validate? })` | Commit any pending changes on the feature branch, merge it into the home branch with `--no-ff`, return to home. When `validate` (a shell command) is passed, it runs first and a non-zero exit **refuses the merge** — a red suite can never reach the home branch. Same auto-push behavior as `clk_checkpoint`. |
 | `clk_revert({ reason })` | Commit any pending work on the rejected branch (preserving it), switch back to home without merging. The rejected branch is **never** deleted. |
-| `clk_done({ reason })` | Mark the run complete. Writes `.clk/state/done.md`, ends the run lifecycle. Only call when every completion criterion in [`src/prompts.ts`](src/prompts.ts) is satisfied. |
+| `clk_done({ reason, validate? })` | Mark the run complete. Writes `.clk/state/done.md`, ends the run lifecycle. When `validate` (shell commands) is passed, completion is **refused** while any of them fails — "done" is demonstrated, not asserted. |
 
 ### Response-quality scoring
 
@@ -107,6 +108,28 @@ caller re-dispatches with a preamble that quotes every reason back to
 the worker so it fixes the specific issues rather than re-rolling at
 random. Same protocol the Python harness uses in
 `agent.py::_dispatch_with_quality_loop`.
+
+## Run watchdog (autonomy)
+
+The extension ports the Python harness's supervise loop. While a run is
+active and `clk_done` hasn't been called, every chief turn that ends is
+folded into a continue → rescue → stop ladder:
+
+- **Continue.** If the turn produced material progress (HEAD moved or a
+  progress entry was logged), the watchdog re-prompts the chief with a
+  run recap and the next-iteration instructions. The chief never idles
+  waiting for user input.
+- **Stall rescue.** After `CLK_STALL_CAP` (default 3) consecutive turns
+  with no commits and no progress entries, a one-shot rescue prompt
+  fires: restructure the objective, unblock via autoresearch, or prove
+  done — no more marginal tweaks.
+- **Stop.** Stalling again after the rescue ends the run with status
+  `stalled` (state preserved; `/clk-resume` continues it). A hard cap of
+  `CLK_MAX_AUTO_CONTINUES` (default 100) auto-continuations bounds token
+  spend, mirroring `supervise.max_cycles`.
+
+Counters persist in `.clk/state/clk.json`, so a resumed run starts with
+a fresh stall budget but keeps its history.
 
 ## Safety nets
 
@@ -304,6 +327,9 @@ as Ralph-style baselines and reverts to them on regression.
 | YAML workflows in `.clk/config/workflows/` driven by a workflow runner | The chief decides workflow on the fly using the orchestration tools. |
 | Per-agent prompt files in `.clk/prompts/` | One operator's manual in `src/prompts.ts`; per-role personas live in `roster.json`. |
 | Subprocess-piped provider adapters | tmux pi sessions (`clk_subagent` and the consensus fan-out spawn the same way). |
+| Supervise loop: no-progress cap + stall-rescue chief dispatch | The run watchdog: agent_end re-prompts, `CLK_STALL_CAP` stall rescue, `CLK_MAX_AUTO_CONTINUES` cycle cap. |
+| Per-stage `validation:` commands with rollback policy | `validate` parameters on `clk_merge` / `clk_done` — a failing command refuses the merge / completion (rejected work stays on its preserved branch). |
+| Ralph plateau detection (`robustness.plateau_window`) | `clk_ralph` plateau guard: 3+ consecutive reverts refuse another attempt until `acknowledgePlateau: true` accompanies a qualitatively different approach. |
 | Robustness loops gated by `clk.config.json::robustness.*` | The four orchestration tools (`clk_consensus`, `clk_subagent_quality`, `clk_autoresearch`, `clk_ralph`) implement the equivalent loops directly; their parameters (`samples`, `maxRetries`, `iterations`) act as per-call knobs. |
 | `clk_harness/orchestration/response_quality.py` | Same rules, ported to `src/quality.ts`. |
 | Telegram bot integration | Out of scope — use the Python harness for that. |
@@ -419,7 +445,12 @@ pi-extension/
                        #   safety-net installer, hasRemote, commitsAhead,
                        #   pushBestEffort (port of git_ops.py auto-push)
     state.ts           # .clk/state/* persistence + pi.appendEntry mirroring
-                       #   (idea, roster, progress, homeBranch)
+                       #   (idea, roster, progress, homeBranch, supervise
+                       #   counters, ralph outcomes)
+    watchdog.ts        # supervise loop: continue → stall rescue → stop
+                       #   ladder driven from agent_end (port of
+                       #   WorkflowRunner.run's no-progress handling)
+    validate.ts        # shell validation gate for clk_merge / clk_done
     abort.ts           # run-scoped AbortController + /clk-abort + shutdown bridge
     errors.ts          # error classification, backoff retry, redaction detection
     types.ts           # shared types (Roster, ProgressKind, ClkState)
@@ -437,6 +468,8 @@ pi-extension/
     runtime_smoke.test.ts # real pi binary, when available (CI gates this)
     index.test.ts      # extension factory wires every tool + command,
                        #   firstLineShort handles multi-line ideas
+    watchdog.test.ts   # the continue → rescue → stop ladder + agent_end wiring
+    autonomy.test.ts   # clk_merge / clk_done validation refusals + plateau guard
 ```
 
 ## Testing
@@ -446,7 +479,7 @@ Inside `pi-extension/`:
 ```bash
 npm ci                  # install dependencies
 npm run typecheck       # tsc --noEmit
-npm test                # 96 tests, ~2s, no network or pi required
+npm test                # 122 tests, ~3s, no network or pi required
 npm run test:strict     # typecheck + tests in one go
 ```
 

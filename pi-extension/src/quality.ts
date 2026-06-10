@@ -260,6 +260,26 @@ export function isRecoverable(q: ResponseQuality): boolean {
   return !q.ok && q.recoverable;
 }
 
+const PROGRESS_RE = /^\s*PROGRESS\s*:\s*(yes|no|true|false)\s*$/gim;
+
+/**
+ * Self-reported per-turn progress marker — port of the Python harness's
+ * response_quality.progress_signal(). Returns true/false for an explicit
+ * `PROGRESS: yes|no` line (the LAST marker wins when several appear),
+ * or undefined when the response carries no marker. Callers feed this
+ * into stall detection: an explicit "no" counts against the no-progress
+ * budget even when files changed (busywork detection).
+ */
+export function progressSignal(text: string | null | undefined): boolean | undefined {
+  if (!text) return undefined;
+  const fresh = new RegExp(PROGRESS_RE.source, PROGRESS_RE.flags);
+  let last: string | undefined;
+  let m: RegExpExecArray | null;
+  while ((m = fresh.exec(text)) !== null) last = m[1]!.toLowerCase();
+  if (last === undefined) return undefined;
+  return last === "yes" || last === "true";
+}
+
 export function summarise(q: ResponseQuality): string {
   if (q.ok) return `ok score=${q.score.toFixed(2)}`;
   return `flags=${q.flags.join(",") || "?"} score=${q.score.toFixed(2)}`;
