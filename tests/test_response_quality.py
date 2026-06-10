@@ -31,17 +31,38 @@ def test_substantive_response_passes() -> None:
 
 
 def test_malformed_action_block_flagged() -> None:
+    # Two unclosed ACTION blocks (balance=2) must be flagged.
+    # A single EOF-truncated block (balance=1) is tolerated because the
+    # parser handles it correctly; only genuinely interleaved unclosed
+    # blocks corrupt parsing and warrant a retry.
     text = (
         "Doing the work now.\n\n"
         "ACTION: write\n"
         "PATH: foo.py\n"
         "CONTENT:\n"
         "print('hello')\n"
-        # Missing END_ACTION
+        # Missing END_ACTION — first open block
+        "ACTION: run\n"
+        "CMD: echo ok\n"
+        # Missing END_ACTION — second open block
     )
     q = rq.score(text)
     assert "malformed_action" in q.flags
     assert not q.ok
+
+
+def test_single_eof_truncated_action_tolerated() -> None:
+    # One unclosed block at EOF is forgiven — the parser handles it.
+    text = (
+        "Doing the work now.\n\n"
+        "ACTION: write\n"
+        "PATH: foo.py\n"
+        "CONTENT:\n"
+        "print('hello')\n"
+        # Missing END_ACTION — EOF truncation of final block
+    )
+    q = rq.score(text)
+    assert "malformed_action" not in q.flags
 
 
 def test_balanced_action_block_passes() -> None:
