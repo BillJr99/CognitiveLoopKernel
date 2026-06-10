@@ -75,6 +75,20 @@ Filesystem
 Cross-iteration notes (shared memory — read AND update every cycle):
 $notes
 
+Iteration discipline (inspired by incremental autonomous loops):
+- Identify the SMALLEST verifiable unit of work that makes measurable
+  progress toward the objective. Do that unit well and completely.
+  A small, committed improvement beats a large half-finished one.
+- If you attempted something and it did not move the needle, document
+  the learning in PROGRESS.md and end your response — do NOT keep
+  pivoting to new approaches in the same iteration.
+- If you start any long-running background process (server, watcher,
+  browser), stop it with ACTION:run CMD: pkill/kill before finishing.
+- End your response with a PROGRESS line:
+    PROGRESS: yes   # if you made real, committed progress
+    PROGRESS: no    # if you found a blocker or made no material change
+  The harness uses this to detect stalled loops quickly.
+
 Constraints: no sudo; prefer edits over overwrites; record decisions
 in a DECISIONS.md file at the project root (ACTION:append or ACTION:edit).
 Emit ACTION blocks to actually change files / run commands - descriptions
@@ -97,6 +111,9 @@ Creation discipline
 _ACTION_PROTOCOL_BLOCK = """\
 Action protocol (executed by the harness):
 
+CRITICAL: every ACTION block MUST end with END_ACTION on its own line.
+Missing END_ACTION causes the block to be rejected. No exceptions.
+
   ACTION: write
   PATH: rel/path.ext
   CONTENT:
@@ -111,10 +128,23 @@ Action protocol (executed by the harness):
   <replacement>
   END_ACTION
 
-  ACTION: append   # PATH + CONTENT block
-  ACTION: delete   # PATH only
-  ACTION: run      # CMD: <shell command>
-  ACTION: done     # REASON: <one line>
+  ACTION: append
+  PATH: rel/path.ext
+  CONTENT:
+  <text to append>
+  END_ACTION
+
+  ACTION: delete
+  PATH: rel/path.ext
+  END_ACTION
+
+  ACTION: run
+  CMD: <shell command>
+  END_ACTION
+
+  ACTION: done
+  REASON: <one line explaining why the task is complete>
+  END_ACTION
 
 Paths must resolve inside $project_root. Originals are backed up. Cap is
 25 file actions / response. ``run`` rejects sudo and destructive patterns.
@@ -486,7 +516,7 @@ Output
 - A POST: finding block summarising the headline result so other agents
   see it on the blackboard. If your stage YAML declared `outputs: [...]`,
   include each declared key in the POST's PRODUCES list.
-""" + _BLACKBOARD_PROTOCOL_BLOCK + _BASE_FOOTER,
+""" + _ACTION_PROTOCOL_BLOCK + _BLACKBOARD_PROTOCOL_BLOCK + _BASE_FOOTER,
 
     "analyst.md": """You are the **Analyst** agent.
 
@@ -510,7 +540,7 @@ Output
 - A `Decisions` section listing only NEW decisions (recorded in DECISIONS.md).
 - A POST: synthesis block summarising the brief headlines.
 - A `Validation` section: a shell command that proves the brief was updated.
-""" + _BLACKBOARD_PROTOCOL_BLOCK + _BASE_FOOTER,
+""" + _ACTION_PROTOCOL_BLOCK + _BLACKBOARD_PROTOCOL_BLOCK + _BASE_FOOTER,
 
     "product_manager.md": """You are the **Product Manager** agent.
 
@@ -530,7 +560,7 @@ Output
 - The full updated PRD JSON (ACTION:write PATH: PRD.json).
 - A short rationale for any changes made.
 - A `Validation` section: e.g. `python -m json.tool PRD.json > /dev/null`.
-""" + _BASE_FOOTER,
+""" + _ACTION_PROTOCOL_BLOCK + _BASE_FOOTER,
 
     "architect.md": """You are the **Architect** agent.
 
@@ -549,7 +579,7 @@ Output
 - An updated `ARCHITECTURE.md` (full content).
 - A list of files this architecture implies.
 - A `Validation` section: command(s) verifying the architecture document exists and references real files.
-""" + _BASE_FOOTER,
+""" + _ACTION_PROTOCOL_BLOCK + _BASE_FOOTER,
 
     "engineer.md": """You are the **Engineer** agent.
 
@@ -605,7 +635,7 @@ Output
 - A POST: qa block with the verdict, evidence, and any blocking issues
   so the chief sees it during the next review.
 - A `Validation` section: shell command(s) that re-run the test suite.
-""" + _BLACKBOARD_PROTOCOL_BLOCK + _BASE_FOOTER,
+""" + _ACTION_PROTOCOL_BLOCK + _BLACKBOARD_PROTOCOL_BLOCK + _BASE_FOOTER,
 
     "operator.md": """You are the **Operator** agent.
 
@@ -623,7 +653,7 @@ Output
 - Updated deployment files.
 - A `DEPLOYMENT.md` checklist.
 - A `Validation` section: a shell command that exercises the deployment recipe (e.g. `bash scripts/run_loop.sh --dry-run`).
-""" + _BASE_FOOTER,
+""" + _ACTION_PROTOCOL_BLOCK + _BASE_FOOTER,
 
     "critic.md": """You are the **Critic** agent.
 
@@ -715,6 +745,6 @@ Plateau & regression awareness
 - When a regression is signalled, the harness has already dispatched
   the critic to identify what broke; read the critic's most recent
   POST: critique on the blackboard before choosing the next move.
-""" + _BASE_FOOTER,
+""" + _ACTION_PROTOCOL_BLOCK + _BLACKBOARD_PROTOCOL_BLOCK + _BASE_FOOTER,
 
 }
