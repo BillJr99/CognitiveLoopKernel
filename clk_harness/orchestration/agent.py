@@ -1478,6 +1478,29 @@ class AgentRunner:
             except Exception as exc:
                 log_exception("orchestration.agent._collect_context.notes", exc)
 
+        # Outputs contract: convert the stage_outputs list into a concrete,
+        # agent-visible instruction block so workers know BEFORE they write
+        # their first response which POST PRODUCES keys are required. Without
+        # this the agent only learns about the contract through a rejection.
+        stage_outputs_list = list(extra.get("stage_outputs") or [])
+        if stage_outputs_list:
+            produces_line = ", ".join(stage_outputs_list)
+            outputs_contract = (
+                f"REQUIRED OUTPUT CONTRACT — you MUST satisfy these keys:\n"
+                f"  {produces_line}\n"
+                f"Each key must appear in at least one POST block's PRODUCES "
+                f"line. Exact format:\n"
+                f"  POST: finding\n"
+                f"  PRODUCES: {produces_line}\n"
+                f"  BODY:\n"
+                f"  <your summary here>\n"
+                f"  END_POST\n"
+                "Omitting this causes the harness to reject your response and "
+                "re-dispatch you."
+            )
+        else:
+            outputs_contract = ""
+
         ctx = {
             "agent": extra.get("agent", ""),
             "objective": objective,
@@ -1494,6 +1517,7 @@ class AgentRunner:
             "blackboard_digest": bb_digest,
             "casting_feedback": casting_feedback or "(none)",
             "notes": notes,
+            "outputs_contract": outputs_contract,
         }
         ctx.update({k: v for k, v in extra.items() if k not in ctx})
         return ctx
