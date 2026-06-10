@@ -125,6 +125,17 @@ def test_missing_outputs_flagged() -> None:
     assert "beta" in q.reasons[0] or any("beta" in r for r in q.reasons)
 
 
+def test_outputs_missing_repair_hint_shows_example_post() -> None:
+    q = rq.score("Some content that is long enough to pass the empty check.", expected_outputs=["post_draft"])
+    assert "outputs_missing" in q.flags
+    hint = q.repair_hint()
+    # Must show the missing key AND a concrete POST block example
+    assert "post_draft" in hint
+    assert "POST: finding" in hint
+    assert "PRODUCES: post_draft" in hint
+    assert "END_POST" in hint
+
+
 def test_satisfied_outputs_pass() -> None:
     text = (
         "POST: finding\n"

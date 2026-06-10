@@ -32,6 +32,7 @@ will re-dispatch you (or fan out a consensus) with a repair preamble.
 
 
 _BASE_FOOTER = _CONFIDENCE_BLOCK + """
+$outputs_contract
 Blackboard (shared context with peer agents)
 $blackboard_digest
 
@@ -172,9 +173,11 @@ Posts are immutable: edit/append/delete on blackboard paths are rejected;
 revise by writing a new POST that lists the old id in CONSUMES.
 
 You receive a $$blackboard_digest in your prompt context, filtered by
-your stage's declared `inputs` (see PROPOSE_WORKFLOW). If a stage
-declares `outputs`, your POST blocks must include each declared key in
-their PRODUCES list — otherwise the runner warns the contract is unmet.
+your stage's declared `inputs` (see PROPOSE_WORKFLOW). When a stage
+declares `outputs`, the harness injects a $$outputs_contract block at
+the top of your context listing the exact keys you must satisfy. Each
+key MUST appear in at least one POST block's PRODUCES line — the harness
+rejects and re-dispatches your response until the contract is met.
 
 Inter-agent Q&A (when you genuinely need a peer's input mid-task):
 
@@ -221,7 +224,7 @@ Role-casting protocol (parsed by the harness):
       validation: "<shell command>"  # optional, exit 0 = pass
       commit: true                   # optional, default true
       inputs: [type:finding, stage:research_a]   # optional blackboard filter
-      outputs: [research_brief]                  # optional contract keys
+      outputs: [research_brief]   # REQUIRED keys worker must PRODUCES in a POST block
       phase: review                              # optional: review | checkpoint
       rounds: 1                                  # optional, >1 enables turn-based
       careful: false                             # optional, triggers extra review

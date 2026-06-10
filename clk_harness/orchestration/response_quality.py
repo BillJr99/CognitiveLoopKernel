@@ -275,10 +275,18 @@ def score(
     missing = _missing_outputs(text or "", list(expected_outputs or []))
     if missing:
         q.flags.append("outputs_missing")
+        produces_line = ", ".join(missing)
         q.reasons.append(
             "Declared output contract keys not satisfied: "
-            f"{', '.join(missing)}. Each key must appear in some "
-            "POST block's PRODUCES: list."
+            f"{', '.join(missing)}. You MUST emit a POST block that lists "
+            "every missing key in its PRODUCES line. Exact format:\n"
+            f"  POST: finding\n"
+            f"  PRODUCES: {produces_line}\n"
+            f"  BODY:\n"
+            f"  <your summary here>\n"
+            f"  END_POST\n"
+            "The PRODUCES line must contain every unsatisfied key above, "
+            "comma-separated on a single line."
         )
 
     # 6. Self-reported low confidence
