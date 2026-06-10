@@ -13,7 +13,10 @@ import {
   setIdea,
   appendProgress,
   isDone,
+  resetSupervise,
 } from "./state.js";
+import { onAgentEnd as watchdogOnAgentEnd, continuationMessage } from "./watchdog.js";
+import { head as gitHead } from "./git.js";
 import { ensureRepo, commitsAhead, hasRemote } from "./git.js";
 import { clkChiefPrimer } from "./prompts.js";
 import { registerClkTools } from "./tools.js";
@@ -70,6 +73,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     }
     if (await isDone(ctx.cwd)) {
       ctx.ui.setStatus("clk-done", `done: ${s.doneReason ?? "marked"}`);
+    } else if (s.idea) {
+      // A captured idea with no done.md means a previous run was
+      // interrupted (session closed, abort, stall stop). Surface the
+      // resume path so the loop can pick back up.
+      ctx.ui.notify(
+        "CLK: a previous run is incomplete. Type /clk-resume to let the chief pick it back up.",
+        "info",
+      );
     }
   });
 
@@ -264,6 +275,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       try {
         await ensureRepo(ctx.cwd);
         await setIdea(ctx.cwd, idea, pi);
+        await resetSupervise(ctx.cwd, pi); // fresh watchdog counters per run
         await appendProgress(
           ctx.cwd,
           { kind: "note", message: `idea captured: ${idea}` },
@@ -319,14 +331,48 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     },
   });
 
-  // Tear down the run lifecycle when the chief signals completion. agent_end
-  // fires once per user prompt, but we only end on the turn that actually
-  // wrote done.md, which is also the turn that called endRun() inside
-  // clk_done — so this is mostly a safety net for the file-side check.
+  // /clk-resume — continue an interrupted run. State survives session
+  // restarts via .clk/state/clk.json, but the in-memory run lifecycle
+  // doesn't; this re-arms it and hands the chief a recap so the loop
+  // picks up where it left off (the closest pi equivalent of the Python
+  // harness's always-on supervise daemon).
+  pi.registerCommand("clk-resume", {
+    description: "Resume an interrupted CLK run from persisted state.",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      const s = getState();
+      if (!s.idea) {
+        ctx.ui.notify("Nothing to resume — no captured idea. Start with /clk <idea>.", "info");
+        return;
+      }
+      if (await isDone(ctx.cwd)) {
+        ctx.ui.notify(`Run already complete: ${s.doneReason ?? "done.md present"}. Start fresh with /clk <idea>.`, "info");
+        return;
+      }
+      try {
+        startRun();
+      } catch (err) {
+        ctx.ui.notify(String((err as Error).message), "error");
+        return;
+      }
+      await resetSupervise(ctx.cwd, pi); // resumed run gets fresh stall budget
+      ctx.ui.setStatus("clk-run", "active (resumed)");
+      ctx.ui.notify("CLK run resumed. The watchdog keeps the chief iterating until clk_done.", "info");
+      let headSha: string | null = null;
+      try { headSha = await gitHead(ctx.cwd); } catch { /* not a repo yet */ }
+      pi.sendUserMessage(continuationMessage(s, { head: headSha, progressCount: s.progress.length }));
+    },
+  });
+
+  // Tear down the run lifecycle when the chief signals completion; in
+  // every other case hand the turn to the watchdog — the supervise loop
+  // that keeps the chief iterating (continue → stall rescue → stop)
+  // instead of letting the run idle when a turn ends without clk_done.
   pi.on("agent_end", async (_event, ctx) => {
     if (await isDone(ctx.cwd)) {
       endRun("done.md observed");
       ctx.ui.setStatus("clk-run", "done");
+      return;
     }
+    await watchdogOnAgentEnd(pi, ctx);
   });
 }

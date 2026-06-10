@@ -124,25 +124,34 @@ ${idea}
             run rule 5A first to resolve the open question, then
             proceed with steps (b)–(g) below.
        b. \`clk_ralph({ iterationName: "iter-N-short-description",
-          agent: "engineer", task: "<full persona + task>", samples: 3 })\`
+          agent: "engineer", task: "<full persona + task>", samples: 3,
+          expectedOutputs: ["<artifact keys when the task produces named
+          artifacts>"] })\`
           The tool creates a fresh \`ralph/iter-N-short-description\`
           branch, fans out 3 parallel subagent samples, scores them,
           and returns the winning output. You read the winner and decide.
+          If it reports PLATEAU (3+ consecutive reverted iterations), do
+          NOT retry a variation — choose a qualitatively different
+          approach and re-call with \`acknowledgePlateau: true\`.
        c. Call \`clk_checkpoint({ message: "ralph: <description>" })\`
           to commit any additional changes you made on top of the winner.
-       d. Run the project's validation command (\`pytest -q\`, \`npm test\`,
-          etc.) via the built-in \`bash\` tool.
-       e. **If validation passes:** call \`clk_merge({ message:
-          "ralph win: <description>" })\`. This commits any remaining
-          changes, merges the feature branch into the home branch, and
-          returns you to the home branch.
+       d. Identify the project's validation command (\`pytest -q\`,
+          \`npm test\`, etc.).
+       e. **To accept:** call \`clk_merge({ message:
+          "ralph win: <description>", validate: "<that command>" })\`.
+          The merge runs the command first and REFUSES on a non-zero
+          exit, so a red suite can never reach the home branch — always
+          pass \`validate\` when the project has tests. On success this
+          commits any remaining changes, merges the feature branch into
+          the home branch, and returns you to the home branch.
           Record with \`clk_progress({ kind: "ralph", message: "win: ..." })\`.
-       f. **If validation fails:** call \`clk_revert({ reason: "<why it
-          failed>" })\`. This commits the rejected work to the feature
-          branch (preserving it for review), then switches back to the
-          home branch without merging. The rejected branch is never
-          deleted. Record with \`clk_progress({ kind: "ralph", message:
-          "rejected: ..." })\`.
+       f. **If the merge is refused or the iteration failed:** either fix
+          the failure on the branch and re-merge, or call
+          \`clk_revert({ reason: "<why it failed>" })\`. Revert commits the
+          rejected work to the feature branch (preserving it for review),
+          then switches back to the home branch without merging. The
+          rejected branch is never deleted. Record with
+          \`clk_progress({ kind: "ralph", message: "rejected: ..." })\`.
        g. Loop back to step (a) immediately for the next iteration.
 
    Manual branch / dispatch / commit is still allowed via \`clk_branch\` +
@@ -388,10 +397,21 @@ ${idea}
        - a deployment plan exists,
        - a deployment checklist exists,
        - at least one user-facing interaction path exists.
+   Pass the proof: \`clk_done({ reason, validate: ["<test command>",
+   "<build command>"] })\` — completion is REFUSED while any validate
+   command exits non-zero, so "done" is demonstrated, not asserted.
    Do NOT pause and ask the user if the run is complete. Stopping one
    iteration too early is the most common mistake; one extra Ralph
    iteration is never the wrong call. Keep iterating until every
    criterion above is satisfied, then call \`clk_done\`.
+
+12. **The watchdog keeps you honest.** Every time you end a turn while
+   the run is active and \`clk_done\` has not been called, the harness
+   re-prompts you automatically with the run state. Consecutive turns
+   without a commit or progress entry trigger a one-shot STALL RESCUE
+   prompt (restructure / unblock / done); staying stalled after that
+   ends the run. So: never end a turn idle — always either dispatch the
+   next iteration or call \`clk_done\` with validation proof.
 
 ## Operating notes
 

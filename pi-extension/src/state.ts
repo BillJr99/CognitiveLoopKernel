@@ -1,7 +1,14 @@
 import { mkdir, readFile, writeFile, access, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ClkState, Roster, ProgressEntry, ProgressKind } from "./types.js";
+import type {
+  ClkState,
+  Roster,
+  ProgressEntry,
+  ProgressKind,
+  RalphOutcome,
+  SuperviseState,
+} from "./types.js";
 
 const ROOT = ".clk";
 
@@ -127,6 +134,60 @@ export async function setHomeBranch(cwd: string, branch: string, pi: ExtensionAP
 
 export function getHomeBranch(): string | undefined {
   return memory.homeBranch;
+}
+
+const FRESH_SUPERVISE: SuperviseState = {
+  noProgress: 0,
+  continuations: 0,
+  rescueAttempted: false,
+};
+
+export function getSupervise(): SuperviseState {
+  return memory.supervise ?? { ...FRESH_SUPERVISE };
+}
+
+export async function setSupervise(
+  cwd: string,
+  s: SuperviseState,
+  pi: ExtensionAPI,
+): Promise<void> {
+  memory.supervise = s;
+  await persist(cwd, pi);
+}
+
+export async function resetSupervise(cwd: string, pi: ExtensionAPI): Promise<void> {
+  memory.supervise = { ...FRESH_SUPERVISE };
+  await persist(cwd, pi);
+}
+
+export async function recordRalphOutcome(
+  cwd: string,
+  branch: string,
+  outcome: RalphOutcome["outcome"],
+  pi: ExtensionAPI,
+): Promise<void> {
+  memory.ralphOutcomes = memory.ralphOutcomes ?? [];
+  memory.ralphOutcomes.push({ branch, outcome, ts: Date.now() });
+  // Keep the tail bounded; plateau detection only looks at the recent window.
+  if (memory.ralphOutcomes.length > 50) {
+    memory.ralphOutcomes = memory.ralphOutcomes.slice(-50);
+  }
+  await persist(cwd, pi);
+}
+
+/**
+ * Consecutive reverted Ralph iterations, counted from the most recent
+ * outcome backwards. A merge resets the streak — the plateau signal the
+ * Python harness derives from its plateau_window.
+ */
+export function consecutiveRalphReverts(): number {
+  const outcomes = memory.ralphOutcomes ?? [];
+  let n = 0;
+  for (let i = outcomes.length - 1; i >= 0; i--) {
+    if (outcomes[i]!.outcome === "reverted") n++;
+    else break;
+  }
+  return n;
 }
 
 export async function markDone(cwd: string, reason: string, pi: ExtensionAPI): Promise<void> {
