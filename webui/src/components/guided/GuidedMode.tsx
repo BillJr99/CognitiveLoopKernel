@@ -201,10 +201,13 @@ export function GuidedMode() {
         await apiPut("/api/env", { values: envValues });
 
         // 4. Capture the idea — the chief reads it and casts the team.
+        // then_run makes the server auto-chain the build, so the pipeline
+        // keeps moving even if the user switches modes or reloads mid-cast.
         const res = await apiPost<{ task_id: string }>("/api/research", {
           command: "idea",
           args: [question],
           workspace_id: wsId,
+          then_run: "engineering",
         });
         dispatch({ type: "LAUNCHED", wsId, taskId: res.task_id, pipeline: "cast", question });
       } catch (e) {
@@ -239,6 +242,7 @@ export function GuidedMode() {
           command: "idea",
           args: [state.question],
           workspace_id: state.wsId,
+          then_run: "engineering",
         });
         dispatch({ type: "TASK_STARTED", taskId: res.task_id, pipeline: "cast" });
       } else {
@@ -277,7 +281,14 @@ export function GuidedMode() {
     if (taskStatus.status === "done") {
       if (state.pipeline === "cast" && advancedFromTask.current !== taskStatus.task_id) {
         advancedFromTask.current = taskStatus.task_id;
-        void startBuild();
+        // The server chains the build itself (then_run); just start tracking
+        // the chained task. Fall back to a client-side launch for tasks
+        // created before chaining existed.
+        if (taskStatus.chained_task_id) {
+          dispatch({ type: "TASK_STARTED", taskId: taskStatus.chained_task_id, pipeline: "build" });
+        } else {
+          void startBuild();
+        }
       } else if (state.pipeline === "build") {
         dispatch({ type: "TASK_DONE" });
       }

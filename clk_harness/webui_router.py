@@ -422,6 +422,39 @@ async def get_activity(
     return {"ok": True, "events": out, "next_offset": new_offset, "count": len(out)}
 
 
+@router.get("/api/workspaces/{workspace_id}/logs")
+async def get_harness_logs(
+    workspace_id: str,
+    tail: int = Query(400, ge=1, le=5000),
+) -> Dict[str, Any]:
+    """Tail the harness session logs (init/idea/run/...).
+
+    These are the human-readable ``.clk/logs/*.log`` files the CLI writes —
+    distinct from activity.jsonl. The web Log tab shows them so users can see
+    initialization progress and orchestration decisions without a terminal.
+    """
+    paths = _require_workspace(workspace_id)
+    logs_dir = paths.logs
+    entries: List[Dict[str, Any]] = []
+    if logs_dir.is_dir():
+        files = sorted(
+            (p for p in logs_dir.glob("*.log") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+        )
+        # Read newest files last so the tail keeps the most recent lines.
+        for p in files:
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for line in text.splitlines():
+                if line.strip():
+                    entries.append({"file": p.name, "line": line})
+    if len(entries) > tail:
+        entries = entries[-tail:]
+    return {"ok": True, "lines": entries, "count": len(entries)}
+
+
 @router.get("/api/workspaces/{workspace_id}/snapshot")
 async def get_snapshot(workspace_id: str) -> Dict[str, Any]:
     paths = _require_workspace(workspace_id)

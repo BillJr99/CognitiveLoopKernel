@@ -9,6 +9,7 @@ Covers the two key behaviours:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import AsyncIterator
 
 import pytest
@@ -21,9 +22,9 @@ from clk_harness.api import app
 _TS = "2026-01-01T00:00:00Z"
 
 
-def _add_workspace(ws_id: str) -> None:
+def _add_workspace(ws_id: str, path: Path) -> None:
     api_module.WORKSPACES[ws_id] = {
-        "id": ws_id, "name": "test-ws", "path": "/tmp/nonexistent",
+        "id": ws_id, "name": "test-ws", "path": str(path),
         "created_at": _TS,
     }
 
@@ -38,19 +39,21 @@ def _add_task(ws_id: str, task_id: str, status: str = "running") -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clean(request) -> None:  # type: ignore[type-arg]
+def _clean() -> None:
     yield
-    # Remove any workspace/task seeded by this test.
-    test_ws = {k for k in api_module.WORKSPACES if k.startswith("_nudge_test_")}
+    # Remove any workspace/task seeded by this test. Match tasks by their own
+    # workspace_id prefix too, so cleanup works even if the workspace entry
+    # was already removed (and catches server-chained tasks with UUID ids).
     for k in list(api_module.TASKS):
-        if api_module.TASKS[k]["workspace_id"] in test_ws or k.startswith("_nudge_test_"):
-            # Cancel lingering asyncio handles.
+        task = api_module.TASKS[k]
+        if k.startswith("_nudge_test_") or str(task.get("workspace_id", "")).startswith("_nudge_test_"):
             handle = api_module._task_handles.pop(k, None)
             if handle and not handle.done():
                 handle.cancel()
             del api_module.TASKS[k]
-    for k in test_ws:
-        api_module.WORKSPACES.pop(k, None)
+    for k in list(api_module.WORKSPACES):
+        if k.startswith("_nudge_test_"):
+            del api_module.WORKSPACES[k]
 
 
 @pytest_asyncio.fixture
@@ -67,9 +70,9 @@ async def test_nudge_unknown_workspace(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_nudge_no_running_tasks(client: AsyncClient) -> None:
+async def test_nudge_no_running_tasks(client: AsyncClient, tmp_path: Path) -> None:
     ws_id = "_nudge_test_none"
-    _add_workspace(ws_id)
+    _add_workspace(ws_id, tmp_path)
     r = await client.post(f"/api/workspaces/{ws_id}/nudge")
     assert r.status_code == 200
     body = r.json()
@@ -79,10 +82,10 @@ async def test_nudge_no_running_tasks(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_nudge_no_running_tasks_after_done(client: AsyncClient) -> None:
+async def test_nudge_no_running_tasks_after_done(client: AsyncClient, tmp_path: Path) -> None:
     ws_id = "_nudge_test_done"
     old_id = "_nudge_test_task_done"
-    _add_workspace(ws_id)
+    _add_workspace(ws_id, tmp_path)
     _add_task(ws_id, old_id, status="done")   # finished task — not cancellable
     r = await client.post(f"/api/workspaces/{ws_id}/nudge")
     assert r.status_code == 200
@@ -91,11 +94,11 @@ async def test_nudge_no_running_tasks_after_done(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_nudge_restarts_running_task(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     ws_id = "_nudge_test_restart"
     old_id = "_nudge_test_task_old"
-    _add_workspace(ws_id)
+    _add_workspace(ws_id, tmp_path)
     _add_task(ws_id, old_id, status="running")
 
     async def _noop(task_id: str) -> None:
@@ -123,11 +126,11 @@ async def test_nudge_restarts_running_task(
 
 @pytest.mark.asyncio
 async def test_nudge_restarts_pending_task(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     ws_id = "_nudge_test_pending"
     old_id = "_nudge_test_task_pending"
-    _add_workspace(ws_id)
+    _add_workspace(ws_id, tmp_path)
     _add_task(ws_id, old_id, status="pending")  # pending counts as cancellable
 
     async def _noop(task_id: str) -> None:

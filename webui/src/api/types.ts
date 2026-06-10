@@ -174,4 +174,17 @@ export interface TaskStatus {
   started_at: string | null;
   finished_at: string | null;
   line_count: number;
+  /** Set when the server auto-spawned a follow-up run task (then_run). */
+  chained_task_id?: string | null;
+}
+
+export interface HarnessLogLine {
+  file: string;
+  line: string;
+}
+
+export interface HarnessLogResponse {
+  ok: boolean;
+  lines: HarnessLogLine[];
+  count: number;
 }

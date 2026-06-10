@@ -24,7 +24,7 @@ export function Dashboard() {
   const agents = snap ? Object.values(snap.agents) : [];
   const peak = snap?.totals.peak_run_tokens ?? 0;
   const lastSeq = events.length > 0 ? events[events.length - 1].seq : undefined;
-  const { healing } = useStuckWatchdog(activeId, snap?.busy ?? false, connected, lastSeq);
+  const { healing } = useStuckWatchdog({ wsId: activeId, busy: snap?.busy ?? false, connected, lastSeq });
 
   return (
     <div className="grid h-full min-h-0 grid-cols-1 gap-4 xl:grid-cols-3">
