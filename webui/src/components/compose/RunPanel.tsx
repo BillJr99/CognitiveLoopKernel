@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Play, Square, Lightbulb, Repeat, Wand2, Terminal, AlertTriangle } from "lucide-react";
 import { useCancelTask, useCreateWorkspace, useDoctor, useSetStopWhen, useStartTask, useStopWhen, useTaskStatus, useWorkflows } from "../../api/hooks";
-import { apiGet } from "../../api/client";
+import { apiGet, apiPut } from "../../api/client";
 import { useActiveWorkspace } from "../../state/activeWorkspace";
 import { Badge, Spinner } from "../common/ui";
 
@@ -80,11 +80,13 @@ export function RunPanel() {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [lines.length]);
 
+  // Mirror the server's stop condition, including a server-side clear
+  // (condition: null) — otherwise the box keeps stale text and the next
+  // launch re-saves it.
+  const stopWhenLoaded = stopWhenData !== undefined;
   useEffect(() => {
-    if (stopWhenData?.condition != null) {
-      setStopWhen(stopWhenData.condition);
-    }
-  }, [stopWhenData?.condition]);
+    if (stopWhenLoaded) setStopWhen(stopWhenData?.condition ?? "");
+  }, [stopWhenLoaded, stopWhenData?.condition]);
 
   async function launch() {
     if (start.isPending || createWorkspace.isPending) return;
@@ -121,8 +123,15 @@ export function RunPanel() {
     } else if (mode === "loop") {
       body.args = ["--mode", loopMode, "--max-iterations", String(iterations)];
     }
-    if (activeId && stopWhen.trim() !== (stopWhenData?.condition ?? "")) {
-      await setStopWhenMutation.mutateAsync(stopWhen.trim() || null);
+    const stopTrimmed = stopWhen.trim();
+    if (activeId) {
+      if (stopTrimmed !== (stopWhenData?.condition ?? "")) {
+        await setStopWhenMutation.mutateAsync(stopTrimmed || null);
+      }
+    } else if (stopTrimmed) {
+      // Fresh workspace created above: the mutation hook is still bound to
+      // the null activeId, so write the condition directly to the new ws.
+      await apiPut(`/api/workspaces/${wsId}/stop-when`, { condition: stopTrimmed });
     }
     const res = await start.mutateAsync(body);
     setTaskId(res.task_id);

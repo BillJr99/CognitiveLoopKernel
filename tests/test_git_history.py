@@ -123,6 +123,43 @@ def test_non_repo_returns_empty(tmp_path: Path) -> None:
     assert git_ops.log_entries(tmp_path) == []
     assert git_ops.file_at(tmp_path, "HEAD", "x") is None
     assert git_ops.commit_patch(tmp_path, "HEAD") is None
+    assert git_ops.status_entries(tmp_path) == []
+    assert git_ops.working_tree_patch(tmp_path) is None
+
+
+def test_status_entries_classify_changes(repo: Path) -> None:
+    (repo / "README.md").write_text("v1\nv2\nv3\n", encoding="utf-8")  # modified
+    (repo / "brand_new.md").write_text("hello\n", encoding="utf-8")  # untracked
+    (repo / "src" / "main.py").unlink()  # deleted
+    (repo / ".clk" / "noise.json").write_text("{}\n", encoding="utf-8")  # internal
+    entries = {e["path"]: e["state"] for e in git_ops.status_entries(repo)}
+    assert entries["README.md"] == "modified"
+    assert entries["brand_new.md"] == "new"
+    assert entries["src/main.py"] == "deleted"
+    assert not any(p.startswith(".clk") for p in entries)
+
+
+def test_status_entries_clean_tree_empty(repo: Path) -> None:
+    assert git_ops.status_entries(repo) == []
+
+
+def test_working_tree_patch_shows_uncommitted_edit(repo: Path) -> None:
+    (repo / "README.md").write_text("v1\nv2\nuncommitted\n", encoding="utf-8")
+    patch = git_ops.working_tree_patch(repo)
+    assert patch is not None
+    assert "+uncommitted" in patch["patch"]
+
+
+def test_snapshot_rollback_preserves_head(repo: Path) -> None:
+    import subprocess
+
+    head = git_ops.head_sha(repo)
+    assert git_ops.snapshot_rollback(repo, "build_stage") is True
+    refs = subprocess.run(
+        ["git", "for-each-ref", "refs/clk/rollbacks", "--format=%(objectname)"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert head in refs
 
 
 # ---------------------------------------------------------------------------
@@ -221,3 +258,24 @@ async def test_git_file_at_missing_file_404(client: AsyncClient) -> None:
         f"/api/workspaces/{ws_id}/git/file", params={"sha": head, "path": "nope.md"}
     )
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_git_status_endpoint(client: AsyncClient) -> None:
+    ws_id, root = await _ws_with_history(client)
+    r = await client.get(f"/api/workspaces/{ws_id}/git/status")
+    assert r.status_code == 200
+    assert r.json()["dirty"] is False
+    (root / "wip.md").write_text("draft\n", encoding="utf-8")
+    body = (await client.get(f"/api/workspaces/{ws_id}/git/status")).json()
+    assert body["dirty"] is True
+    assert {"path": "wip.md", "state": "new"} in body["files"]
+
+
+@pytest.mark.asyncio
+async def test_git_diff_endpoint(client: AsyncClient) -> None:
+    ws_id, root = await _ws_with_history(client)
+    (root / "notes.md").write_text("first\nsecond\nthird\n", encoding="utf-8")
+    r = await client.get(f"/api/workspaces/{ws_id}/git/diff")
+    assert r.status_code == 200
+    assert "+third" in r.json()["patch"]

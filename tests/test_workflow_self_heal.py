@@ -76,6 +76,30 @@ def test_default_config_carries_new_keys() -> None:
     assert DEFAULT_CLK_CONFIG["supervise"]["stall_rescue"] is True
     assert DEFAULT_CLK_CONFIG["recovery"]["dispatch_on_unmet_outputs"] is True
     assert DEFAULT_CLK_CONFIG["recovery"]["max_per_stage"] == 3
+    assert DEFAULT_CLK_CONFIG["validation"]["rollback_on_failure"] == "careful"
+
+
+def test_rollback_policy_careful_default(paths: Paths) -> None:
+    from clk_harness.orchestration.workflow import WorkflowStage
+
+    wr = _make(paths, {})
+    plain = WorkflowStage(id="s", agent="engineer", objective="x")
+    careful = WorkflowStage(id="s", agent="engineer", objective="x", careful=True)
+    # Default policy: only careful stages hard-rollback on failed validation;
+    # ordinary stages keep their work so batch commits survive on disk.
+    assert wr._should_rollback(plain) is False
+    assert wr._should_rollback(careful) is True
+
+
+def test_rollback_policy_always_and_never(paths: Paths) -> None:
+    from clk_harness.orchestration.workflow import WorkflowStage
+
+    plain = WorkflowStage(id="s", agent="engineer", objective="x")
+    careful = WorkflowStage(id="s", agent="engineer", objective="x", careful=True)
+    always = _make(paths, {"validation": {"rollback_on_failure": "always"}})
+    assert always._should_rollback(plain) is True
+    never = _make(paths, {"validation": {"rollback_on_failure": "never"}})
+    assert never._should_rollback(careful) is False
 
 
 def test_stall_rescue_dispatches_chief_in_recovery_phase(paths: Paths) -> None:

@@ -66,6 +66,8 @@ Filesystem
 
   Examples: PATH: src/foo.py          GOOD
             PATH: README.md           GOOD
+            PATH: /posts/day_1.md     tolerated — treated as $project_root/posts/day_1.md,
+                                      but prefer the relative form
             PATH: .clk/anything      WRONG — rejected and never needed
             PATH: ../escape           WRONG — rejected; outside root
 
@@ -125,8 +127,9 @@ The harness validates these mechanically and re-dispatches you on any miss:
 _ACTION_PROTOCOL_BLOCK = """\
 Action protocol (executed by the harness):
 
-CRITICAL: every ACTION block MUST end with END_ACTION on its own line.
-Missing END_ACTION causes the block to be rejected. No exceptions.
+CRITICAL: end every ACTION block with END_ACTION on its own line.
+A response with multiple unclosed blocks is rejected and re-dispatched;
+only a final block cut off at the end of the response is tolerated.
 
   ACTION: write
   PATH: rel/path.ext

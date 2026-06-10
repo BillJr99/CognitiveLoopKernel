@@ -74,9 +74,10 @@ def _fake_subprocess(monkeypatch: pytest.MonkeyPatch, returncode: int = 0) -> No
 
 
 async def _wait_for(predicate, timeout_s: float = 5.0) -> None:
-    deadline = asyncio.get_event_loop().time() + timeout_s
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
     while not predicate():
-        if asyncio.get_event_loop().time() > deadline:
+        if loop.time() > deadline:
             raise AssertionError("timed out waiting for condition")
         await asyncio.sleep(0.02)
 

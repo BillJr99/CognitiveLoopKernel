@@ -26,6 +26,8 @@ import {
   useGitLog,
   useCommitDetail,
   useFileAtCommit,
+  useGitStatus,
+  useGitWorkingDiff,
 } from "../../api/hooks";
 import { useActiveWorkspace } from "../../state/activeWorkspace";
 import type { FileEntry, GitCommit } from "../../api/types";
@@ -46,6 +48,9 @@ interface ChatTurn {
   status?: "running" | "done" | "failed" | "cancelled";
 }
 
+// Sentinel "commit" id for the uncommitted working tree in the History pane.
+const WORKING_TREE = "__working_tree__";
+
 export function FilesView() {
   const { activeId } = useActiveWorkspace();
   const { data, isLoading, refetch, isRefetching } = useWorkspaceFiles(activeId);
@@ -53,9 +58,14 @@ export function FilesView() {
   const [pane, setPane] = useState<"files" | "history">("files");
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
   const gitLog = useGitLog(pane === "history" ? activeId : null);
+  const { data: gitStatus } = useGitStatus(activeId);
 
   const files = useMemo(() => data?.files ?? [], [data]);
   const commits = gitLog.data?.commits ?? [];
+  const dirtyPaths = useMemo(
+    () => new Set((gitStatus?.files ?? []).map((f) => f.path)),
+    [gitStatus],
+  );
 
   if (!activeId) {
     return <EmptyState icon={<FolderOpen size={22} />} title="No workspace selected" hint="Pick a workspace to browse the files your agents create." />;
@@ -114,19 +124,34 @@ export function FilesView() {
             ) : (
               <ul className="flex flex-col">
                 {files.map((f) => (
-                  <FileRow key={f.path} file={f} active={f.path === selected} onClick={() => setSelected(f.path)} />
+                  <FileRow
+                    key={f.path}
+                    file={f}
+                    active={f.path === selected}
+                    dirty={dirtyPaths.has(f.path)}
+                    onClick={() => setSelected(f.path)}
+                  />
                 ))}
               </ul>
             )
           ) : gitLog.isLoading ? (
             <div className="px-2 py-2 text-sm text-[var(--color-mist)]"><Spinner size={14} /></div>
-          ) : commits.length === 0 ? (
+          ) : commits.length === 0 && !gitStatus?.dirty ? (
             <div className="px-2 py-2 text-xs text-[var(--color-mist)]">
               No commits yet. Each time the agents finish a unit of work, the
               harness commits it and it shows up here.
             </div>
           ) : (
             <ul className="flex flex-col gap-0.5">
+              {gitStatus?.dirty && (
+                <WorkingTreeRow
+                  count={gitStatus.count}
+                  active={selectedCommit === WORKING_TREE}
+                  onClick={() =>
+                    setSelectedCommit(selectedCommit === WORKING_TREE ? null : WORKING_TREE)
+                  }
+                />
+              )}
               {commits.map((c) => (
                 <CommitRow
                   key={c.sha}
@@ -147,12 +172,110 @@ export function FilesView() {
 
       {/* Editor or commit detail + chat */}
       <div className="flex min-w-0 flex-1 flex-col gap-3">
-        {pane === "history" && selectedCommit ? (
+        {pane === "history" && selectedCommit === WORKING_TREE ? (
+          <WorkingTreePanel ws={activeId} onClose={() => setSelectedCommit(null)} />
+        ) : pane === "history" && selectedCommit ? (
           <CommitDetailPanel ws={activeId} sha={selectedCommit} onClose={() => setSelectedCommit(null)} />
         ) : (
           <FileEditor ws={activeId} path={selected} />
         )}
         <AgentChat ws={activeId} selectedPath={selected} />
+      </div>
+    </div>
+  );
+}
+
+function WorkingTreeRow({ count, active, onClick }: { count: number; active: boolean; onClick: () => void }) {
+  return (
+    <li>
+      <button
+        onClick={onClick}
+        className={`flex w-full flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left transition-colors ${
+          active
+            ? "bg-[var(--color-ink-800)] ring-1 ring-[var(--color-warn)]/40"
+            : "hover:bg-[var(--color-ink-800)]"
+        }`}
+      >
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-[var(--color-warn)]" />
+          <span className="min-w-0 truncate text-xs font-semibold text-[var(--color-warn)]">
+            Uncommitted changes
+          </span>
+        </span>
+        <span className="pl-[14px] text-[10px] text-[var(--color-mist)]">
+          {count} file{count === 1 ? "" : "s"} not yet in a commit
+        </span>
+      </button>
+    </li>
+  );
+}
+
+function WorkingTreePanel({ ws, onClose }: { ws: string; onClose: () => void }) {
+  const { data: status } = useGitStatus(ws);
+  const { data: diff, isLoading } = useGitWorkingDiff(ws);
+  const files = status?.files ?? [];
+
+  return (
+    <div className="card flex min-h-0 flex-[2] flex-col">
+      <div className="flex items-center gap-2 border-b border-[var(--color-line)] px-3 py-2">
+        <button
+          onClick={onClose}
+          title="Back to the file editor"
+          className="rounded-lg p-1 text-[var(--color-mist)] hover:bg-[var(--color-ink-800)] hover:text-[var(--color-brand-bright)]"
+        >
+          <ArrowLeft size={14} />
+        </button>
+        <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--color-warn)]" />
+        <span className="text-sm font-semibold">Uncommitted changes</span>
+        <span className="ml-auto text-[11px] text-[var(--color-mist)]">
+          committed automatically as the agents finish each batch of work
+        </span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto">
+        {files.length > 0 && (
+          <div className="border-b border-[var(--color-line)] px-3 py-2">
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-mist)]">
+              {files.length} file{files.length === 1 ? "" : "s"} changed since the last commit
+            </div>
+            <ul className="flex flex-col gap-0.5">
+              {files.map((f) => (
+                <li key={f.path} className="flex items-center gap-2 text-xs">
+                  <FileText size={11} className="shrink-0 opacity-60" />
+                  <span className="min-w-0 truncate font-mono" title={f.path}>{f.path}</span>
+                  <span
+                    className={`ml-auto shrink-0 rounded px-1 text-[10px] font-semibold ${
+                      f.state === "new"
+                        ? "bg-[var(--color-good)]/15 text-[var(--color-good)]"
+                        : f.state === "deleted"
+                          ? "bg-[var(--color-bad)]/15 text-[var(--color-bad)]"
+                          : "bg-[var(--color-warn)]/15 text-[var(--color-warn)]"
+                    }`}
+                  >
+                    {f.state}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {isLoading ? (
+          <div className="grid place-items-center p-6 text-sm text-[var(--color-mist)]"><Spinner size={16} /></div>
+        ) : (
+          <>
+            <DiffBlock patch={diff?.patch ?? ""} />
+            {!diff?.patch?.trim() && files.some((f) => f.state === "new") && (
+              <div className="px-3 pb-3 text-[11px] text-[var(--color-mist)]">
+                New files don't show in the diff until their first commit — open them
+                from the Files list to see their content.
+              </div>
+            )}
+            {diff?.truncated && (
+              <div className="px-3 py-1.5 text-[11px] text-[var(--color-warn)]">
+                Diff truncated — too large to show in full.
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -306,7 +429,11 @@ function DiffBlock({ patch }: { patch: string }) {
   );
 }
 
-function FileRow({ file, active, onClick }: { file: FileEntry; active: boolean; onClick: () => void }) {
+function FileRow({
+  file, active, dirty, onClick,
+}: {
+  file: FileEntry; active: boolean; dirty?: boolean; onClick: () => void;
+}) {
   return (
     <li>
       <button
@@ -317,6 +444,12 @@ function FileRow({ file, active, onClick }: { file: FileEntry; active: boolean; 
       >
         <FileText size={13} className="shrink-0 opacity-70" />
         <span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span>
+        {dirty && (
+          <span
+            title="Changed since the last commit"
+            className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-warn)]"
+          />
+        )}
         <span className="shrink-0 text-[10px] tabular-nums opacity-60">{fmtSize(file.size)}</span>
       </button>
     </li>

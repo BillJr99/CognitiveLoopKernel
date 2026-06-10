@@ -7,8 +7,10 @@ import type {
   FileContent,
   FilesResponse,
   GitCommitDetail,
+  GitDiffResponse,
   GitFileAt,
   GitLogResponse,
+  GitStatusResponse,
   ProvidersConfig,
   Snapshot,
   StopWhenResponse,
@@ -211,6 +213,24 @@ export function useGitLog(ws: string | null, path?: string | null) {
         `/api/workspaces/${ws}/git/log${path ? `?path=${encodeURIComponent(path)}` : ""}`,
       ),
     refetchInterval: 10_000,
+  });
+}
+
+export function useGitStatus(ws: string | null) {
+  return useQuery({
+    enabled: !!ws,
+    queryKey: ["git-status", ws],
+    queryFn: () => apiGet<GitStatusResponse>(`/api/workspaces/${ws}/git/status`),
+    refetchInterval: 5_000,
+  });
+}
+
+export function useGitWorkingDiff(ws: string | null, enabled = true) {
+  return useQuery({
+    enabled: enabled && !!ws,
+    queryKey: ["git-diff", ws],
+    queryFn: () => apiGet<GitDiffResponse>(`/api/workspaces/${ws}/git/diff`),
+    refetchInterval: 5_000,
   });
 }
 

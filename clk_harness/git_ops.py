@@ -385,6 +385,91 @@ def commit_patch(root: Path, sha: str, *, max_bytes: int = 200_000) -> Optional[
     return {"patch": patch, "truncated": truncated}
 
 
+def snapshot_rollback(root: Path, stage_id: str) -> bool:
+    """Preserve about-to-be-rolled-back work behind ``refs/clk/rollbacks/``.
+
+    A hard reset makes the batch commits since the pre-stage SHA dangling;
+    pointing a ref at HEAD first keeps them reachable so a user (or a
+    future recovery pass) can recover the discarded work with git.
+    """
+    if not is_repo(root):
+        return False
+    sha = head_sha(root)
+    if not sha:
+        return False
+    import re as _re
+    import time as _time
+
+    safe = _re.sub(r"[^A-Za-z0-9_-]+", "-", stage_id)[:40] or "stage"
+    ref = f"refs/clk/rollbacks/{safe}-{int(_time.time())}"
+    try:
+        r = subprocess.run(
+            ["git", "update-ref", ref, sha],
+            cwd=root, capture_output=True, text=True, check=False,
+        )
+        if r.returncode == 0:
+            log(f"rollback snapshot saved: {ref} -> {sha[:8]}")
+            return True
+        return False
+    except Exception as exc:
+        log_exception("git_ops.snapshot_rollback", exc)
+        return False
+
+
+def status_entries(root: Path) -> List[dict]:
+    """Working-tree changes vs HEAD as ``{path, state}`` entries.
+
+    States: ``new`` (untracked or added), ``modified``, ``deleted``,
+    ``renamed``. Harness-internal paths are dropped to match the Files tab.
+    """
+    entries: List[dict] = []
+    for line in status_porcelain(root).splitlines():
+        if len(line) < 4:
+            continue
+        code, rest = line[:2], line[3:]
+        # Renames look like "R  old -> new"; show the new path.
+        path = rest.split(" -> ")[-1].strip().strip('"')
+        if _filter_internal(path):
+            continue
+        if code == "??" or "A" in code:
+            state = "new"
+        elif "R" in code:
+            state = "renamed"
+        elif "D" in code:
+            state = "deleted"
+        else:
+            state = "modified"
+        entries.append({"path": path, "state": state})
+    entries.sort(key=lambda e: e["path"])
+    return entries
+
+
+def working_tree_patch(root: Path, *, max_bytes: int = 200_000) -> Optional[dict]:
+    """Unified diff of uncommitted changes vs HEAD (internal paths excluded).
+
+    Untracked files don't appear in ``git diff``; callers should pair this
+    with :func:`status_entries` to list them.
+    """
+    if not is_repo(root):
+        return None
+    excludes = [f":(exclude){d}" for d in (".clk", ".git", "node_modules", "__pycache__")]
+    try:
+        r = subprocess.run(
+            ["git", "diff", "HEAD", "--no-color", "--", ".", *excludes],
+            cwd=root, check=False, capture_output=True, text=True,
+        )
+        if r.returncode not in (0, 1):  # diff exits 1 with --exit-code semantics on some configs
+            return None
+    except Exception as exc:
+        log_exception("git_ops.working_tree_patch", exc)
+        return None
+    patch = r.stdout
+    truncated = len(patch.encode("utf-8")) > max_bytes
+    if truncated:
+        patch = patch.encode("utf-8")[:max_bytes].decode("utf-8", errors="replace")
+    return {"patch": patch, "truncated": truncated}
+
+
 def file_at(root: Path, sha: str, path: str) -> Optional[bytes]:
     """Raw bytes of ``path`` as of commit ``sha``, or None if absent."""
     if not is_repo(root):

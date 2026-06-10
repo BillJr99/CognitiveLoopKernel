@@ -190,7 +190,9 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         "stall_rescue": True,
     },
     "recovery": {
-        # Chief recovery dispatches per stage with unmet dependencies.
+        # Chief recovery passes per stage: dispatched when a stage's
+        # dependencies are unmet, and (below) when its outputs contract
+        # goes unsatisfied.
         "max_per_stage": 3,
         # Dispatch the chief when a stage's declared outputs contract
         # (POST PRODUCES keys) goes unsatisfied, instead of warning only.
@@ -211,6 +213,13 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
     "validation": {
         "max_files_per_batch": 25,
         "warn_files_per_batch": 5,
+        # What to do when a stage's validation command fails:
+        #   never   - keep the work in place; later cycles repair it
+        #   careful - hard-rollback only stages marked careful: true (default)
+        #   always  - hard-rollback every failed stage (legacy behavior)
+        # Keeping work means batch commits survive, the Files tab shows the
+        # latest state, and the supervise loop fixes problems forward.
+        "rollback_on_failure": "careful",
     },
     "casting": {
         "max_dynamic_roles": 12,

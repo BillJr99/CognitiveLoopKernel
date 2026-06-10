@@ -14,11 +14,14 @@ export function FollowUpStep({
   rounds: string[];
   sending: boolean;
   error: string | null;
-  onSend: (request: string) => void;
+  onSend: (request: string, stopWhen?: string) => void;
   onBack: () => void;
 }) {
   const [request, setRequest] = useState("");
   const [stopWhen, setStopWhen] = useState("");
+  const send = () => {
+    if (request.trim()) onSend(request.trim(), stopWhen.trim() || undefined);
+  };
 
   return (
     <StepShell
@@ -36,7 +39,7 @@ export function FollowUpStep({
           placeholder="e.g. Make the homepage blue, add a FAQ section, and fix the broken link…"
           className="w-full resize-y rounded-xl border border-[var(--color-line)] bg-[var(--color-ink-950)]/60 p-4 text-[15px] leading-relaxed outline-none transition-colors focus:border-[var(--color-brand)]"
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && request.trim()) onSend(request.trim());
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send();
           }}
         />
         <div className="mt-1 flex items-center gap-1 text-[10px] text-[var(--color-mist)]">
@@ -64,7 +67,7 @@ export function FollowUpStep({
 
       <div className="flex justify-center">
         <button
-          onClick={() => onSend(request.trim())}
+          onClick={send}
           disabled={!request.trim() || sending}
           className="btn btn-primary !px-7"
         >
