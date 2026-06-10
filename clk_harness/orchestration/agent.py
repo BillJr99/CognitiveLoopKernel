@@ -467,6 +467,49 @@ class AgentRunner:
             error=coalesced.response.error,
             trigger=reason,
         )
+        # The coalesced output is the only result the workflow ever sees,
+        # so it must clear the same quality bar as a direct dispatch. One
+        # repair pass: re-score, and if the verdict is recoverable, ask the
+        # chief to re-emit with the specific issues quoted back.
+        if coalesced.response.ok:
+            try:
+                cfg_r = self.clk_cfg.get("robustness") or {}
+                q = _response_quality.score(
+                    coalesced.response.text,
+                    min_chars=int(cfg_r.get("min_response_chars") or 40),
+                    expected_outputs=list(extra.get("stage_outputs") or []),
+                )
+                if not q.ok and q.recoverable:
+                    log_event(
+                        self.paths,
+                        "consensus_coalesce_retry",
+                        agent=agent_name,
+                        name=name,
+                        flags=list(q.flags),
+                        reasons=list(q.reasons),
+                        score=q.score,
+                        trigger=reason,
+                    )
+                    self._observer_log(
+                        f"consensus :: {name} :: coalesce rejected "
+                        f"(flags={','.join(q.flags)}); re-dispatching chief"
+                    )
+                    repaired = self._dispatch_once(
+                        "chief",
+                        q.repair_hint() + "\n\nOriginal coalescing task:\n" + coalesce_objective,
+                        extra={
+                            "phase": "consensus",
+                            "consensus_name": name,
+                            "consensus_trigger": f"{reason}:coalesce_repair",
+                            "stage_id": extra.get("stage_id"),
+                            "workflow": extra.get("workflow"),
+                        },
+                        dry_run=dry_run,
+                    )
+                    if repaired.response.ok:
+                        coalesced = repaired
+            except Exception as exc:
+                log_exception("orchestration.agent._dispatch_auto_consensus.rescore", exc)
         # Re-label so downstream logging shows the auto path, not "chief".
         coalesced.agent = agent_name
         return coalesced

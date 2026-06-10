@@ -80,6 +80,25 @@ def test_balanced_action_block_passes() -> None:
     assert "malformed_action" not in q.flags
 
 
+def test_progress_signal_yes() -> None:
+    assert rq.progress_signal("Did the thing.\nPROGRESS: yes\n") is True
+
+
+def test_progress_signal_no() -> None:
+    assert rq.progress_signal("Blocked on X.\nPROGRESS: no\n") is False
+
+
+def test_progress_signal_absent() -> None:
+    assert rq.progress_signal("No marker here.") is None
+    assert rq.progress_signal("") is None
+    assert rq.progress_signal(None) is None
+
+
+def test_progress_signal_last_marker_wins() -> None:
+    text = "PROGRESS: no\nReconsidered after the fix landed.\nPROGRESS: yes\n"
+    assert rq.progress_signal(text) is True
+
+
 def test_malformed_post_block_flagged() -> None:
     text = (
         "POST: finding\n"

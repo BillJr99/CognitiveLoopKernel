@@ -34,6 +34,7 @@ from ..git_ops import add_all, commit as git_commit, has_changes, head_sha, reve
 from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
 from . import blackboard as _blackboard
+from . import response_quality as _response_quality
 from .agent import AgentRunner, AgentRun
 
 
@@ -423,6 +424,16 @@ class WorkflowRunner:
         cfg = (self.runner.clk_cfg.get("supervise") or {})
         return int(cfg.get("max_consecutive_no_progress") or 5)
 
+    @property
+    def stall_rescue_enabled(self) -> bool:
+        """When True, hitting the no-progress cap dispatches the chief once
+        in *rescue mode* (restructure the plan or declare done) before the
+        loop gives up. Overridable via clk.config.json::supervise::stall_rescue.
+        """
+        cfg = (self.runner.clk_cfg.get("supervise") or {})
+        val = cfg.get("stall_rescue", True)
+        return str(val).lower() not in ("false", "0", "off", "no")
+
     def run(self, workflow: Workflow, *, dry_run: Optional[bool] = None) -> List[StageResult]:
         """Execute the workflow, looping it under chief supervision.
 
@@ -447,6 +458,7 @@ class WorkflowRunner:
         all_results: List[StageResult] = []
         stopped_for_provider_failure = False
         no_progress = 0
+        rescue_attempted = False
         for cycle in range(1, self.max_supervise_cycles + 1):
             if (self.paths.state / "done.md").exists():
                 log(f"workflow {workflow.name}: done.md present, stopping supervise loop")
@@ -470,27 +482,49 @@ class WorkflowRunner:
             cycle_results = self._run_once(refreshed, dry_run=dry_run, cycle=cycle)
             all_results.extend(cycle_results)
 
-            # Check for no-progress (nothing committed, no files written)
-            progress = any(
+            # Check for no-progress. Two signals combine:
+            #   * material progress — a commit or file write happened
+            #   * self-report — agents end responses with PROGRESS: yes/no;
+            #     when every reporting agent says "no", the cycle counts as
+            #     stalled even if files were technically touched (busywork).
+            material = any(
                 r.committed or bool(r.run.files_written)
                 for r in cycle_results
                 if r.run.response.ok
             )
+            signals = [
+                _response_quality.progress_signal(r.run.response.text)
+                for r in cycle_results
+                if r.run.response.ok
+            ]
+            explicit = [s for s in signals if s is not None]
+            self_reported_stall = bool(explicit) and not any(explicit)
+            progress = material and not self_reported_stall
             if not progress:
                 no_progress += 1
+                why = "agents reported PROGRESS: no" if (material and self_reported_stall) else "no commits or file writes"
                 log(
-                    f"workflow {workflow.name}: cycle {cycle} made no progress "
+                    f"workflow {workflow.name}: cycle {cycle} made no progress — {why} "
                     f"({no_progress}/{self.max_consecutive_no_progress})",
                     level="WARN" if no_progress >= 2 else "INFO",
                 )
                 if no_progress >= self.max_consecutive_no_progress:
+                    if self.stall_rescue_enabled and not rescue_attempted and not dry_run:
+                        rescue_attempted = True
+                        no_progress = 0
+                        self._dispatch_stall_rescue(workflow, cycle, cycle_results)
+                        if (self.paths.state / "done.md").exists():
+                            log(f"workflow {workflow.name}: chief declared done during stall rescue")
+                            break
+                        continue
                     log(
                         f"workflow {workflow.name}: stopping after {no_progress} consecutive "
                         "no-progress cycles (set supervise.max_consecutive_no_progress to change)",
                         level="ERROR",
                     )
                     log_event(self.paths, "workflow_stalled", workflow=workflow.name,
-                              no_progress_cycles=no_progress)
+                              no_progress_cycles=no_progress,
+                              rescue_attempted=rescue_attempted)
                     break
             else:
                 no_progress = 0
@@ -782,9 +816,10 @@ class WorkflowRunner:
         else:
             v_ok, v_out = self._validate(stage)
 
-        # Outputs contract: warn (not fail) when the stage's promised
-        # POST keys never landed. Cheap to detect and very useful for
-        # the chief review stage to diagnose silent worker failures.
+        # Outputs contract: warn when the stage's promised POST keys never
+        # landed, then give the chief one recovery pass to fill the gap
+        # (re-dispatch the worker, post a substitute, or accept it) so
+        # downstream stages don't silently consume missing inputs.
         unmet_outputs = self._check_outputs_contract(stage)
         if unmet_outputs:
             log(
@@ -801,6 +836,20 @@ class WorkflowRunner:
                 expected=list(stage.outputs),
                 missing=list(unmet_outputs),
             )
+            if (
+                not dry_run
+                and stage.agent != "chief"
+                and self._outputs_recovery_enabled
+            ):
+                try:
+                    self._dispatch_outputs_recovery(
+                        workflow, stage, unmet_outputs, cycle_context, dry_run
+                    )
+                    # Re-check: the chief may have posted the missing keys
+                    # (or had the worker do it) during the recovery pass.
+                    unmet_outputs = self._check_outputs_contract(stage)
+                except Exception as exc:
+                    log_exception("orchestration.workflow._run_stage.outputs_recovery", exc)
 
         committed = False
         if run.committed:
@@ -813,9 +862,24 @@ class WorkflowRunner:
             log_event(self.paths, "workflow_stage_rollback",
                       agent=stage.agent, workflow=workflow.name,
                       stage_id=stage.id, sha=pre_stage_sha)
-            from ..git_ops import revert_to as _revert_to
-            if _revert_to(self.paths.root, pre_stage_sha):
+            # Verify the rollback actually landed: a silently-failed git
+            # reset would leave broken state on disk while the runner
+            # believes it recovered.
+            rolled_back = revert_to(self.paths.root, pre_stage_sha)
+            post_sha = head_sha(self.paths.root) if rolled_back else None
+            if rolled_back and post_sha == pre_stage_sha:
                 committed = False
+            else:
+                log(
+                    f"stage {stage.id}: rollback to {pre_stage_sha[:8]} FAILED "
+                    f"(HEAD is {(post_sha or 'unknown')[:8]}); workspace may "
+                    "contain unvalidated changes",
+                    level="ERROR",
+                )
+                log_event(self.paths, "workflow_rollback_failed",
+                          agent=stage.agent, workflow=workflow.name,
+                          stage_id=stage.id, expected_sha=pre_stage_sha,
+                          actual_sha=post_sha or "")
 
         failure_reason = ""
         if not ok:
@@ -1304,6 +1368,119 @@ class WorkflowRunner:
             },
             dry_run=dry_run,
         )
+
+    @property
+    def _outputs_recovery_enabled(self) -> bool:
+        """Gate for the outputs-contract recovery dispatch. Defaults on;
+        disable via clk.config.json::recovery::dispatch_on_unmet_outputs.
+        """
+        cfg = (self.runner.clk_cfg.get("recovery") or {})
+        val = cfg.get("dispatch_on_unmet_outputs", True)
+        return str(val).lower() not in ("false", "0", "off", "no")
+
+    def _dispatch_outputs_recovery(
+        self,
+        workflow: Workflow,
+        stage: WorkflowStage,
+        missing: List[str],
+        cycle_context: str,
+        dry_run: Optional[bool],
+    ) -> None:
+        """Chief recovery pass for an unsatisfied outputs contract.
+
+        Runs once per stage execution (the caller re-checks the contract
+        afterwards). The chief can re-dispatch the worker via a Q&A-style
+        instruction, post the missing keys itself if the information is
+        already on the blackboard, or explicitly accept the gap.
+        """
+        objective = (
+            f"Outputs-contract recovery for workflow `{workflow.name}` "
+            f"stage `{stage.id}` (agent {stage.agent}).\n\n"
+            f"The stage declared it would produce these blackboard keys but "
+            f"did not: {', '.join(missing)}.\n"
+            f"Stage objective was:\n{stage.objective}\n\n"
+            "Downstream stages consume these keys; missing them causes silent "
+            "data gaps. Do one of:\n"
+            "  (a) Post the missing keys yourself (POST block with PRODUCES:\n"
+            "      listing them) if the information already exists on the\n"
+            "      blackboard or in the repo, OR\n"
+            "  (b) Emit ACTION blocks that produce the artifact the keys\n"
+            "      describe, then POST with the keys, OR\n"
+            "  (c) Explicitly accept the gap in a POST: review block stating\n"
+            "      why downstream stages can proceed without these keys.\n"
+            "Do NOT skip silently."
+        )
+        log(
+            f"workflow {workflow.name}: dispatching chief outputs recovery "
+            f"for stage {stage.id} (missing: {', '.join(missing)})"
+        )
+        log_event(
+            self.paths, "workflow_outputs_recovery",
+            agent=stage.agent, workflow=workflow.name,
+            stage_id=stage.id, missing=list(missing),
+        )
+        self.runner.run(
+            "chief",
+            objective,
+            extra={
+                "phase": "recovery",
+                "workflow": workflow.name,
+                "stage_id": stage.id,
+                "cycle_context": cycle_context,
+                "blackboard_inputs": [f"stage:{stage.id}"],
+            },
+            dry_run=dry_run,
+        )
+
+    def _dispatch_stall_rescue(
+        self,
+        workflow: Workflow,
+        cycle: int,
+        cycle_results: List[StageResult],
+    ) -> None:
+        """One-shot chief dispatch when the supervise loop stalls.
+
+        Instead of silently giving up after N no-progress cycles, give the
+        chief the stall evidence and a chance to (a) declare the project
+        done, (b) restructure the plan via PROPOSE_WORKFLOW, or (c) emit
+        ACTION blocks that unblock the workers directly. Runs at most once
+        per supervise loop (the caller tracks ``rescue_attempted``).
+        """
+        lines: List[str] = []
+        for r in cycle_results[-8:]:
+            ok = r.run.response.ok
+            reason = r.failure_reason or ("ok" if ok else "failed")
+            lines.append(f"- stage `{r.stage.id}` (agent {r.stage.agent}): {reason}")
+        objective = (
+            f"STALL RESCUE for workflow `{workflow.name}` at supervise cycle {cycle}.\n\n"
+            "The loop has made no measurable progress for several consecutive "
+            "cycles (no commits, no file writes, or every agent self-reported "
+            "`PROGRESS: no`). Last cycle's stages:\n"
+            + "\n".join(lines or ["- (no stage results recorded)"])
+            + "\n\nDiagnose WHY the loop is stuck, then do exactly one of:\n"
+            "  (a) ACTION:done with REASON — if the user's objective is actually\n"
+            "      complete and the loop is spinning on nothing.\n"
+            "  (b) PROPOSE_WORKFLOW with a restructured plan that removes the\n"
+            "      blocked stages and takes a genuinely different approach.\n"
+            "  (c) ACTION blocks (write/edit/run) that directly fix the blocker\n"
+            "      the workers keep hitting.\n"
+            "Do NOT re-propose the same plan that is already stalling. This is "
+            "the loop's last chance before the harness stops it."
+        )
+        log(f"workflow {workflow.name}: dispatching chief stall rescue (cycle {cycle})", level="WARN")
+        log_event(self.paths, "workflow_stall_rescue", workflow=workflow.name, cycle=cycle)
+        try:
+            self.runner.run(
+                "chief",
+                objective,
+                extra={
+                    "phase": "recovery",
+                    "workflow": workflow.name,
+                    "stage_id": "stall_rescue",
+                },
+            )
+        except Exception as exc:
+            log_exception("orchestration.workflow._dispatch_stall_rescue", exc)
 
     def _refresh_from_dispatched(
         self,

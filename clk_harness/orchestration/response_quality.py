@@ -137,6 +137,21 @@ def _parse_needs_review(text: str) -> Optional[bool]:
     return m.group(1).lower() in {"true", "yes", "y", "1"}
 
 
+def progress_signal(text: Optional[str]) -> Optional[bool]:
+    """Parse the agent's self-reported ``PROGRESS: yes/no`` marker.
+
+    Returns True/False for an explicit signal (last marker wins when the
+    response contains several), or None when the agent did not emit one.
+    Used by the WorkflowRunner's stall detector: a cycle where every
+    reporting agent says ``PROGRESS: no`` counts as stalled even when
+    files were technically written.
+    """
+    matches = _PROGRESS_RE.findall(text or "")
+    if not matches:
+        return None
+    return matches[-1].lower() in {"yes", "true"}
+
+
 def _detect_refusal(text: str) -> bool:
     t = text or ""
     for pat in _REFUSAL_RES:
