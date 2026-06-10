@@ -188,6 +188,24 @@ export interface GitCommitDetail {
   patch_truncated: boolean;
 }
 
+export interface GitStatusEntry {
+  path: string;
+  state: "new" | "modified" | "deleted" | "renamed";
+}
+
+export interface GitStatusResponse {
+  ok: boolean;
+  dirty: boolean;
+  files: GitStatusEntry[];
+  count: number;
+}
+
+export interface GitDiffResponse {
+  ok: boolean;
+  patch: string;
+  truncated: boolean;
+}
+
 export interface GitFileAt {
   ok: boolean;
   path: string;

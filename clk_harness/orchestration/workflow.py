@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config import Paths
-from ..git_ops import add_all, commit as git_commit, has_changes, head_sha, revert_to
+from ..git_ops import add_all, commit as git_commit, has_changes, head_sha, revert_to, snapshot_rollback
 from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
 from . import blackboard as _blackboard
@@ -433,6 +433,21 @@ class WorkflowRunner:
         cfg = (self.runner.clk_cfg.get("supervise") or {})
         val = cfg.get("stall_rescue", True)
         return str(val).lower() not in ("false", "0", "off", "no")
+
+    def _should_rollback(self, stage: WorkflowStage) -> bool:
+        """Whether a failed validation hard-resets the stage's work.
+
+        Policy via clk.config.json::validation::rollback_on_failure:
+        ``never`` keeps the work; ``careful`` (default) rolls back only
+        stages marked careful=true; ``always`` is the legacy behavior.
+        """
+        cfg = (self.runner.clk_cfg.get("validation") or {})
+        policy = str(cfg.get("rollback_on_failure", "careful")).lower()
+        if policy == "always":
+            return True
+        if policy == "never":
+            return False
+        return bool(stage.careful)
 
     def run(self, workflow: Workflow, *, dry_run: Optional[bool] = None) -> List[StageResult]:
         """Execute the workflow, looping it under chief supervision.
@@ -864,28 +879,46 @@ class WorkflowRunner:
             committed = self._commit(workflow, stage, run, v_out)
 
         if not v_ok and pre_stage_sha and not dry_run:
-            log(f"stage {stage.id}: validation failed; rolling back to {pre_stage_sha[:8]}", level="WARN")
-            log_event(self.paths, "workflow_stage_rollback",
-                      agent=stage.agent, workflow=workflow.name,
-                      stage_id=stage.id, sha=pre_stage_sha)
-            # Verify the rollback actually landed: a silently-failed git
-            # reset would leave broken state on disk while the runner
-            # believes it recovered.
-            rolled_back = revert_to(self.paths.root, pre_stage_sha)
-            post_sha = head_sha(self.paths.root) if rolled_back else None
-            if rolled_back and post_sha == pre_stage_sha:
-                committed = False
-            else:
-                log(
-                    f"stage {stage.id}: rollback to {pre_stage_sha[:8]} FAILED "
-                    f"(HEAD is {(post_sha or 'unknown')[:8]}); workspace may "
-                    "contain unvalidated changes",
-                    level="ERROR",
-                )
-                log_event(self.paths, "workflow_rollback_failed",
+            if self._should_rollback(stage):
+                log(f"stage {stage.id}: validation failed; rolling back to {pre_stage_sha[:8]}", level="WARN")
+                log_event(self.paths, "workflow_stage_rollback",
                           agent=stage.agent, workflow=workflow.name,
-                          stage_id=stage.id, expected_sha=pre_stage_sha,
-                          actual_sha=post_sha or "")
+                          stage_id=stage.id, sha=pre_stage_sha)
+                # Snapshot the about-to-be-discarded work behind a ref so a
+                # hard reset never makes it unrecoverable (batch commits
+                # would otherwise dangle and eventually be GC'd).
+                snapshot_rollback(self.paths.root, stage.id)
+                # Verify the rollback actually landed: a silently-failed git
+                # reset would leave broken state on disk while the runner
+                # believes it recovered.
+                rolled_back = revert_to(self.paths.root, pre_stage_sha)
+                post_sha = head_sha(self.paths.root) if rolled_back else None
+                if rolled_back and post_sha == pre_stage_sha:
+                    committed = False
+                else:
+                    log(
+                        f"stage {stage.id}: rollback to {pre_stage_sha[:8]} FAILED "
+                        f"(HEAD is {(post_sha or 'unknown')[:8]}); workspace may "
+                        "contain unvalidated changes",
+                        level="ERROR",
+                    )
+                    log_event(self.paths, "workflow_rollback_failed",
+                              agent=stage.agent, workflow=workflow.name,
+                              stage_id=stage.id, expected_sha=pre_stage_sha,
+                              actual_sha=post_sha or "")
+            else:
+                # Default for ordinary stages: keep the work in place. The
+                # failure is recorded on the StageResult and the supervise /
+                # qa loop repairs forward — a hard reset here would delete
+                # batch-committed files from disk (and the Files tab).
+                log(
+                    f"stage {stage.id}: validation failed; keeping work in place "
+                    "(validation.rollback_on_failure)",
+                    level="WARN",
+                )
+                log_event(self.paths, "workflow_rollback_skipped",
+                          agent=stage.agent, workflow=workflow.name,
+                          stage_id=stage.id, sha=pre_stage_sha)
 
         failure_reason = ""
         if not ok:

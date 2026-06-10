@@ -213,6 +213,13 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
     "validation": {
         "max_files_per_batch": 25,
         "warn_files_per_batch": 5,
+        # What to do when a stage's validation command fails:
+        #   never   - keep the work in place; later cycles repair it
+        #   careful - hard-rollback only stages marked careful: true (default)
+        #   always  - hard-rollback every failed stage (legacy behavior)
+        # Keeping work means batch commits survive, the Files tab shows the
+        # latest state, and the supervise loop fixes problems forward.
+        "rollback_on_failure": "careful",
     },
     "casting": {
         "max_dynamic_roles": 12,

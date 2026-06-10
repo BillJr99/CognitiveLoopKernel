@@ -226,10 +226,28 @@ def _normalize_rel(root: Path, rel: str) -> str:
     the exception in ``_resolve_safe`` lets them through.
 
     Also strips a leading ``./`` for the same ergonomics.
+
+    Absolute paths are interpreted chroot-style: agents are told their
+    filesystem root IS the project root, so ``/posts/x.md`` means
+    ``<root>/posts/x.md`` and a fully-qualified ``<root>/posts/x.md``
+    has the root prefix stripped. Rejecting these (the old behavior)
+    silently discarded real agent output. Escapes and ``.clk/`` are
+    still refused by ``_resolve_safe``.
     """
     rel = (rel or "").strip()
     if not rel:
         return rel
+    if rel.startswith("/"):
+        try:
+            root_str = str(root.resolve())
+        except OSError:
+            root_str = str(root)
+        if rel == root_str:
+            rel = ""
+        elif rel.startswith(root_str + "/"):
+            rel = rel[len(root_str) + 1:]
+        else:
+            rel = rel.lstrip("/")
     while rel.startswith("./"):
         rel = rel[2:]
     # Drop a leading ``workspace/`` left over from the previous layout.
@@ -266,8 +284,6 @@ def _resolve_safe(root: Path, rel: str, *, allow_blackboard: bool = False) -> Op
     """
     rel = _normalize_rel(root, rel)
     if not rel:
-        return None
-    if rel.startswith("/"):
         return None
     root.mkdir(parents=True, exist_ok=True)
     candidate = (root / rel).resolve()

@@ -66,6 +66,8 @@ Filesystem
 
   Examples: PATH: src/foo.py          GOOD
             PATH: README.md           GOOD
+            PATH: /posts/day_1.md     tolerated — treated as $project_root/posts/day_1.md,
+                                      but prefer the relative form
             PATH: .clk/anything      WRONG — rejected and never needed
             PATH: ../escape           WRONG — rejected; outside root
 

@@ -60,8 +60,35 @@ def test_resolve_safe_routes_bare_blackboard_to_clk(paths: Paths) -> None:
     assert target == (paths.root / ".clk" / "blackboard" / "my-post.json").resolve()
 
 
-def test_resolve_safe_rejects_absolute_paths(paths: Paths) -> None:
-    assert actions._resolve_safe(paths.root, "/etc/passwd") is None
+def test_resolve_safe_chroots_absolute_paths(paths: Paths) -> None:
+    """Absolute paths resolve chroot-style inside the project root.
+
+    Agents are told their filesystem root IS the project root, so
+    ``/posts/x.md`` lands at ``<root>/posts/x.md`` instead of being
+    silently rejected (which used to discard real agent output).
+    """
+    assert actions._resolve_safe(paths.root, "/posts/day_1.md") == (
+        paths.root / "posts" / "day_1.md"
+    ).resolve()
+    # A truly foreign absolute path stays sandboxed inside the root.
+    assert actions._resolve_safe(paths.root, "/etc/passwd") == (
+        paths.root / "etc" / "passwd"
+    ).resolve()
+
+
+def test_resolve_safe_strips_own_root_prefix(paths: Paths) -> None:
+    """Fully-qualified paths inside the workspace map back to relative."""
+    abs_path = str(paths.root.resolve() / "posts" / "day_2.md")
+    assert actions._resolve_safe(paths.root, abs_path) == (
+        paths.root / "posts" / "day_2.md"
+    ).resolve()
+
+
+def test_resolve_safe_absolute_clk_still_rejected(paths: Paths) -> None:
+    """Chroot-style resolution must not open a side door into .clk/."""
+    assert actions._resolve_safe(paths.root, "/.clk/state/sneaky.md") is None
+    abs_clk = str(paths.root.resolve() / ".clk" / "config" / "agents.json")
+    assert actions._resolve_safe(paths.root, abs_clk) is None
 
 
 def test_resolve_safe_rejects_escapes(paths: Paths) -> None:

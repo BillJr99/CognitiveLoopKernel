@@ -711,6 +711,32 @@ async def git_commit_detail(workspace_id: str, sha: str) -> Dict[str, Any]:
     }
 
 
+@router.get("/api/workspaces/{workspace_id}/git/status")
+async def git_status(workspace_id: str) -> Dict[str, Any]:
+    """Uncommitted working-tree changes vs HEAD (the Files tab's
+    "not yet committed" view)."""
+    from . import git_ops
+
+    paths = _require_workspace(workspace_id)
+    files = await asyncio.to_thread(git_ops.status_entries, paths.root)
+    return {"ok": True, "dirty": bool(files), "files": files, "count": len(files)}
+
+
+@router.get("/api/workspaces/{workspace_id}/git/diff")
+async def git_working_diff(workspace_id: str) -> Dict[str, Any]:
+    """Unified diff of uncommitted changes vs HEAD. Untracked files don't
+    appear in the patch — pair with /git/status to list them."""
+    from . import git_ops
+
+    paths = _require_workspace(workspace_id)
+    patch = await asyncio.to_thread(git_ops.working_tree_patch, paths.root)
+    return {
+        "ok": True,
+        "patch": (patch or {}).get("patch", ""),
+        "truncated": bool((patch or {}).get("truncated")),
+    }
+
+
 @router.get("/api/workspaces/{workspace_id}/git/file")
 async def git_file_at(
     workspace_id: str, sha: str = Query(...), path: str = Query(...)

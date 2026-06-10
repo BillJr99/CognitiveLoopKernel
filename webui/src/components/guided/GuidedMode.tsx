@@ -320,7 +320,7 @@ export function GuidedMode() {
           <Brain size={17} className="text-[var(--color-ink-950)]" />
         </div>
         <div className="leading-tight">
-          <span className="font-display text-sm font-semibold gradient-text">Cognitive Loop</span>
+          <span className="font-display text-sm font-semibold gradient-text">Cognitive Loop Kernel</span>
           <span className="ml-2 text-[10px] uppercase tracking-widest text-[var(--color-mist)]">Guided</span>
         </div>
         <button onClick={goAdvanced} className="btn btn-ghost ml-auto !px-3 !py-1.5 text-xs">

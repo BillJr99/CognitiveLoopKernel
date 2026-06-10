@@ -53,8 +53,8 @@ export default function App() {
             <Brain size={21} className="text-[var(--color-ink-950)]" />
           </div>
           <div className="leading-tight">
-            <div className="text-sm font-semibold gradient-text">Cognitive Loop</div>
-            <div className="text-[11px] tracking-wide text-[var(--color-mist)]">Kernel · web console</div>
+            <div className="text-sm font-semibold gradient-text">Cognitive Loop Kernel</div>
+            <div className="text-[11px] tracking-wide text-[var(--color-mist)]">web console</div>
           </div>
         </div>
 
