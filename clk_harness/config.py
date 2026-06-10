@@ -168,7 +168,7 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
     "project_name": None,
     "default_provider": "shell",
     "default_workflow": "engineering",
-    "max_iterations": 20,
+    "max_iterations": 100,
     "dry_run": False,
     "auto_commit": True,
     "provider_timeout_s": 0,
@@ -179,8 +179,10 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         "stage_max_retries": 10,
         "stage_backoff_s": 30,
     },
+    # The team grinds until ACTION:done — users decide when they're satisfied.
+    # Set supervise.max_cycles low in clk.config.json only to hard-cap a run.
     "supervise": {
-        "max_cycles": 20,
+        "max_cycles": 100,
     },
     "consensus": {
         "max_samples": 6,
@@ -202,17 +204,19 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         # off | careful_only (default) | all
         "auto_refine": "careful_only",
         # Cap on automatic re-dispatch attempts after a quality failure.
-        "max_quality_retries": 2,
+        "max_quality_retries": 4,
         # Below this, responses are treated as suspect and may be re-run.
         "min_response_chars": 40,
         # Critic-judge loop bounds.
-        "refine_max_rounds": 3,
+        "refine_max_rounds": 6,
         "refine_accept_threshold": 0.8,
         # Inter-agent Q&A bounds.
         "qa_parallel_judges": 1,
-        "max_qa_depth": 3,
+        "max_qa_depth": 6,
         # Ralph / autoresearch plateau detection.
-        "plateau_window": 3,
+        # A large window means the team runs many more iterations before the
+        # harness decides there is no more improvement to extract.
+        "plateau_window": 15,
         # escalate_then_reframe | escalate_only | reframe_only | off
         "plateau_action": "escalate_then_reframe",
     },

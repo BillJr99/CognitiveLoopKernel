@@ -42,10 +42,10 @@ export function WorkingStep({
   onNudged?: (newTaskId: string) => void;
 }) {
   const { data: snapData } = useSnapshot(wsId);
-  const { events } = useSharedActivity();
+  const { events, connected } = useSharedActivity();
   const cancel = useCancelTask();
   const lastSeq = events.length > 0 ? events[events.length - 1].seq : undefined;
-  const { healing } = useStuckWatchdog(wsId, snapData?.snapshot?.busy ?? false, lastSeq, onNudged);
+  const { healing } = useStuckWatchdog(wsId, snapData?.snapshot?.busy ?? false, connected, lastSeq, onNudged);
   const [showLog, setShowLog] = useState(false);
 
   const snapshot = snapData?.snapshot;
