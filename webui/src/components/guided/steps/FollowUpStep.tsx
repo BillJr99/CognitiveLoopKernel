@@ -18,6 +18,7 @@ export function FollowUpStep({
   onBack: () => void;
 }) {
   const [request, setRequest] = useState("");
+  const [stopWhen, setStopWhen] = useState("");
 
   return (
     <StepShell
@@ -40,6 +41,18 @@ export function FollowUpStep({
         />
         <div className="mt-1 flex items-center gap-1 text-[10px] text-[var(--color-mist)]">
           <CornerDownLeft size={11} /> Ctrl/Cmd + Enter to send
+        </div>
+        <div className="mt-3">
+          <label className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-mist)]">
+            Stop when <span className="font-normal normal-case opacity-60">(optional)</span>
+          </label>
+          <input
+            type="text"
+            value={stopWhen}
+            onChange={(e) => setStopWhen(e.target.value)}
+            placeholder="e.g. working prototype with README"
+            className="input mt-1 w-full text-sm"
+          />
         </div>
       </div>
 

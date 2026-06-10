@@ -1423,6 +1423,18 @@ class AgentRunner:
             log_exception("orchestration.agent._collect_context.casting_feedback", exc)
             casting_feedback = ""
 
+        # Cross-iteration scratchpad: inject PROGRESS.md content as "notes"
+        notes = ""
+        notes_path = self.paths.root / "PROGRESS.md"
+        if notes_path.exists():
+            try:
+                raw_notes = notes_path.read_text(encoding="utf-8")
+                if len(raw_notes) > 3000:
+                    raw_notes = raw_notes[-3000:]
+                notes = raw_notes
+            except Exception as exc:
+                log_exception("orchestration.agent._collect_context.notes", exc)
+
         ctx = {
             "agent": extra.get("agent", ""),
             "objective": objective,
@@ -1434,9 +1446,11 @@ class AgentRunner:
             "idea_statement": (idea.get("statement") if isinstance(idea, dict) else "") or "",
             "iteration": str(extra.get("iteration", "")),
             "cycle_context": str(extra.get("cycle_context") or ""),
+            "stop_when": str(extra.get("stop_when") or ""),
             "current_roster": roster_text,
             "blackboard_digest": bb_digest,
             "casting_feedback": casting_feedback or "(none)",
+            "notes": notes,
         }
         ctx.update({k: v for k, v in extra.items() if k not in ctx})
         return ctx

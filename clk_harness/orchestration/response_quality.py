@@ -111,6 +111,7 @@ _HEADERLESS_ACTION_RE = re.compile(r"^\s*ACTION\s*:\s*([A-Za-z]+)", re.IGNORECAS
 _END_ACTION_RE = re.compile(r"^\s*END_ACTION\s*$", re.IGNORECASE | re.MULTILINE)
 _POST_HEAD_RE = re.compile(r"^\s*POST\s*:\s*([A-Za-z][A-Za-z0-9_]*)\s*$", re.IGNORECASE | re.MULTILINE)
 _POST_END_RE = re.compile(r"^\s*END_POST\s*$", re.IGNORECASE | re.MULTILINE)
+_PROGRESS_RE = re.compile(r"^\s*PROGRESS\s*:\s*(yes|no|true|false)\s*$", re.IGNORECASE | re.MULTILINE)
 
 
 def _parse_confidence(text: str) -> Optional[float]:
@@ -234,8 +235,12 @@ def score(
         q.recoverable = False
 
     # 3. Malformed ACTION blocks
+    # balance==1 is forgivable: the parser already handles an EOF-terminated
+    # block correctly (the last block's END_ACTION was truncated). Only flag
+    # when 2+ blocks are unclosed, which means genuinely interleaved nesting
+    # that would corrupt parsing.
     act_balance = _action_block_balance(text or "")
-    if act_balance > 0:
+    if act_balance > 1:
         q.flags.append("malformed_action")
         q.reasons.append(
             f"{act_balance} ACTION header(s) had no matching END_ACTION. "

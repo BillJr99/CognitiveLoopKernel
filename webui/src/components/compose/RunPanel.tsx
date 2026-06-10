@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Play, Square, Lightbulb, Repeat, Wand2, Terminal, AlertTriangle } from "lucide-react";
-import { useCancelTask, useCreateWorkspace, useDoctor, useStartTask, useTaskStatus, useWorkflows } from "../../api/hooks";
+import { useCancelTask, useCreateWorkspace, useDoctor, useSetStopWhen, useStartTask, useStopWhen, useTaskStatus, useWorkflows } from "../../api/hooks";
 import { apiGet } from "../../api/client";
 import { useActiveWorkspace } from "../../state/activeWorkspace";
 import { Badge, Spinner } from "../common/ui";
@@ -43,6 +43,7 @@ export function RunPanel() {
 
   const [idea, setIdea] = useState("");
   const [mode, setMode] = useState<Mode>("run");
+  const [stopWhen, setStopWhen] = useState("");
   const [workflow, setWorkflow] = useState("engineering");
   const [loopMode, setLoopMode] = useState<"ralph" | "autoresearch">("ralph");
   const [iterations, setIterations] = useState(5);
@@ -50,6 +51,8 @@ export function RunPanel() {
   const [lines, setLines] = useState<string[]>([]);
 
   const { data: status } = useTaskStatus(taskId);
+  const { data: stopWhenData } = useStopWhen(activeId);
+  const setStopWhenMutation = useSetStopWhen(activeId);
   const logRef = useRef<HTMLDivElement>(null);
   const running = status?.status === "pending" || status?.status === "running";
 
@@ -76,6 +79,12 @@ export function RunPanel() {
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [lines.length]);
+
+  useEffect(() => {
+    if (stopWhenData?.condition != null) {
+      setStopWhen(stopWhenData.condition);
+    }
+  }, [stopWhenData?.condition]);
 
   async function launch() {
     if (start.isPending || createWorkspace.isPending) return;
@@ -111,6 +120,9 @@ export function RunPanel() {
       body.workflow = workflow;
     } else if (mode === "loop") {
       body.args = ["--mode", loopMode, "--max-iterations", String(iterations)];
+    }
+    if (activeId && stopWhen.trim() !== (stopWhenData?.condition ?? "")) {
+      await setStopWhenMutation.mutateAsync(stopWhen.trim() || null);
     }
     const res = await start.mutateAsync(body);
     setTaskId(res.task_id);
@@ -247,6 +259,20 @@ export function RunPanel() {
               </button>
             )}
           </div>
+        </div>
+
+        {/* Stop condition */}
+        <div className="mt-3">
+          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--color-mist)]">
+            Stop when <span className="font-normal normal-case opacity-60">(optional — leave blank to run until max cycles)</span>
+          </label>
+          <input
+            type="text"
+            value={stopWhen}
+            onChange={(e) => setStopWhen(e.target.value)}
+            placeholder="e.g. all tests pass and README is complete"
+            className="input w-full"
+          />
         </div>
 
         {start.isError && (
