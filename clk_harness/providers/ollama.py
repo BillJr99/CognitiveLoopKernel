@@ -50,6 +50,12 @@ class OllamaProvider(AgentProvider):
     type_name = "ollama"
 
     def _endpoint(self) -> str:
+        # A successful docker-host rescue (see available()) outranks even
+        # the env var: the env value is exactly the endpoint that just
+        # proved dead, so honoring it would re-break every invoke().
+        rescued = getattr(self, "_rescued_endpoint", None)
+        if rescued:
+            return rescued
         # .env (CLK_OLLAMA_ENDPOINT) wins when set so the global config can
         # drive the connection without editing providers.json.
         return normalize_endpoint(
@@ -63,11 +69,12 @@ class OllamaProvider(AgentProvider):
         if probe_endpoint(endpoint):
             return True
         # Container-on-host rescue: if the configured localhost endpoint
-        # is dead but host.docker.internal answers, mutate our config so
-        # subsequent calls (invoke, list_models, …) use the working URL.
+        # is dead but host.docker.internal answers, remember the working
+        # URL so subsequent calls (invoke, list_models, …) all use it.
         swapped = maybe_docker_host_fallback(endpoint, label="ollama")
         if swapped:
             self.config["endpoint"] = swapped
+            self._rescued_endpoint = swapped.rstrip("/")
             return True
         return False
 

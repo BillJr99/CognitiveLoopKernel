@@ -78,6 +78,12 @@ class OpenWebUIProvider(AgentProvider):
     type_name = "openwebui"
 
     def _endpoint(self) -> str:
+        # A successful docker-host rescue (see available()) outranks even
+        # the env var: the env value is exactly the endpoint that just
+        # proved dead, so honoring it would re-break every invoke().
+        rescued = getattr(self, "_rescued_endpoint", None)
+        if rescued:
+            return rescued
         # .env knobs win when set so the global config can drive the
         # connection without editing providers.json.
         from ._endpoint_fallback import normalize_endpoint
@@ -101,6 +107,7 @@ class OpenWebUIProvider(AgentProvider):
         swapped = maybe_docker_host_fallback(endpoint, label="openwebui")
         if swapped:
             self.config["endpoint"] = swapped
+            self._rescued_endpoint = swapped.rstrip("/")
             return True
         return False
 
