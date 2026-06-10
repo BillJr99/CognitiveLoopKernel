@@ -183,7 +183,7 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
     # Set supervise.max_cycles low in clk.config.json only to hard-cap a run.
     "supervise": {
         "max_cycles": 100,
-        "max_consecutive_no_progress": 5,
+        "max_consecutive_no_progress": 8,
         # When the no-progress cap is hit, dispatch the chief once in
         # rescue mode (restructure / unblock / declare done) before the
         # supervise loop gives up.
