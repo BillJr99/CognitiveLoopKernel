@@ -24,7 +24,7 @@ export function NowHappening({ snap, latest }: { snap?: Snapshot; latest?: Activ
       : "Ready when you are";
 
   return (
-    <div className="card-lux relative overflow-hidden px-5 py-6">
+    <div className="card-lux relative overflow-hidden px-5 py-7">
       {busy && <div className="activity-sweep absolute inset-x-0 top-0 h-0.5" />}
       <div className="flex items-center gap-3">
         <div
