@@ -539,26 +539,82 @@ def _similar_existing_prompt(
             ex_body = ex_path.read_text(encoding="utf-8")
         except Exception:
             continue
-        score = _prompt_similarity(new_prompt, ex_body)
+        # Compare domain content only: the harness appends a shared
+        # protocol suffix to every dynamic prompt, which would inflate
+        # similarity between unrelated roles.
+        marker_idx = ex_body.find(_PROTOCOL_MARKER)
+        if marker_idx > 0:
+            ex_body = ex_body[:marker_idx]
+        new_body = new_prompt
+        new_idx = new_body.find(_PROTOCOL_MARKER)
+        if new_idx > 0:
+            new_body = new_body[:new_idx]
+        score = _prompt_similarity(new_body, ex_body)
         if score >= threshold and (best is None or score > best[1]):
             best = (ex_name, score)
     return best
 
 
+_PROTOCOL_MARKER = "Action protocol (executed by the harness)"
+
+
+def _harness_protocol_suffix() -> str:
+    """Protocol blocks every dispatched agent needs: ACTION grammar,
+    blackboard POST/PRODUCES rules, and the base footer (outputs contract,
+    iteration discipline, self-assessment lines).
+
+    Chief-drafted PROPOSE_ROLE prompts focus on domain expertise and never
+    reliably include these; appending them here is what makes dynamic
+    agents emit parseable ACTION/POST blocks instead of prose.
+    """
+    try:
+        from ..templates.prompts import (
+            _ACTION_PROTOCOL_BLOCK,
+            _BLACKBOARD_PROTOCOL_BLOCK,
+            _BASE_FOOTER,
+        )
+        return "\n\n" + _ACTION_PROTOCOL_BLOCK + "\n" + _BLACKBOARD_PROTOCOL_BLOCK + "\n" + _BASE_FOOTER
+    except Exception as exc:
+        log_exception("orchestration.casting._harness_protocol_suffix", exc)
+        return ""
+
+
 def _ensure_prompt_file(paths: Paths, name: str, prompt_body: str, role_line: str) -> str:
     """Write ``.clk/prompts/<name>.md`` if missing or if a body was provided.
+
+    Every dynamic prompt gets the harness protocol suffix appended (ACTION
+    grammar, blackboard protocol, base footer) unless the body already
+    contains it. Existing prompt files written by older versions are
+    healed in place when the marker is missing.
 
     Returns the prompt filename actually used.
     """
     fname = f"{name}.md"
     target = paths.prompts / fname
     paths.prompts.mkdir(parents=True, exist_ok=True)
+    suffix = _harness_protocol_suffix()
     if prompt_body and prompt_body.strip():
+        body = prompt_body.rstrip()
+        if suffix and _PROTOCOL_MARKER not in body and "Self-assessment footer" not in body:
+            body += suffix
         try:
-            target.write_text(prompt_body.rstrip() + "\n", encoding="utf-8")
+            target.write_text(body + "\n", encoding="utf-8")
         except Exception as exc:
             log_exception("orchestration.casting._ensure_prompt_file", exc)
-    elif not target.exists():
+    elif target.exists():
+        # No new body, but heal pre-existing prompts that lack the
+        # protocol blocks (written before the suffix was introduced).
+        try:
+            existing = target.read_text(encoding="utf-8")
+            if (
+                suffix
+                and _PROTOCOL_MARKER not in existing
+                and "Self-assessment footer" not in existing
+            ):
+                target.write_text(existing.rstrip() + suffix + "\n", encoding="utf-8")
+        except Exception as exc:
+            log_exception("orchestration.casting._ensure_prompt_file.heal", exc)
+    else:
         # No body provided and no existing file: scaffold a generic one
         # so the agent at least has a coherent prompt.
         scaffold = (
@@ -572,12 +628,14 @@ def _ensure_prompt_file(paths: Paths, name: str, prompt_body: str, role_line: st
             "$blackboard_digest\n\n"
             "Objective:\n$objective\n\n"
             "Output\n"
-            "- The deliverable for this objective.\n"
+            "- The deliverable for this objective, written to files with\n"
+            "  ACTION blocks. Prose in your response is NOT a deliverable —\n"
+            "  work that isn't written to a file does not exist.\n"
             "- A POST: <type> block summarising the headline result so the\n"
             "  blackboard reflects what you produced. If your stage YAML\n"
             "  declared `outputs: [...]`, include each declared key in the\n"
-            "  POST's PRODUCES list, otherwise the runner will warn the\n"
-            "  contract is unmet.\n"
+            "  POST's PRODUCES list, otherwise the harness rejects your\n"
+            "  response and re-dispatches you.\n"
             "- A `Validation` section: a shell command (or `none`) that proves the deliverable.\n"
             "- A `Commit` section: a one-sentence commit message.\n"
             "\n"
@@ -593,6 +651,8 @@ def _ensure_prompt_file(paths: Paths, name: str, prompt_body: str, role_line: st
             "- If you spot work that should be owned by a role that doesn't exist, emit a\n"
             "  `PROPOSE_ROLE:` block per the casting protocol.\n"
         )
+        if suffix:
+            scaffold = scaffold.rstrip() + suffix + "\n"
         try:
             target.write_text(scaffold, encoding="utf-8")
         except Exception as exc:

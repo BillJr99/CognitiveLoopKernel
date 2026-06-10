@@ -196,6 +196,14 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         # (POST PRODUCES keys) goes unsatisfied, instead of warning only.
         "dispatch_on_unmet_outputs": True,
     },
+    # Chief-drafted prompts. "dispatch" controls per-stage task-prompt
+    # tightening (off | careful_only | always); "role" controls whether
+    # the chief drafts real system prompts for scaffolded roles. Drafts
+    # are disk-cached by input hash so repeated dispatches cost nothing.
+    "meta_prompt": {
+        "dispatch": "always",
+        "role": "on",
+    },
     "consensus": {
         "max_samples": 6,
         "max_parallel": 4,

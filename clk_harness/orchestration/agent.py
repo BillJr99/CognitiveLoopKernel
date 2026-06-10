@@ -971,6 +971,7 @@ class AgentRunner:
         agent_name: str,
         base_objective: str,
         blackboard_inputs: Optional[List[str]] = None,
+        stage_outputs: Optional[List[str]] = None,
     ) -> Optional[str]:
         """Ask the chief to draft a tighter task prompt for ``agent_name``.
 
@@ -983,7 +984,8 @@ class AgentRunner:
         if mode in ("", "off", "false", "0"):
             return None
         inputs_key = ",".join(sorted(blackboard_inputs or []))
-        key = self._meta_key("dispatch", agent_name, base_objective, inputs_key)
+        outputs_key = ",".join(sorted(stage_outputs or []))
+        key = self._meta_key("dispatch", agent_name, base_objective, inputs_key, outputs_key)
         cached = self._meta_cache_lookup(key)
         if cached:
             return cached
@@ -994,11 +996,28 @@ class AgentRunner:
             system_preview = ""
             if prompt_path.exists():
                 system_preview = " ".join(prompt_path.read_text(encoding="utf-8").strip().split())[:600]
+            contract_lines = ""
+            if stage_outputs:
+                produces = ", ".join(stage_outputs)
+                contract_lines = (
+                    f"\nThis stage declares an outputs contract: {produces}.\n"
+                    "Your drafted prompt MUST explicitly instruct the worker to end\n"
+                    "with a POST block whose PRODUCES line lists exactly these keys\n"
+                    f"(`PRODUCES: {produces}`) — the harness rejects responses that\n"
+                    "miss any key, so spell it out rather than assuming the worker\n"
+                    "infers it.\n"
+                )
             objective = (
                 f"Draft a tighter task prompt for the `{agent_name}` agent for the\n"
                 f"objective below. Output ONLY the new objective text — no preamble,\n"
-                f"no commentary. Keep it focused, concrete, and at most 6 sentences.\n"
-                f"Reference any relevant blackboard posts the worker should consult.\n\n"
+                f"no commentary. Keep it focused, concrete, and at most 8 sentences.\n"
+                f"Reference any relevant blackboard posts the worker should consult.\n"
+                f"{contract_lines}\n"
+                "Compliance requirements your drafted prompt must convey:\n"
+                "- Deliverables are FILES written via ACTION blocks; prose alone\n"
+                "  does not count and the work will be considered missing.\n"
+                "- Say concretely what 'done' looks like (which files exist, what\n"
+                "  they contain, what validation passes).\n\n"
                 f"Worker role line: {role_line or '(none)'}\n"
                 f"Worker system prompt preview: {system_preview or '(missing)'}\n\n"
                 f"Original objective:\n{base_objective}\n"
@@ -1064,7 +1083,17 @@ class AgentRunner:
                 "$$project_name $$project_root $$iteration\n"
                 "Output ONLY the prompt body — no PROPOSE_ROLE wrapper, no commentary.\n"
                 "Keep it under 50 lines. Make the role's distinct ownership explicit\n"
-                "compared with existing roles."
+                "compared with existing roles.\n\n"
+                "The harness automatically appends the ACTION/POST protocol blocks\n"
+                "to every role prompt, so do NOT restate them. Instead, your draft\n"
+                "MUST include an Output section that tells the agent:\n"
+                "- deliverables are files written via ACTION blocks (prose alone\n"
+                "  is not a deliverable and the harness treats it as missing work);\n"
+                "- to end with a POST block summarising the result, with PRODUCES\n"
+                "  listing any contract keys its stage declares;\n"
+                "- what a complete, verifiable result looks like for this role.\n"
+                "Before emitting, re-read your draft as if you were a small local\n"
+                "model: remove ambiguity, prefer imperative checklists over essays."
             )
             self._observer_log(
                 f"meta :: drafting role prompt for {role_name} via chief"
@@ -1365,10 +1394,26 @@ class AgentRunner:
                 "Current state summary:\n$state_summary\n"
             )
         try:
-            return path.read_text(encoding="utf-8")
+            template = path.read_text(encoding="utf-8")
         except Exception as exc:
             log_exception("orchestration.agent._load_prompt_template", exc)
             return "Objective:\n$objective\n"
+        # Dispatch-time healing: prompts written before the protocol suffix
+        # existed (or hand-edited ones) lack the ACTION/POST grammar, which
+        # makes the agent emit prose instead of parseable blocks. Append it
+        # in-memory so every dispatch carries the protocol even when the
+        # file on disk is stale. Prompts that already carry the base footer
+        # were assembled deliberately from the templates (e.g. critic.md
+        # carries only the footer because it never emits actions) — leave
+        # those alone to avoid duplicating shared blocks.
+        if (
+            _casting._PROTOCOL_MARKER not in template
+            and "Self-assessment footer" not in template
+        ):
+            suffix = _casting._harness_protocol_suffix()
+            if suffix:
+                template = template.rstrip() + suffix + "\n"
+        return template
 
     def _collect_context(self, objective: str, extra: Dict[str, Any]) -> Dict[str, Any]:
         idea_path = self.paths.state / "idea.json"

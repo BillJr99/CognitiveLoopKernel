@@ -727,6 +727,7 @@ class WorkflowRunner:
                     agent_name=stage.agent,
                     base_objective=objective,
                     blackboard_inputs=list(stage.inputs),
+                    stage_outputs=list(stage.outputs),
                 )
                 if drafted:
                     objective = drafted

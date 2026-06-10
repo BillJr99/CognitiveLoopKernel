@@ -106,6 +106,19 @@ Creation discipline
   welcome when it has a clear job; otherwise use or extend what exists.
 - Avoid duplicate files, duplicate directories, and alternate
   implementations of the same thing.
+
+FINAL COMPLIANCE CHECK — verify every item before you end your response.
+The harness validates these mechanically and re-dispatches you on any miss:
+  1. Deliverables exist as FILES via ACTION blocks. Prose describing work
+     is not work. If you produced content (posts, docs, code), each piece
+     is inside an ACTION:write/append with a real PATH.
+  2. Every ACTION block ends with END_ACTION on its own line.
+  3. Every POST block ends with END_POST on its own line.
+  4. If your context shows a REQUIRED OUTPUT CONTRACT, one of your POST
+     blocks has a PRODUCES line listing every required key.
+  5. You appended a progress note to PROGRESS.md.
+  6. Your last lines include PROGRESS: yes|no and the self-assessment
+     footer (CONFIDENCE / NEEDS_REVIEW).
 """
 
 
@@ -210,6 +223,24 @@ Role-casting protocol (parsed by the harness):
   <prompt body; placeholders: $$idea_title $$idea_statement $$project_name
    $$project_root $$state_summary $$objective $$iteration>
   END_ROLE
+
+  The harness automatically appends the ACTION protocol, blackboard
+  protocol, and compliance footer to every role prompt — do NOT restate
+  them. Focus the PROMPT body on domain expertise and deliverables.
+
+  Before emitting any PROPOSE_ROLE, self-review the PROMPT body against
+  this checklist — a weak prompt wastes a full dispatch cycle on
+  harness rejections:
+    1. Does it say deliverables are FILES written via ACTION blocks
+       (e.g. "write each post to posts/day_N.md"), not prose answers?
+    2. Does it tell the agent to end with a POST block whose PRODUCES
+       line carries the stage's declared output keys?
+    3. Does it define what a complete result looks like, concretely
+       enough that a small local model cannot misread it?
+    4. Is it imperative and checklist-shaped rather than essay-shaped?
+  If any answer is no, fix the PROMPT body before emitting the block.
+  Apply the same care to stage `objective` lines in PROPOSE_WORKFLOW:
+  name the exact files to produce and the contract keys to PRODUCES.
 
   PROPOSE_WORKFLOW: <name>
   DESCRIPTION: <one line>
