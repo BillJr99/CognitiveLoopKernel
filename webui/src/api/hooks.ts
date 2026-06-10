@@ -6,6 +6,9 @@ import type {
   EnvResponse,
   FileContent,
   FilesResponse,
+  GitCommitDetail,
+  GitFileAt,
+  GitLogResponse,
   ProvidersConfig,
   Snapshot,
   StopWhenResponse,
@@ -196,6 +199,39 @@ export function useFileContent(ws: string | null, path: string | null) {
     enabled: !!ws && !!path,
     queryKey: ["file", ws, path],
     queryFn: () => apiGet<FileContent>(`/api/workspaces/${ws}/file?path=${encodeURIComponent(path!)}`),
+  });
+}
+
+export function useGitLog(ws: string | null, path?: string | null) {
+  return useQuery({
+    enabled: !!ws,
+    queryKey: ["git-log", ws, path ?? ""],
+    queryFn: () =>
+      apiGet<GitLogResponse>(
+        `/api/workspaces/${ws}/git/log${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+      ),
+    refetchInterval: 10_000,
+  });
+}
+
+export function useCommitDetail(ws: string | null, sha: string | null) {
+  return useQuery({
+    enabled: !!ws && !!sha,
+    queryKey: ["git-commit", ws, sha],
+    queryFn: () => apiGet<GitCommitDetail>(`/api/workspaces/${ws}/git/commit/${sha}`),
+    staleTime: Infinity, // commits are immutable
+  });
+}
+
+export function useFileAtCommit(ws: string | null, sha: string | null, path: string | null) {
+  return useQuery({
+    enabled: !!ws && !!sha && !!path,
+    queryKey: ["git-file", ws, sha, path],
+    queryFn: () =>
+      apiGet<GitFileAt>(
+        `/api/workspaces/${ws}/git/file?sha=${sha}&path=${encodeURIComponent(path!)}`,
+      ),
+    staleTime: Infinity,
   });
 }
 

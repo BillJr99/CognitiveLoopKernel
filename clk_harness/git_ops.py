@@ -277,3 +277,126 @@ def changed_files_since(root: Path, sha: str) -> List[str]:
     except Exception as exc:
         log_exception("git_ops.changed_files_since", exc)
         return []
+
+
+# History mining (read-only; powers the web UI Files tab) -------------------
+
+_FIELD_SEP = "\x1f"
+_RECORD_SEP = "\x1e"
+_LOG_FORMAT = _FIELD_SEP.join(["%H", "%h", "%an", "%aI", "%s"])
+
+
+def _filter_internal(path: str) -> bool:
+    """True when ``path`` is a harness-internal file we hide from users."""
+    top = path.split("/", 1)[0]
+    return top in {".clk", ".git", "node_modules", "__pycache__"}
+
+
+def log_entries(
+    root: Path, *, path: Optional[str] = None, limit: int = 100,
+    rev: Optional[str] = None,
+) -> List[dict]:
+    """Commit history newest-first, with per-commit file stats.
+
+    When ``path`` is given, only commits touching that file are returned
+    (renames followed). When ``rev`` is given, history starts at that
+    commit. Harness-internal paths are dropped from the file stats;
+    commits whose every change is internal are dropped entirely.
+    """
+    if not is_repo(root):
+        return []
+    args = [
+        "git", "log", f"--max-count={int(limit)}",
+        f"--pretty=format:{_RECORD_SEP}{_LOG_FORMAT}", "--numstat",
+    ]
+    if rev:
+        args.append(rev)
+    if path:
+        args += ["--follow", "--", path]
+    try:
+        r = subprocess.run(args, cwd=root, check=True, capture_output=True, text=True)
+    except Exception as exc:
+        log_exception("git_ops.log_entries", exc)
+        return []
+
+    commits: List[dict] = []
+    for record in r.stdout.split(_RECORD_SEP):
+        record = record.strip("\n")
+        if not record:
+            continue
+        head, _, stat_block = record.partition("\n")
+        fields = head.split(_FIELD_SEP)
+        if len(fields) != 5:
+            continue
+        sha, short, author, date, subject = fields
+        files: List[dict] = []
+        insertions = deletions = 0
+        for line in stat_block.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            ins, dels, fpath = parts
+            # Rename lines look like "old => new" or "{a => b}/x".
+            fpath = fpath.split(" => ")[-1].replace("}", "").replace("{", "")
+            if _filter_internal(fpath):
+                continue
+            fi = 0 if ins == "-" else int(ins)
+            fd = 0 if dels == "-" else int(dels)
+            insertions += fi
+            deletions += fd
+            files.append({"path": fpath, "insertions": fi, "deletions": fd})
+        if not files and stat_block.strip():
+            continue  # commit only touched internal paths
+        commits.append({
+            "sha": sha,
+            "short": short,
+            "author": author,
+            "date": date,
+            "subject": subject,
+            "insertions": insertions,
+            "deletions": deletions,
+            "files": files,
+        })
+    return commits
+
+
+def commit_patch(root: Path, sha: str, *, max_bytes: int = 200_000) -> Optional[dict]:
+    """Unified diff for one commit, truncated to ``max_bytes``.
+
+    Harness-internal paths are excluded so the patch matches what the
+    Files tab shows.
+    """
+    if not is_repo(root):
+        return None
+    excludes = [f":(exclude){d}" for d in (".clk", ".git", "node_modules", "__pycache__")]
+    try:
+        r = subprocess.run(
+            ["git", "show", sha, "--patch", "--no-color",
+             "--pretty=format:", "--", ".", *excludes],
+            cwd=root, check=True, capture_output=True, text=True,
+        )
+    except Exception as exc:
+        log_exception("git_ops.commit_patch", exc)
+        return None
+    patch = r.stdout.lstrip("\n")
+    truncated = len(patch.encode("utf-8")) > max_bytes
+    if truncated:
+        patch = patch.encode("utf-8")[:max_bytes].decode("utf-8", errors="replace")
+    return {"patch": patch, "truncated": truncated}
+
+
+def file_at(root: Path, sha: str, path: str) -> Optional[bytes]:
+    """Raw bytes of ``path`` as of commit ``sha``, or None if absent."""
+    if not is_repo(root):
+        return None
+    try:
+        r = subprocess.run(
+            ["git", "show", f"{sha}:{path}"],
+            cwd=root, check=False, capture_output=True,
+        )
+        if r.returncode != 0:
+            return None
+        return r.stdout
+    except Exception as exc:
+        log_exception("git_ops.file_at", exc)
+        return None

@@ -10,6 +10,18 @@ export function fmtTokens(n: number): string {
   return `${n}`;
 }
 
+export function timeAgo(iso: string): string {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 7 * 86400) return `${Math.floor(s / 86400)}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
 export function shortTime(ts: string): string {
   if (!ts) return "";
   // Activity timestamps are naive local ISO (no Z). Show just HH:MM:SS.
