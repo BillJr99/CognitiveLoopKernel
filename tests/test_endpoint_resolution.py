@@ -10,8 +10,6 @@ the provider's own rescue, so every invoke() hit connection-refused.
 
 from __future__ import annotations
 
-import pytest
-
 from clk_harness import webui_router
 from clk_harness.providers import _endpoint_fallback, ollama, openwebui
 
