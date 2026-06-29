@@ -72,7 +72,7 @@ def get_bind_port() -> int:
         return DEFAULT_PORT
 
 
-COMMANDS = ["init", "idea", "plan", "run", "loop", "status"]
+COMMANDS = ["init", "idea", "plan", "run", "mission", "auto", "loop", "status"]
 MAX_TASK_LINES = 10_000
 
 

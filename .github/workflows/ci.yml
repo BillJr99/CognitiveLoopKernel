@@ -32,9 +32,18 @@ jobs:
           pip install -e ".[api,telegram]"
           pip install pytest pytest-asyncio httpx
 
-      - name: Run tests
+      - name: Run unit tests
         run: pytest tests/ -v
         env:
+          CLK_WORKSPACES_DIR: /tmp/clk-workspaces
+
+      - name: Run offline autonomous-mission e2e (shell provider, no network)
+        # Exercises the single-prompt mission, the done-gate / no-op guard, the
+        # charter-first ordering, and the commit trace end to end using the
+        # shell provider — no API keys or network access required.
+        run: pytest user_tests/test_mission_e2e.py -v
+        env:
+          CLK_PROVIDER: shell
           CLK_WORKSPACES_DIR: /tmp/clk-workspaces
 
   webui:

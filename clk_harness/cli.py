@@ -4,7 +4,8 @@ Sub-commands:
   init        - bootstrap .clk/, configs, prompts, workflows, git repo
   idea        - capture an idea
   plan        - run the discovery + product workflows
-  run         - run a single development cycle (engineering workflow by default)
+  run         - drive the autonomous mission to a code-gated done (--once for one cycle)
+  mission     - autonomous single-prompt mission (alias: auto): objective -> done
   loop        - repeat the Ralph (or autoresearch) loop
   status      - print harness status and recent activity
   providers   - list providers and availability
@@ -56,6 +57,7 @@ from .orchestration import (
     AgentRunner,
     AutoresearchLoop,
     Evaluator,
+    MissionRunner,
     RalphLoop,
     RoleProposal,
     WorkflowRunner,
@@ -206,12 +208,19 @@ def _make_runner(paths: Paths) -> AgentRunner:
 def _make_evaluator(paths: Paths) -> Evaluator:
     cfg = load_clk_config(paths)
     checks = cfg.get("validation_checks") or []
-    if not checks:
-        # Default sanity check: the project is still initialized. Users should
-        # override `validation_checks` in clk.config.json with a project-specific
-        # gate (e.g. `pytest -q` or `npm test`) once the project has real code.
-        checks = ["test -f .clk/config/clk.config.json"]
-    return Evaluator(root=paths.root, default_checks=checks)
+    # FM4: when the user has not configured an explicit validation gate, do NOT
+    # fall back to a vacuous "is the project still initialized" check (which
+    # always passes and makes "evaluate" a no-op). Instead let the Evaluator
+    # auto-derive a real command from the project shape (pytest / npm / smoke).
+    val_cfg = cfg.get("validation") or {}
+    auto_derive = bool(val_cfg.get("auto_derive", True))
+    derived_command = val_cfg.get("derived_command")
+    return Evaluator(
+        root=paths.root,
+        default_checks=checks,
+        auto_derive=auto_derive,
+        derived_command=derived_command,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +279,28 @@ def cmd_init(args: argparse.Namespace) -> int:
     print("\nNext: clk idea \"<your idea>\"")
     close_log()
     return 0
+
+
+def _capture_idea(paths: Paths, statement: str, title: Optional[str] = None) -> str:
+    """Persist an idea (idea.json + system_brief.md). Returns the title."""
+    title = title or (statement.split(".")[0][:80] if statement else "Untitled idea")
+    payload = {
+        "title": title,
+        "statement": statement,
+        "captured_at": datetime.now().isoformat(timespec="seconds"),
+        "tags": [],
+    }
+    save_json(paths.state / "idea.json", payload)
+    brief_path = paths.state / "system_brief.md"
+    try:
+        brief_path.write_text(
+            f"# System brief\n\n**Title:** {title}\n\n## Idea\n{statement}\n\n"
+            f"## Captured at\n{payload['captured_at']}\n",
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        log_exception("cli._capture_idea.brief", exc)
+    return title
 
 
 def cmd_idea(args: argparse.Namespace) -> int:
@@ -401,7 +432,59 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0 if overall_ok else 1
 
 
+def _apply_mission_overrides(paths: Paths, args: argparse.Namespace) -> None:
+    """Apply CLI --max-phases / --max-cycles overrides into the live config."""
+    cfg = load_clk_config(paths)
+    mission_cfg = dict(cfg.get("mission") or {})
+    changed = False
+    if getattr(args, "max_phases", None):
+        mission_cfg["max_phases"] = int(args.max_phases)
+        changed = True
+    if getattr(args, "max_cycles", None):
+        mission_cfg["max_total_cycles"] = int(args.max_cycles)
+        changed = True
+    if changed:
+        cfg["mission"] = mission_cfg
+        save_json(paths.config / "clk.config.json", cfg)
+
+
+def _drive_mission(args: argparse.Namespace, *, log_label: str, objective: Optional[str]) -> int:
+    """Run the autonomous mission to a code-gated done. Shared by run/mission."""
+    paths = project_paths()
+    if not _ensure_initialized(paths):
+        return 2
+    init_log_file(paths.logs, log_label)
+    _apply_mission_overrides(paths, args)
+    runner = _make_runner(paths)
+    evaluator = _make_evaluator(paths)
+    mr = MissionRunner(paths, runner, evaluator)
+    plan = mr.run(
+        objective,
+        resume=bool(getattr(args, "resume", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    done = sum(1 for p in plan.phases if p.status == "done")
+    print(
+        f"mission {plan.status}: {done}/{len(plan.phases)} phases done, "
+        f"{plan.total_cycles_used} cycles used"
+    )
+    if plan.status == "done":
+        print("done-gate granted — see .clk/state/done_granted.md")
+    else:
+        last = plan.done_gate_last or {}
+        if last.get("failures"):
+            print("done-gate unmet: " + ", ".join(last.get("failures") or []))
+    close_log()
+    # A dry run is a plan/preview, not a real completion — treat as success.
+    return 0 if (getattr(args, "dry_run", False) or plan.status == "done") else 1
+
+
 def cmd_run(args: argparse.Namespace) -> int:
+    # Autonomy by default: `clk run` drives the full mission to a code-gated
+    # done. `--once` restores the legacy single-workflow-pass behavior.
+    if not getattr(args, "once", False):
+        return _drive_mission(args, log_label="run", objective=None)
+
     paths = project_paths()
     if not _ensure_initialized(paths):
         return 2
@@ -425,6 +508,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"workflow {wf_name}: {ok_count} ok, {fail_count} failed, {len(results)} total")
     close_log()
     return 0 if fail_count == 0 else 1
+
+
+def cmd_mission(args: argparse.Namespace) -> int:
+    """Autonomous single-prompt mission: one objective -> code-gated done."""
+    paths = project_paths()
+    if not _ensure_initialized(paths):
+        return 2
+    objective = getattr(args, "idea", None)
+    # Capture the idea first so resumes / context have it on disk.
+    if objective:
+        try:
+            _capture_idea(paths, objective)
+        except Exception as exc:
+            log_exception("cli.cmd_mission.capture_idea", exc)
+    return _drive_mission(args, log_label="mission", objective=objective)
 
 
 def cmd_loop(args: argparse.Namespace) -> int:
@@ -834,10 +932,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_plan.add_argument("--dry-run", action="store_true")
     p_plan.set_defaults(func=cmd_plan)
 
-    p_run = sub.add_parser("run", help="Run a single development cycle.")
-    p_run.add_argument("--workflow", help="Workflow name (default: engineering).")
+    p_run = sub.add_parser(
+        "run",
+        help="Drive the autonomous mission to a code-gated done (use --once for a single cycle).",
+    )
+    p_run.add_argument("--workflow", help="Workflow name for --once (default: engineering).")
+    p_run.add_argument("--once", action="store_true",
+                       help="Run a single workflow pass instead of the full mission (legacy).")
+    p_run.add_argument("--resume", action="store_true", help="Resume an existing mission plan.")
+    p_run.add_argument("--max-phases", type=int, help="Override mission.max_phases.")
+    p_run.add_argument("--max-cycles", type=int, help="Override mission.max_total_cycles.")
     p_run.add_argument("--dry-run", action="store_true")
     p_run.set_defaults(func=cmd_run)
+
+    p_mission = sub.add_parser(
+        "mission",
+        help="Autonomous single-prompt mission: one objective -> code-gated done.",
+        aliases=["auto"],
+    )
+    p_mission.add_argument("idea", nargs="?", help="The mission objective (optional; uses captured idea).")
+    p_mission.add_argument("--resume", action="store_true", help="Resume an existing mission plan.")
+    p_mission.add_argument("--max-phases", type=int, help="Override mission.max_phases.")
+    p_mission.add_argument("--max-cycles", type=int, help="Override mission.max_total_cycles.")
+    p_mission.add_argument("--dry-run", action="store_true")
+    p_mission.set_defaults(func=cmd_mission)
 
     p_loop = sub.add_parser("loop", help="Run a Ralph or autoresearch loop.")
     p_loop.add_argument("--mode", choices=["ralph", "autoresearch"], default="ralph")

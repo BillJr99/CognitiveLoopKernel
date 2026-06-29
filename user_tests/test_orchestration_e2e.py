@@ -257,7 +257,7 @@ class TestEngineeringWorkflowReal:
         """
         _patch_config(initialized_project, supervise={"max_cycles": 1})
 
-        res = run_clk("run", cwd=initialized_project)
+        res = run_clk("run", "--once", cwd=initialized_project)
         assert res.returncode == 0, res.stderr
 
         agents = _agent_names_in_memory(initialized_project)
@@ -276,7 +276,7 @@ class TestEngineeringWorkflowReal:
         """
         _patch_config(initialized_project, supervise={"max_cycles": 1})
 
-        run_clk("run", cwd=initialized_project)
+        run_clk("run", "--once", cwd=initialized_project)
 
         run_dirs = list((initialized_project / ".clk" / "runs").iterdir())
         agent_run_dirs = [d for d in run_dirs if d.is_dir() and d.name != "shell-stubs"]
@@ -291,7 +291,7 @@ class TestEngineeringWorkflowReal:
         """Each run dir contains prompt.txt, response.txt, and meta.json."""
         _patch_config(initialized_project, supervise={"max_cycles": 1})
 
-        run_clk("run", cwd=initialized_project)
+        run_clk("run", "--once", cwd=initialized_project)
 
         run_dirs = [
             d for d in (initialized_project / ".clk" / "runs").iterdir()
@@ -310,7 +310,7 @@ class TestEngineeringWorkflowReal:
         """agent_memory.jsonl entries appear in depends_on order: chief before engineer."""
         _patch_config(initialized_project, supervise={"max_cycles": 1})
 
-        run_clk("run", cwd=initialized_project)
+        run_clk("run", "--once", cwd=initialized_project)
 
         mem = _read_jsonl(initialized_project / ".clk" / "state" / "agent_memory.jsonl")
         agents_seq = [r["agent"] for r in mem]
@@ -331,7 +331,7 @@ class TestEngineeringWorkflowReal:
         """CLI prints a stage summary line (ok count, fail count, total)."""
         _patch_config(initialized_project, supervise={"max_cycles": 1})
 
-        res = run_clk("run", cwd=initialized_project)
+        res = run_clk("run", "--once", cwd=initialized_project)
         assert res.returncode == 0, res.stderr
         assert "engineering:" in res.stdout, f"expected workflow summary; got: {res.stdout!r}"
 
@@ -348,7 +348,7 @@ class TestChiefSuperviseStage:
         """The supervise stage is dispatched to the chief (appears in agent_memory ≥2×)."""
         _patch_config(initialized_project, supervise={"max_cycles": 1})
 
-        run_clk("run", cwd=initialized_project)
+        run_clk("run", "--once", cwd=initialized_project)
 
         # Chief runs for: (a) cast stage, (b) supervise stage.
         agents = _agent_names_in_memory(initialized_project)
@@ -363,7 +363,7 @@ class TestChiefSuperviseStage:
         """With max_cycles=1 the workflow terminates without done.md (shell can't write it)."""
         _patch_config(initialized_project, supervise={"max_cycles": 1})
 
-        res = run_clk("run", cwd=initialized_project)
+        res = run_clk("run", "--once", cwd=initialized_project)
         # The workflow runner emits a WARN about cycle limit but still returns 0
         assert res.returncode == 0, res.stderr
         # done.md should NOT exist because the shell provider cannot write it
@@ -410,7 +410,7 @@ class TestRecoveryDispatch:
         _patch_config(initialized_project, provider_retry={"max_retries": 0, "stage_max_retries": 0})
         self._write_failing_workflow(initialized_project)
 
-        res = run_clk("run", cwd=initialized_project)
+        res = run_clk("run", "--once", cwd=initialized_project)
         # The workflow may exit non-zero (provider failure) or 0 (skipped dep)
         # but recovery dispatch means chief appears in agent_memory
         agents = _agent_names_in_memory(initialized_project)
@@ -430,7 +430,7 @@ class TestBlackboardIntegration:
     def test_blackboard_dir_created_after_run(self, initialized_project: Path) -> None:
         """The .clk/blackboard/ directory exists after any non-dry workflow run."""
         _patch_config(initialized_project, supervise={"max_cycles": 1})
-        run_clk("run", cwd=initialized_project)
+        run_clk("run", "--once", cwd=initialized_project)
 
         bb = initialized_project / ".clk" / "blackboard"
         assert bb.is_dir(), ".clk/blackboard/ should exist after a workflow run"

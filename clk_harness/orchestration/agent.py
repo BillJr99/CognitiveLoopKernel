@@ -28,6 +28,7 @@ from . import casting as _casting
 from . import actions as _actions
 from . import blackboard as _blackboard
 from . import response_quality as _response_quality
+from . import noop_guard as _noop_guard
 
 
 def _read_recent_casting_rejections(paths: Paths, *, limit: int = 8) -> str:
@@ -95,6 +96,11 @@ class AgentRun:
     started_at: str
     finished_at: str
     files_written: List[str] = field(default_factory=list)
+    # Number of file-mutating ACTIONs (write/edit/append/delete) the harness
+    # actually applied for this run. Used by the no-op guard: a producing
+    # stage that applied zero mutations is re-dispatched with an escalating
+    # repair preamble (descriptions alone do nothing).
+    file_mutations_applied: int = 0
     # True when the runner already created a git commit for this run's
     # actions; downstream consumers (WorkflowRunner._commit) skip in
     # that case to avoid double-committing the same diff.
@@ -228,6 +234,11 @@ class AgentRunner:
         "qa_answer",
         "refine_critic",
         "refine_worker",
+        # Mission-level chief dispatches: single-shot planning / gating that
+        # must not recurse into consensus or the quality-retry loop.
+        "charter",
+        "mission_plan",
+        "phase_gate",
     })
 
     def run(
@@ -298,6 +309,19 @@ class AgentRunner:
         min_chars = int(cfg.get("min_response_chars") or 40)
         auto_consensus_mode = str(cfg.get("auto_consensus") or "off").lower()
         expected_outputs = list(extra.get("stage_outputs") or [])
+        tel = extra.get("telemetry")
+
+        # FM1 no-op guard: a producing stage that applies zero file mutations
+        # is re-dispatched with an escalating repair preamble (descriptions
+        # alone do nothing). Independent budget from the quality retries.
+        expect_mutation = _noop_guard.is_mutation_expected(
+            agent_name,
+            outputs=expected_outputs,
+            commit=bool(extra.get("commit")),
+            cfg=self.clk_cfg,
+        )
+        max_noop = _noop_guard.max_redispatch(self.clk_cfg)
+        noop_redispatches = 0
 
         attempt = 0
         current_objective = objective
@@ -312,6 +336,40 @@ class AgentRunner:
             last_run = run
             if not run.response.ok:
                 return run
+            # No-op check: a producing stage that returned substantive prose
+            # but changed no files. (An empty/near-empty response is left to
+            # the quality "empty" flag below — that is a different failure.)
+            substantive = len((run.response.text or "").strip()) >= min_chars
+            if (
+                expect_mutation
+                and substantive
+                and run.file_mutations_applied == 0
+                and noop_redispatches < max_noop
+            ):
+                noop_redispatches += 1
+                if tel is not None:
+                    try:
+                        tel.add_noop_redispatch()
+                    except Exception:
+                        pass
+                log_event(
+                    self.paths,
+                    "agent_noop_redispatch",
+                    agent=agent_name,
+                    attempt=noop_redispatches,
+                    max_attempts=max_noop,
+                    stage_id=extra.get("stage_id"),
+                    workflow=extra.get("workflow"),
+                )
+                self._observer_log(
+                    f"noop :: {agent_name} :: changed no files; "
+                    f"re-dispatch {noop_redispatches}/{max_noop}"
+                )
+                preamble = _noop_guard.repair_preamble(
+                    noop_redispatches, target=str(extra.get("expected_path") or "")
+                )
+                current_objective = preamble + "\n\nOriginal objective:\n" + objective
+                continue
             try:
                 q = _response_quality.score(
                     run.response.text,
@@ -337,6 +395,11 @@ class AgentRunner:
                         needs_review=q.needs_review,
                     )
                 return run
+            if tel is not None:
+                try:
+                    tel.add_quality_retry()
+                except Exception:
+                    pass
             log_event(
                 self.paths,
                 "agent_quality_retry",
@@ -403,6 +466,12 @@ class AgentRunner:
         cfg = self.clk_cfg.get("consensus") or {}
         sample_count = max(1, min(int(cfg.get("max_samples") or 3), 6))
         max_parallel = max(1, int(cfg.get("max_parallel") or 4))
+        tel = extra.get("telemetry")
+        if tel is not None:
+            try:
+                tel.add_consensus_run()
+            except Exception:
+                pass
         name = f"auto_{agent_name}_{datetime.now().strftime('%H%M%S%f')}"
         log_event(
             self.paths,
@@ -704,7 +773,7 @@ class AgentRunner:
         # changes. We merge the harness-applied files into the run's
         # files_written list so the TUI / commit logic see them.
         if not is_dry:
-            self._apply_actions(run)
+            self._apply_actions(run, extra or {})
         if self.observer is not None:
             try:
                 self.observer.end(agent.name, run)
@@ -1211,6 +1280,7 @@ class AgentRunner:
             return
         if str(extra.get("phase") or "") in self._META_PHASES:
             return
+        tel = extra.get("telemetry")
         cfg = self.clk_cfg.get("robustness") or {}
         max_depth = int(cfg.get("max_qa_depth") or 3)
         chain: List[str] = list(extra.get("qa_chain") or [])
@@ -1271,6 +1341,11 @@ class AgentRunner:
             self._observer_log(
                 f"qa :: {run.agent} → {target} :: {q.id[:32]}"
             )
+            if tel is not None:
+                try:
+                    tel.add_qa_exchange()
+                except Exception:
+                    pass
             self._dispatch_once(
                 target,
                 answer_objective,
@@ -1285,8 +1360,10 @@ class AgentRunner:
                 dry_run=self.clk_cfg.get("dry_run", False),
             )
 
-    def _apply_actions(self, run: AgentRun) -> None:
+    def _apply_actions(self, run: AgentRun, extra: Optional[Dict[str, Any]] = None) -> None:
         """Execute ACTION blocks; merge harness-written files back into the run."""
+        extra = extra or {}
+        tel = extra.get("telemetry")
         text = (run.response.text or "")
         if not text or "ACTION:" not in text and "ACTION :" not in text:
             return
@@ -1296,6 +1373,16 @@ class AgentRunner:
             agent_name=run.agent,
             clk_cfg=self.clk_cfg,
         )
+        # Record how many file mutations actually landed (drives the no-op
+        # guard even when ACTION blocks were present but all skipped).
+        run.file_mutations_applied = len(result.files_written) + len(result.files_deleted)
+        if tel is not None:
+            try:
+                tel.add_actions(len(result.files_written) + len(result.files_deleted)
+                                + len(result.commands_run))
+                tel.add_files(len(result.files_written))
+            except Exception:
+                pass
         if result.is_empty():
             return
         # Merge into run.files_written so downstream consumers (TUI,
@@ -1323,9 +1410,14 @@ class AgentRunner:
         # has a per-agent-run granularity. Only fires when this run
         # actually wrote (or deleted) files.
         if (result.files_written or result.files_deleted) and self.clk_cfg.get("auto_commit", True):
-            self._commit_action_batch(run, result)
+            self._commit_action_batch(run, result, extra)
 
-    def _commit_action_batch(self, run: AgentRun, result: "_actions.ActionResult") -> None:
+    def _commit_action_batch(
+        self,
+        run: AgentRun,
+        result: "_actions.ActionResult",
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
         try:
             if not is_repo(self.paths.root):
                 return
@@ -1363,6 +1455,12 @@ class AgentRunner:
             )
             if committed:
                 run.committed = True
+                tel = (extra or {}).get("telemetry")
+                if tel is not None:
+                    try:
+                        tel.add_commit()
+                    except Exception:
+                        pass
                 log(
                     f"commit: [{run.agent}] {len(result.files_written)} files, "
                     f"{len(result.files_deleted)} deletes"
@@ -1564,7 +1662,13 @@ class AgentRunner:
             "notes": notes,
             "outputs_contract": outputs_contract,
         }
-        ctx.update({k: v for k, v in extra.items() if k not in ctx})
+        # ``telemetry`` is a live counter object threaded through ``extra`` for
+        # the dispatch hooks — it is not a template variable, so keep it out of
+        # the prompt context (otherwise it would be str()'d into the prompt).
+        ctx.update({
+            k: v for k, v in extra.items()
+            if k not in ctx and k != "telemetry"
+        })
         return ctx
 
     def _safe_substitute(self, template_text: str, ctx: Dict[str, Any]) -> str:

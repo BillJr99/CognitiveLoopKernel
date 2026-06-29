@@ -70,6 +70,7 @@ from .orchestration import (
     AgentRunner,
     AutoresearchLoop,
     Evaluator,
+    MissionRunner,
     RalphLoop,
     RoleProposal,
     WorkflowRunner,
@@ -880,6 +881,8 @@ class Worker(threading.Thread):
             self._do_cast()
         elif job.kind == "run":
             self._do_workflow(job.payload or "engineering")
+        elif job.kind == "mission":
+            self._do_mission()
         elif job.kind == "loop":
             payload = job.payload or {}
             self._do_loop(
@@ -1062,6 +1065,40 @@ class Worker(threading.Thread):
                 self.state.add_system_message(
                     "next steps: type a follow-up message to keep going, "
                     "/loop ralph 5 to refine, /undo to revert, or /quit to exit."
+                )
+
+    def _do_mission(self) -> None:
+        """Drive the autonomous mission (charter -> plan -> phases -> done)."""
+        self.state.clear_stop()
+        self.state.set_phase("mission", busy=True)
+        self.state.add_system_message(
+            "starting autonomous mission — the chief writes a charter and plan, "
+            "then drives the lifecycle to a code-gated done. Watch the cards above; "
+            "type /stop to end after the current cycle."
+        )
+        any_failure = False
+        try:
+            mr = MissionRunner(self.paths, self.runner, self.evaluator)
+            plan = mr.run()
+            self.state.add_system_message(
+                f"mission {plan.status}: "
+                f"{sum(1 for p in plan.phases if p.status == 'done')}/{len(plan.phases)} "
+                f"phases done, {plan.total_cycles_used} cycles."
+            )
+            if plan.status != "done" and (plan.done_gate_last or {}).get("failures"):
+                self.state.add_system_message(
+                    "done-gate unmet: " + ", ".join(plan.done_gate_last["failures"])
+                )
+        except Exception as exc:
+            any_failure = True
+            log_exception("tui.Worker._do_mission", exc)
+            self.state.add_log(f"mission hit an error: {exc}", level="ERROR")
+        finally:
+            self.state.set_phase("idle", busy=False)
+            if not any_failure:
+                self.state.add_system_message(
+                    "next steps: type a follow-up to extend the mission, "
+                    "/loop ralph 5 to refine, /undo to revert, or /quit."
                 )
 
     def _do_loop(self, mode: str, n: int) -> None:
@@ -2483,6 +2520,11 @@ class TuiApp:
             if cmd == "run":
                 self.worker.submit(Job("run", args[0] if args else "engineering"))
                 return True
+            if cmd in ("mission", "auto"):
+                if args and not self.state.idea:
+                    self.worker.submit(Job("idea", " ".join(args)))
+                self.worker.submit(Job("mission"))
+                return True
             if cmd == "loop":
                 mode = args[0] if args else "ralph"
                 n = int(args[1]) if len(args) > 1 and args[1].isdigit() else 5
@@ -2569,12 +2611,15 @@ class TuiApp:
         # back per user message and was the cause of the "chief stuck
         # at 90+ seconds" symptom. /cast remains as an explicit manual
         # trigger when you want a re-cast without running engineering.
+        # Autonomy by default: a free-text message drives the full autonomous
+        # mission (charter -> plan -> phases -> code-gated done) rather than a
+        # single workflow pass. Use /run for a one-shot engineering cycle.
         if not self.state.idea:
             self.worker.submit(Job("idea", msg))
-            self.worker.submit(Job("run", "engineering"))
+            self.worker.submit(Job("mission"))
         else:
             self._append_conversation(msg)
-            self.worker.submit(Job("run", "engineering"))
+            self.worker.submit(Job("mission"))
         return True
 
     def _do_abort(self) -> None:

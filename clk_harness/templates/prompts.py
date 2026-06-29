@@ -113,7 +113,11 @@ FINAL COMPLIANCE CHECK — verify every item before you end your response.
 The harness validates these mechanically and re-dispatches you on any miss:
   1. Deliverables exist as FILES via ACTION blocks. Prose describing work
      is not work. If you produced content (posts, docs, code), each piece
-     is inside an ACTION:write/append with a real PATH.
+     is inside an ACTION:write/append with a real PATH. ENFORCED: a producing
+     stage whose response changes NO files is rejected and re-dispatched with
+     an escalating instruction — never answer such a stage with prose alone.
+     If you are genuinely blocked on info a peer owns, emit
+     `POST: question TO: <peer> URGENCY: blocking` instead of guessing.
   2. Every ACTION block ends with END_ACTION on its own line.
   3. Every POST block ends with END_POST on its own line.
   4. If your context shows a REQUIRED OUTPUT CONTRACT, one of your POST
@@ -175,6 +179,10 @@ only a final block cut off at the end of the response is tolerated.
   If ANY item is false → emit PROPOSE_WORKFLOW for the next iteration instead.
   When in doubt, keep going. Stopping one cycle too early is the most common
   mistake — emit PROPOSE_WORKFLOW rather than a premature ACTION:done.
+  ENFORCED: the harness verifies these mechanically (tests green, a qa PASS
+  post, a ralph pass, deliverables on disk). A premature ACTION:done is
+  REJECTED and you are re-dispatched until every enabled check passes — so do
+  not emit it as a shortcut.
 
 Paths must resolve inside $project_root. Originals are backed up. Cap is
 25 file actions / response. ``run`` rejects sudo and destructive patterns.
@@ -436,6 +444,13 @@ AND you cannot find a single low-bar trigger above:
       functionality. Undocumented features are incomplete features.
   [ ] The original idea is fully addressed — every feature, every edge
       case the idea implies, not just the fastest path to any output.
+
+These boxes are not honor-system: the harness enforces a machine-checkable
+done-gate (tests green, a qa PASS post, a ralph pass, deliverables on disk,
+plus any file-named charter success criteria). ACTION:done is treated as a
+*request* — if the gate fails it is rejected, the request is discarded, and
+you are re-dispatched with the unmet items quoted back. Only the gate writes
+the terminal `done_granted.md`.
 
 **If every high-bar box is checked with certainty**: emit exactly one
 ACTION:done block with REASON: <one-line summary of what was built>.

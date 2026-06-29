@@ -43,6 +43,14 @@ export interface ScoreOpts {
    * Default false so existing prompts aren't penalised retroactively.
    */
   requireConfidence?: boolean;
+  /**
+   * When true, a response with no file-mutating ACTION block (write / edit /
+   * append / delete) is flagged `noop` (recoverable) — the worker described
+   * work instead of doing it. Mirrors the Python harness's no-op guard (FM1).
+   * Only applied to substantive (non-empty) responses; an empty response is
+   * already covered by the `empty` flag.
+   */
+  expectFileAction?: boolean;
 }
 
 const CONFIDENCE_RE = /^\s*CONFIDENCE\s*:\s*([0-9]*\.?[0-9]+)\s*$/im;
@@ -55,6 +63,7 @@ const REFUSAL_RES: RegExp[] = [
   /\bI\s+do\s+not\s+have\s+the\s+ability\b/i,
 ];
 const HEADER_ACTION_RE = /^\s*ACTION\s*:\s*([A-Za-z]+)/gim;
+const FILE_ACTION_RE = /^\s*ACTION\s*:\s*(write|edit|append|delete)\b/im;
 const END_ACTION_RE = /^\s*END_ACTION\s*$/gim;
 const POST_HEAD_RE = /^\s*POST\s*:\s*([A-Za-z][A-Za-z0-9_]*)\s*$/gim;
 const POST_END_RE = /^\s*END_POST\s*$/gim;
@@ -135,6 +144,7 @@ export function scoreResponse(
   const minChars = opts.minChars ?? 40;
   const expected = opts.expectedOutputs ?? [];
   const requireConfidence = opts.requireConfidence ?? false;
+  const expectFileAction = opts.expectFileAction ?? false;
 
   const raw = text ?? "";
   const body = raw.trim();
@@ -197,6 +207,15 @@ export function scoreResponse(
         "comma-separated on a single line.",
     );
   }
+  // No-op guard (FM1): a substantive response that emitted no file-mutating
+  // ACTION block. An empty body is left to the `empty` flag above.
+  if (expectFileAction && body.length >= Math.max(1, minChars) && !FILE_ACTION_RE.test(raw)) {
+    flags.push("noop");
+    reasons.push(
+      "Your response changed no files — it contained no ACTION:write/edit/append/delete " +
+        "block. Descriptions do nothing here. Emit at least one real file-mutating ACTION block.",
+    );
+  }
   if (confidence !== undefined && confidence < 0.5) {
     flags.push("low_confidence");
     reasons.push(
@@ -222,6 +241,7 @@ export function scoreResponse(
     malformed_action: 0.4,
     malformed_post: 0.3,
     outputs_missing: 0.4,
+    noop: 0.5,
     low_confidence: 0.3,
     needs_review_self: 0.2,
     confidence_missing: 0.1,

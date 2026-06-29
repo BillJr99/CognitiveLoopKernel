@@ -941,6 +941,17 @@ echo "[kickoff] clk init"
 #     CLK_ROBUSTNESS_PLATEAU_WINDOW         int >= 2
 #     CLK_ROBUSTNESS_PLATEAU_ACTION         off | escalate_only |
 #                                           reframe_only | escalate_then_reframe
+#     CLK_ROBUSTNESS_DEBATE                  off | careful_only | all
+#     CLK_ROBUSTNESS_DEBATE_LENSES          comma-separated lens names
+#     CLK_ROBUSTNESS_DEBATE_MAX_ROUNDS      int >= 1
+#
+#   Autonomous-mission knobs (clk run drives a full mission to done):
+#     CLK_MISSION_*                         max_phases / max_total_cycles /
+#                                           phase_gate / charter_first / ...
+#     CLK_DONE_GATE_*                        enabled + require_* completion checks
+#     CLK_NOOP_GUARD_*                       enabled / max_redispatch / ...
+#     CLK_DELIBERATION_*                     enabled / require_open_questions_resolved / ...
+#     CLK_VALIDATION_AUTO_DERIVE            true | false
 #
 #   Prior knobs (already supported, surfaced here for parity):
 #     CLK_PROVIDER_TIMEOUT_S                int seconds, 0 = harness default
@@ -994,6 +1005,10 @@ def _bool(s):
     return str(s).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _csv(s):
+    return [item.strip() for item in str(s).split(",") if item.strip()]
+
+
 # Robustness block
 _set("CLK_ROBUSTNESS_AUTO_CONSENSUS", "robustness", "auto_consensus")
 _set("CLK_ROBUSTNESS_AUTO_REFINE", "robustness", "auto_refine")
@@ -1005,6 +1020,50 @@ _set("CLK_ROBUSTNESS_QA_PARALLEL_JUDGES", "robustness", "qa_parallel_judges", ca
 _set("CLK_ROBUSTNESS_MAX_QA_DEPTH", "robustness", "max_qa_depth", cast=int)
 _set("CLK_ROBUSTNESS_PLATEAU_WINDOW", "robustness", "plateau_window", cast=int)
 _set("CLK_ROBUSTNESS_PLATEAU_ACTION", "robustness", "plateau_action")
+_set("CLK_ROBUSTNESS_DEBATE", "robustness", "debate")
+_set("CLK_ROBUSTNESS_DEBATE_LENSES", "robustness", "debate_lenses", cast=_csv)
+_set("CLK_ROBUSTNESS_DEBATE_MAX_ROUNDS", "robustness", "debate_max_rounds", cast=int)
+
+# Autonomous mission block
+_set("CLK_MISSION_MAX_PHASES", "mission", "max_phases", cast=int)
+_set("CLK_MISSION_MAX_ITERATIONS_PER_PHASE", "mission", "max_iterations_per_phase", cast=int)
+_set("CLK_MISSION_MAX_TOTAL_CYCLES", "mission", "max_total_cycles", cast=int)
+_set("CLK_MISSION_PHASE_GATE", "mission", "phase_gate", cast=_bool)
+_set("CLK_MISSION_REFINE_REQUIRED", "mission", "refine_required", cast=_bool)
+_set("CLK_MISSION_AUTO_CONSENSUS_ON_STALL", "mission", "auto_consensus_on_stall", cast=_bool)
+_set("CLK_MISSION_CHARTER_FIRST", "mission", "charter_first", cast=_bool)
+_set("CLK_MISSION_COMMIT_TRACE", "mission", "commit_trace", cast=_bool)
+_set("CLK_MISSION_COMMIT_GRANULARITY", "mission", "commit_granularity")
+_set("CLK_MISSION_MIN_CYCLES_BEFORE_DONE", "mission", "min_cycles_before_done", cast=int)
+_set("CLK_MISSION_TELEMETRY_STDOUT", "mission", "telemetry_stdout", cast=_bool)
+_set("CLK_MISSION_ON_BUDGET_EXHAUSTED", "mission", "on_budget_exhausted")
+_set("CLK_MISSION_DEFAULT_PHASES", "mission", "default_phases", cast=_csv)
+
+# Done-gate block
+_set("CLK_DONE_GATE_ENABLED", "done_gate", "enabled", cast=_bool)
+_set("CLK_DONE_GATE_REQUIRE_TESTS_GREEN", "done_gate", "require_tests_green", cast=_bool)
+_set("CLK_DONE_GATE_REQUIRE_DELIVERABLES", "done_gate", "require_deliverables", cast=_bool)
+_set("CLK_DONE_GATE_MIN_DELIVERABLE_FILES", "done_gate", "min_deliverable_files", cast=int)
+_set("CLK_DONE_GATE_REQUIRE_QA_PASS", "done_gate", "require_qa_pass", cast=_bool)
+_set("CLK_DONE_GATE_REQUIRE_RALPH_PASS", "done_gate", "require_ralph_pass", cast=_bool)
+_set("CLK_DONE_GATE_FORBID_TODO_MARKERS", "done_gate", "forbid_todo_markers", cast=_bool)
+_set("CLK_DONE_GATE_MAX_FINISH_ATTEMPTS", "done_gate", "max_finish_attempts", cast=int)
+
+# No-op guard block
+_set("CLK_NOOP_GUARD_ENABLED", "noop_guard", "enabled", cast=_bool)
+_set("CLK_NOOP_GUARD_MAX_REDISPATCH", "noop_guard", "max_redispatch", cast=int)
+_set("CLK_NOOP_GUARD_PRODUCING_AGENTS", "noop_guard", "producing_agents", cast=_csv)
+_set("CLK_NOOP_GUARD_TREAT_OUTPUTS_STAGE_AS_PRODUCING", "noop_guard", "treat_outputs_stage_as_producing", cast=_bool)
+
+# Deliberation block
+_set("CLK_DELIBERATION_ENABLED", "deliberation", "enabled", cast=_bool)
+_set("CLK_DELIBERATION_ENCOURAGE_QUESTIONS", "deliberation", "encourage_questions", cast=_bool)
+_set("CLK_DELIBERATION_REQUIRE_OPEN_QUESTIONS_RESOLVED", "deliberation", "require_open_questions_resolved", cast=_bool)
+_set("CLK_DELIBERATION_SELF_REFLECT_PREAMBLE", "deliberation", "self_reflect_preamble", cast=_bool)
+_set("CLK_DELIBERATION_MIN_DEBATE_ROUNDS", "deliberation", "min_debate_rounds", cast=int)
+
+# Validation auto-derive
+_set("CLK_VALIDATION_AUTO_DERIVE", "validation", "auto_derive", cast=_bool)
 
 # Prior knobs
 _set("CLK_PROVIDER_TIMEOUT_S", "provider_timeout_s", cast=int)

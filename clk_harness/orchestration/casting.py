@@ -117,6 +117,27 @@ class ConsensusProposal:
     objective: str = ""
 
 
+@dataclass
+class CharterProposal:
+    """A chief-authored mission charter (the up-front commitment).
+
+    The plan and the done-gate are derived from this, so "done" is judged
+    against what the chief committed to rather than drifting.
+    """
+    mission: str = ""
+    scope: List[str] = field(default_factory=list)
+    non_goals: List[str] = field(default_factory=list)
+    success: List[str] = field(default_factory=list)
+    constraints: List[str] = field(default_factory=list)
+    assumptions: List[str] = field(default_factory=list)
+
+
+@dataclass
+class PlanProposal:
+    """An ordered list of lifecycle phases for a mission."""
+    phases: List[Dict[str, Any]] = field(default_factory=list)
+
+
 _ROLE_HEAD_RE = re.compile(r"^\s*PROPOSE_ROLE\s*:\s*([A-Za-z][A-Za-z0-9_\-]*)\s*$", re.MULTILINE)
 _ROLE_FIELD_RE = re.compile(r"^(ROLE|PROVIDER|CAPABILITIES)\s*:\s*(.*)$", re.IGNORECASE)
 _ROLE_PROMPT_RE = re.compile(r"^\s*PROMPT\s*:\s*$", re.IGNORECASE)
@@ -131,6 +152,153 @@ _CONS_HEAD_RE = re.compile(r"^\s*PROPOSE_CONSENSUS\s*:\s*([A-Za-z][A-Za-z0-9_\-]
 _CONS_FIELD_RE = re.compile(r"^(AGENTS?|COPIES)\s*:\s*(.*)$", re.IGNORECASE)
 _CONS_OBJECTIVE_RE = re.compile(r"^\s*OBJECTIVE\s*:\s*$", re.IGNORECASE)
 _CONS_END_RE = re.compile(r"^\s*END_CONSENSUS\s*$", re.IGNORECASE)
+
+_CHARTER_HEAD_RE = re.compile(r"^\s*PROPOSE_CHARTER\s*:?\s*$", re.IGNORECASE)
+_CHARTER_END_RE = re.compile(r"^\s*END_CHARTER\s*$", re.IGNORECASE)
+_CHARTER_FIELD_RE = re.compile(
+    r"^(MISSION|SCOPE|NON_GOALS|NONGOALS|SUCCESS|SUCCESS_CRITERIA|CONSTRAINTS|ASSUMPTIONS)\s*:\s*(.*)$",
+    re.IGNORECASE,
+)
+
+_PLAN_HEAD_RE = re.compile(r"^\s*PROPOSE_PLAN\s*:?\s*$", re.IGNORECASE)
+_PLAN_PHASES_RE = re.compile(r"^\s*PHASES\s*:\s*$", re.IGNORECASE)
+_PLAN_END_RE = re.compile(r"^\s*END_PLAN\s*$", re.IGNORECASE)
+
+
+def _split_items(value: str) -> List[str]:
+    """Split a charter field value into items.
+
+    Items may be separated by ``;`` (preferred, since success criteria can
+    contain commas) or, when no semicolon is present, by commas. A leading
+    ``[`` / trailing ``]`` is tolerated.
+    """
+    v = (value or "").strip()
+    if v.startswith("[") and v.endswith("]"):
+        v = v[1:-1]
+    if not v:
+        return []
+    sep = ";" if ";" in v else ","
+    return [item.strip().strip("-").strip() for item in v.split(sep) if item.strip().strip("-").strip()]
+
+
+def parse_charter_proposal(text: str) -> Optional[CharterProposal]:
+    """Extract a single ``PROPOSE_CHARTER`` block from ``text`` (or None)."""
+    if not text or "PROPOSE_CHARTER" not in text.upper():
+        return None
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        if not _CHARTER_HEAD_RE.match(lines[i]):
+            i += 1
+            continue
+        prop = CharterProposal()
+        i += 1
+        while i < len(lines):
+            line = lines[i]
+            if _CHARTER_END_RE.match(line):
+                i += 1
+                break
+            fm = _CHARTER_FIELD_RE.match(line)
+            if fm:
+                key = fm.group(1).upper()
+                val = fm.group(2).strip()
+                if key == "MISSION":
+                    prop.mission = val
+                elif key == "SCOPE":
+                    prop.scope = _split_items(val)
+                elif key in ("NON_GOALS", "NONGOALS"):
+                    prop.non_goals = _split_items(val)
+                elif key in ("SUCCESS", "SUCCESS_CRITERIA"):
+                    prop.success = _split_items(val)
+                elif key == "CONSTRAINTS":
+                    prop.constraints = _split_items(val)
+                elif key == "ASSUMPTIONS":
+                    prop.assumptions = _split_items(val)
+            i += 1
+        if prop.mission or prop.success or prop.scope:
+            return prop
+    return None
+
+
+def _parse_simple_phase_list(body: str) -> List[Dict[str, Any]]:
+    """Dependency-free parser for the PHASES YAML list.
+
+    Handles the documented shape: a list of ``- key: value`` blocks where
+    values are scalars or ``[a, b]`` inline lists. Used as a fallback when
+    PyYAML is unavailable.
+    """
+    phases: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+    for raw in body.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        stripped = line.lstrip()
+        is_item = stripped.startswith("- ")
+        if is_item:
+            stripped = stripped[2:].lstrip()
+            current = {}
+            phases.append(current)
+        if current is None:
+            current = {}
+            phases.append(current)
+        if ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if value.startswith("[") and value.endswith("]"):
+            inner = value[1:-1]
+            current[key] = [x.strip().strip('"\'') for x in inner.split(",") if x.strip()]
+        elif value:
+            current[key] = value.strip('"\'')
+        else:
+            current[key] = ""
+    return [p for p in phases if p.get("id")]
+
+
+def parse_plan_proposal(text: str) -> Optional[PlanProposal]:
+    """Extract a single ``PROPOSE_PLAN`` block (phases list) from ``text``."""
+    if not text or "PROPOSE_PLAN" not in text.upper():
+        return None
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        if not _PLAN_HEAD_RE.match(lines[i]):
+            i += 1
+            continue
+        i += 1
+        # skip to PHASES:
+        body_lines: List[str] = []
+        seen_phases = False
+        while i < len(lines):
+            line = lines[i]
+            if _PLAN_END_RE.match(line):
+                i += 1
+                break
+            if not seen_phases:
+                if _PLAN_PHASES_RE.match(line):
+                    seen_phases = True
+                i += 1
+                continue
+            body_lines.append(line)
+            i += 1
+        body = "\n".join(body_lines).strip("\n")
+        if not body:
+            continue
+        phases: List[Dict[str, Any]] = []
+        try:
+            import yaml as _yaml  # type: ignore
+            parsed = _yaml.safe_load(body)
+            if isinstance(parsed, list):
+                phases = [p for p in parsed if isinstance(p, dict) and p.get("id")]
+        except Exception:
+            phases = []
+        if not phases:
+            phases = _parse_simple_phase_list(body)
+        if phases:
+            return PlanProposal(phases=phases)
+    return None
 
 
 def parse_role_proposals(text: str) -> List[RoleProposal]:
