@@ -1263,6 +1263,9 @@ quality. Use this table to pick a regime:
 | `robustness.auto_refine`               | `off` → ×1; `careful_only` → ×(1 + 1 worker revision + 1 critic) on careful stages; `all` → that on every producing stage | `all` (default — every producing stage refines) |
 | `robustness.max_quality_retries`       | At most this many extra dispatches when a response fails the quality check; 0 disables | 4 (default)                |
 | `robustness.refine_max_rounds`         | Cap on critic↔worker round-trips inside a refine loop                    | 10 (default)               |
+| `robustness.debate`                    | `off` → ×1; `careful_only` → an adversarial panel (one critic per lens) on careful stages; `all` → on every producing stage | `careful_only` (default)   |
+| `robustness.debate_lenses`             | Adversarial lenses (one parallel critic each) — more lenses = more critic dispatches per round | `[correctness, security, simplicity]` |
+| `robustness.debate_max_rounds`         | Cap on debate rounds (panel critique + worker revision) per stage        | 2 (default)                |
 | `robustness.max_qa_depth`              | Cap on inter-agent Q&A chain depth (each peer answer can ask one peer)   | 3 (default)                |
 | `robustness.plateau_window`            | How many no-improvement Ralph/autoresearch iterations before escalation  | 3 (default)                |
 | `robustness.plateau_action`            | `off` disables adaptive loop termination entirely                        | `escalate_then_reframe`    |
@@ -1759,8 +1762,11 @@ per-phase **repeat** loop inside the **phase-sequencing** loop — bounded by
                   "self_reflect_preamble": true, "min_debate_rounds": 1 }
 ```
 
-CLI overrides: `clk run --max-phases N --max-cycles M`, `clk run --once`,
-`clk mission "<idea>" --resume` (continue a persisted plan).
+Every knob above is also overridable from the environment via the matching
+`CLK_MISSION_*`, `CLK_DONE_GATE_*`, `CLK_NOOP_GUARD_*`, and
+`CLK_DELIBERATION_*` variables (see `.env.example`; `kickoff.sh` maps them into
+`clk.config.json`). CLI overrides: `clk run --max-phases N --max-cycles M`,
+`clk run --once`, `clk mission "<idea>" --resume` (continue a persisted plan).
 
 ## Chief supervisor loop
 
@@ -2149,6 +2155,44 @@ iteration is recorded with `improved=False`.
   `ralph_iteration_skipped_low_quality`,
   `autoresearch_step_skipped_low_quality`, `autoresearch_revert`
 - Kill switch: `robustness.plateau_action: "off"`
+
+### 11. Adversarial debate panel (new)
+
+Instead of a single critic, a stage can be refined by a **panel of
+adversarial critics** that each take a distinct lens, try to *break* the work,
+and engage with each other across rounds before the worker revises. This
+catches failure modes a single reviewer misses (a correctness reviewer won't
+think like a security reviewer).
+
+Each round fans out one critic per lens **in parallel** (reusing the
+`critic` agent with a lens-specific adversarial prompt); the worker output is
+kept only when a **majority of lenses accept** and the mean score clears
+`refine_accept_threshold`. Otherwise the combined critiques drive a revision,
+and the next round's critics see the prior panel transcript (posted to the
+blackboard as `post_type: debate`) so they can reinforce, refute, or concede
+each other's points. Bounded by `debate_max_rounds`.
+
+```yaml
+- id: implement
+  agent: engineer
+  refine:
+    mode: debate
+    critics: [correctness, security, performance]
+    max_rounds: 2
+  objective: Implement the slice.
+```
+
+When a stage has no explicit `refine: {mode: debate}`, `robustness.debate`
+decides whether the panel runs anyway (`off` | `careful_only` *(default)* |
+`all`). The debate panel takes precedence over the single-critic loop
+(layer 9) when both would apply. Built-in lenses: `correctness`, `security`,
+`simplicity`, `performance`, `robustness`, `tests`, `ux` (configure via
+`robustness.debate_lenses`).
+
+- Code: `workflow.py::WorkflowRunner._debate_loop` / `_dispatch_lens_critic`
+- Config: `robustness.{debate, debate_lenses, debate_max_rounds}`
+- Logged events: `debate_round`
+- Kill switch: `robustness.debate: "off"` AND remove any `refine: {mode: debate}` blocks.
 
 ### Putting it together
 

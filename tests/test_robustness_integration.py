@@ -199,6 +199,40 @@ def _make_runner(paths: Paths, provider: _FakeProvider, clk_cfg_overrides: Dict[
     return runner
 
 
+def test_debate_loop_runs_panel_and_revises(paths: Paths) -> None:
+    """The debate panel fans out one critic per lens, then revises the worker
+    when the panel asks for it, and accepts on the next round."""
+    from clk_harness.orchestration.agent import AgentRun
+
+    # 3 lenses revise (round 1) -> 1 worker revision -> 3 lenses accept (round 2).
+    responses = (
+        [AgentResponse(ok=True, text="Issue found.\nVERDICT: revise\nSCORE: 0.4")] * 3
+        + [AgentResponse(ok=True, text="Revised the work substantively per the panel.")]
+        + [AgentResponse(ok=True, text="Looks good now.\nVERDICT: accept\nSCORE: 0.9")] * 3
+    )
+    provider = _FakeProvider(responses)
+    runner = _make_runner(paths, provider, {
+        # sequential fan-out so the fake provider's call list isn't raced
+        "consensus": {**DEFAULT_CLK_CONFIG["consensus"], "max_parallel": 1},
+        "robustness": {**DEFAULT_CLK_CONFIG["robustness"], "debate": "careful_only",
+                       "debate_max_rounds": 2, "auto_refine": "off"},
+    })
+    wr = wf.WorkflowRunner(paths, runner)
+    flow = wf.Workflow(name="engineering", description="", stages=[])
+    stage = wf.WorkflowStage(id="implement", agent="engineer", objective="build it",
+                             careful=True)
+    assert wr._debate_enabled(stage)
+    first = AgentRun(agent="engineer", objective="build it",
+                     response=AgentResponse(ok=True, text="initial work"),
+                     started_at="t0", finished_at="t1")
+    final = wr._debate_loop(flow, stage, first, "cycle 1/1", dry_run=False)
+    assert final.response.ok
+    # 3 critics (r1) + 1 worker revision + 3 critics (r2) = 7 dispatches.
+    assert len(provider.calls) == 7, [c["agent"] for c in provider.calls]
+    # The worker (engineer) was re-dispatched for the revision.
+    assert any(c["agent"] == "engineer" for c in provider.calls)
+
+
 def test_quality_retry_fires_on_empty_response(paths: Paths) -> None:
     # First call: empty (should trigger retry). Second call: substantive.
     good = "Here is a substantive engineering plan with concrete steps."

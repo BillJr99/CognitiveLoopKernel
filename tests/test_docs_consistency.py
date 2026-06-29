@@ -135,6 +135,45 @@ def test_readme_documents_robustness_keys() -> None:
 
 
 # ---------------------------------------------------------------------------
+# New config blocks: env-var + kickoff parity
+# ---------------------------------------------------------------------------
+# The autonomy blocks must be overridable from the environment the same way
+# robustness is: every key gets a CLK_<BLOCK>_<KEY> var in .env.example AND a
+# matching mapping in kickoff.sh, so an override actually takes effect.
+
+_AUTONOMY_BLOCKS = ("mission", "done_gate", "noop_guard", "deliberation")
+
+
+def _block_env_var(block: str, key: str) -> str:
+    return "CLK_" + block.upper() + "_" + key.upper()
+
+
+def test_env_example_documents_new_blocks() -> None:
+    for block in _AUTONOMY_BLOCKS:
+        assert block in DEFAULT_CLK_CONFIG, f"DEFAULT_CLK_CONFIG missing '{block}'"
+        for key in DEFAULT_CLK_CONFIG[block].keys():
+            var = _block_env_var(block, key)
+            assert var in ENV_EXAMPLE, (
+                f"{var} not documented in .env.example (DEFAULT_CLK_CONFIG"
+                f"['{block}']['{key}'] is a public knob)"
+            )
+
+
+def test_kickoff_sh_maps_new_blocks() -> None:
+    for block in _AUTONOMY_BLOCKS:
+        for key in DEFAULT_CLK_CONFIG[block].keys():
+            var = _block_env_var(block, key)
+            assert var in KICKOFF, (
+                f"{var} not handled in kickoff.sh's env→config mapping"
+            )
+
+
+def test_validation_auto_derive_wired() -> None:
+    assert "CLK_VALIDATION_AUTO_DERIVE" in ENV_EXAMPLE
+    assert "CLK_VALIDATION_AUTO_DERIVE" in KICKOFF
+
+
+# ---------------------------------------------------------------------------
 # Prior-knob parity (just an inventory check)
 # ---------------------------------------------------------------------------
 

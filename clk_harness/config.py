@@ -250,6 +250,15 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         # Critic-judge loop bounds.
         "refine_max_rounds": 10,
         "refine_accept_threshold": 0.8,
+        # Adversarial debate panel: instead of a single critic, spawn N
+        # critics with distinct lenses that try to break the work and engage
+        # with each other's critiques across rounds, then the worker revises.
+        # off | careful_only (default) | all
+        "debate": "careful_only",
+        # The adversarial lenses (one critic per lens, fanned out in parallel).
+        "debate_lenses": ["correctness", "security", "simplicity"],
+        # Cap on debate rounds (each round = panel critique + worker revision).
+        "debate_max_rounds": 2,
         # Inter-agent Q&A bounds.
         "qa_parallel_judges": 1,
         "max_qa_depth": 6,

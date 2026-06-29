@@ -986,7 +986,13 @@ class WorkflowRunner:
         # auto_refine policy), dispatch a critic agent to score the
         # response; if the critic says revise, re-dispatch the worker
         # with the critic's feedback until accept or max_rounds.
-        if not dry_run and run.response.ok and self._refine_enabled(stage):
+        if not dry_run and run.response.ok and self._debate_enabled(stage):
+            # Adversarial debate panel takes precedence over the single critic.
+            try:
+                run = self._debate_loop(workflow, stage, run, cycle_context, dry_run)
+            except Exception as exc:
+                log_exception("orchestration.workflow._run_stage.debate", exc)
+        elif not dry_run and run.response.ok and self._refine_enabled(stage):
             try:
                 run = self._refine_loop(workflow, stage, run, cycle_context, dry_run)
             except Exception as exc:
@@ -1431,6 +1437,239 @@ class WorkflowRunner:
         if score_m is None:
             score_val = 1.0 if verdict == "accept" else 0.4
         return verdict, score_val, text.strip()
+
+    # -- adversarial debate panel (multi-critic refinement) --------------
+
+    _DEBATE_LENS_GUIDANCE: Dict[str, str] = {
+        "correctness": "logic errors, wrong outputs, unhandled edge cases, broken contracts or APIs.",
+        "security": "injection, unsafe input handling, secret/credential leakage, unsafe shell/file operations.",
+        "simplicity": "needless complexity, duplication, dead code, and simpler equivalent designs.",
+        "performance": "obvious inefficiency, redundant work, N+1 patterns, unbounded loops or memory.",
+        "robustness": "failure modes, missing error handling, flaky assumptions, and race conditions.",
+        "tests": "missing or weak tests, untested branches, and assertions that don't actually verify behavior.",
+        "ux": "confusing interfaces, poor error messages, and undocumented behavior.",
+    }
+
+    def _debate_enabled(self, stage: WorkflowStage) -> bool:
+        """Whether the adversarial debate panel should run for this stage.
+
+        Explicit ``refine: {mode: debate}`` always wins; otherwise the
+        ``robustness.debate`` policy (off | careful_only | all) decides.
+        chief / qa / critic stages are skipped.
+        """
+        if stage.agent in ("chief", "qa", "critic"):
+            return False
+        if isinstance(stage.refine, dict) and str(stage.refine.get("mode") or "").lower() == "debate":
+            return True
+        cfg = (self.runner.clk_cfg.get("robustness") or {})
+        mode = str(cfg.get("debate") or "off").lower()
+        if mode in ("", "off", "false", "0"):
+            return False
+        if mode == "all":
+            return True
+        return bool(stage.careful)  # careful_only
+
+    def _debate_lenses(self, stage: WorkflowStage) -> List[str]:
+        if isinstance(stage.refine, dict) and stage.refine.get("critics"):
+            lenses = [str(x).strip().lower() for x in stage.refine["critics"] if str(x).strip()]
+        else:
+            cfg = (self.runner.clk_cfg.get("robustness") or {})
+            lenses = [str(x).strip().lower() for x in (cfg.get("debate_lenses") or []) if str(x).strip()]
+        return lenses or ["correctness", "security", "simplicity"]
+
+    def _dispatch_lens_critic(
+        self,
+        workflow: "Workflow",
+        stage: WorkflowStage,
+        worker_run: AgentRun,
+        critic_name: str,
+        lens: str,
+        round_idx: int,
+        max_rounds: int,
+        peer_transcript: str,
+        dry_run: Optional[bool],
+    ) -> Tuple[str, str, float, str]:
+        """One adversarial critic pass for a single lens.
+
+        Returns ``(lens, verdict, score, feedback)``. The critic is told to
+        try to *break* the work from its lens and, in later rounds, to engage
+        with peers' critiques (reinforce / refute / concede).
+        """
+        worker_text = (worker_run.response.text or "").strip()
+        if len(worker_text) > 3500:
+            worker_text = worker_text[:3500].rstrip() + "\n…(truncated)"
+        guidance = self._DEBATE_LENS_GUIDANCE.get(
+            lens, f"weaknesses from the {lens} perspective."
+        )
+        peer_block = ""
+        if peer_transcript.strip():
+            peer_block = (
+                "\nYour fellow panelists said (engage with them — reinforce, "
+                "refute, or concede explicitly):\n"
+                f"{peer_transcript}\n"
+            )
+        objective = (
+            f"ADVERSARIAL DEBATE — you are the **{lens}** critic on a review "
+            f"panel for stage `{stage.id}` (round {round_idx}/{max_rounds}).\n\n"
+            f"Your lens: hunt for {guidance}\n"
+            "Try hard to BREAK this work from your lens. Be specific and "
+            "concrete; cite the exact place. Default to skepticism — only "
+            "accept if you genuinely cannot find a real problem.\n\n"
+            f"Worker `{stage.agent}` objective:\n{stage.objective}\n\n"
+            f"Worker's response:\n---\n{worker_text}\n---\n"
+            f"{peer_block}\n"
+            "Keep it to 2-5 concrete bullets. End with exactly two lines:\n"
+            "VERDICT: accept   # or `revise` if any real issue remains\n"
+            "SCORE: <0..1>\n"
+        )
+        critic_run = self.runner.run(
+            critic_name,
+            objective,
+            extra={
+                "phase": "refine_critic",
+                "stage_id": stage.id,
+                "workflow": workflow.name,
+                "refine_round": round_idx,
+                "debate_lens": lens,
+            },
+            dry_run=dry_run,
+        )
+        text = critic_run.response.text or ""
+        verdict_m = self._REFINE_VERDICT_RE.search(text)
+        verdict = (verdict_m.group(1).lower() if verdict_m else "revise")
+        if verdict not in ("accept", "revise"):
+            verdict = "revise"
+        score_m = self._REFINE_SCORE_RE.search(text)
+        try:
+            score_val = float(score_m.group(1)) if score_m else (1.0 if verdict == "accept" else 0.4)
+        except (TypeError, ValueError):
+            score_val = 0.4
+        score_val = max(0.0, min(1.0, score_val))
+        return lens, verdict, score_val, text.strip()
+
+    def _debate_loop(
+        self,
+        workflow: "Workflow",
+        stage: WorkflowStage,
+        first_run: AgentRun,
+        cycle_context: str,
+        dry_run: Optional[bool],
+    ) -> AgentRun:
+        """Run an adversarial debate panel: N lens-critics → worker revision.
+
+        Each round fans out one critic per lens in parallel; the worker is
+        kept only if a majority of lenses accept (or the mean score clears the
+        threshold). Otherwise the combined critiques drive a revision, and the
+        next round's critics see the prior panel transcript so they can debate
+        each other. Bounded by ``debate_max_rounds``.
+        """
+        defaults = (self.runner.clk_cfg.get("robustness") or {})
+        cfg = dict(stage.refine or {}) if isinstance(stage.refine, dict) else {}
+        try:
+            max_rounds = int(cfg.get("max_rounds") or defaults.get("debate_max_rounds") or 2)
+        except (TypeError, ValueError):
+            max_rounds = 2
+        try:
+            threshold = float(cfg.get("accept_threshold") or defaults.get("refine_accept_threshold") or 0.8)
+        except (TypeError, ValueError):
+            threshold = 0.8
+
+        agents_cfg = (self.runner.agents_cfg.get("agents") or {})
+        critic_name = "critic" if "critic" in agents_cfg else ""
+        if not critic_name:
+            # No critic in the roster — fall back to the single-critic loop
+            # (which itself no-ops when no critic exists).
+            return self._refine_loop(workflow, stage, first_run, cycle_context, dry_run)
+
+        lenses = self._debate_lenses(stage)
+        max_parallel = max(1, int((self.runner.clk_cfg.get("consensus") or {}).get("max_parallel") or 4))
+        current_run = first_run
+        peer_transcript = ""
+
+        for round_idx in range(1, max_rounds + 1):
+            if self.telemetry is not None:
+                try:
+                    self.telemetry.add_refine_round()
+                except Exception:
+                    pass
+            verdicts: List[Tuple[str, str, float, str]] = []
+            with ThreadPoolExecutor(max_workers=min(max_parallel, len(lenses))) as pool:
+                futs = {
+                    pool.submit(
+                        self._dispatch_lens_critic, workflow, stage, current_run,
+                        critic_name, lens, round_idx, max_rounds, peer_transcript, dry_run,
+                    ): lens
+                    for lens in lenses
+                }
+                for fut in as_completed(futs):
+                    try:
+                        verdicts.append(fut.result())
+                    except Exception as exc:
+                        log_exception("orchestration.workflow._debate_loop.critic", exc)
+            if not verdicts:
+                return current_run
+            revise_votes = sum(1 for (_l, v, _s, _f) in verdicts if v == "revise")
+            scores = [s for (_l, _v, s, _f) in verdicts]
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+            transcript = "\n".join(
+                f"[{lens}] verdict={v} score={s:.2f}\n{fb}" for (lens, v, s, fb) in verdicts
+            )
+            peer_transcript = transcript
+            log_event(
+                self.paths, "debate_round",
+                agent=stage.agent, workflow=workflow.name, stage_id=stage.id,
+                round=round_idx, max_rounds=max_rounds,
+                lenses=[l for (l, *_r) in verdicts],
+                revise_votes=revise_votes, avg_score=round(avg_score, 3),
+                accept_threshold=threshold,
+            )
+            self.runner._observer_log(
+                f"debate :: {stage.id} :: round {round_idx}/{max_rounds} "
+                f"{len(lenses)} critics, {revise_votes} revise, avg={avg_score:.2f}"
+            )
+            try:
+                _blackboard.post(
+                    self.paths, author="critic-panel", body=transcript[:4000],
+                    post_type="debate", stage_id=stage.id, workflow=workflow.name,
+                    slug_hint=f"debate-{stage.id}-r{round_idx}",
+                )
+            except Exception as exc:
+                log_exception("orchestration.workflow._debate_loop.post", exc)
+
+            # Panel accepts when a majority accept AND the mean clears the bar.
+            if revise_votes * 2 <= len(verdicts) and avg_score >= threshold:
+                return current_run
+            if round_idx == max_rounds:
+                return current_run
+
+            revise_objective = (
+                f"Debate round {round_idx + 1}/{max_rounds} of stage `{stage.id}`. "
+                f"An adversarial review panel ({', '.join(lenses)}) found issues "
+                f"(mean score {avg_score:.2f}/1.0). Address every concrete point "
+                "below; keep what already works. Re-emit POST and ACTION blocks "
+                "the same way so the harness records the updated work.\n\n"
+                f"Panel critiques:\n{transcript}\n\n"
+                f"Original objective:\n{stage.objective}"
+            )
+            current_run = self.runner.run(
+                stage.agent,
+                revise_objective,
+                extra={
+                    "phase": "refine_worker",
+                    "stage_id": stage.id,
+                    "workflow": workflow.name,
+                    "cycle_context": cycle_context,
+                    "blackboard_inputs": list(stage.inputs),
+                    "stage_outputs": list(stage.outputs),
+                    "refine_round": round_idx + 1,
+                    "refine_max_rounds": max_rounds,
+                    "telemetry": self.telemetry,
+                },
+                dry_run=dry_run,
+            )
+            if not current_run.response.ok:
+                return current_run
+        return current_run
 
     def _dispatch_checkpoint(
         self,
