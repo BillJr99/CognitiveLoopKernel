@@ -220,6 +220,13 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         # Keeping work means batch commits survive, the Files tab shows the
         # latest state, and the supervise loop fixes problems forward.
         "rollback_on_failure": "careful",
+        # FM4 — when a producing stage declares no validation command, derive
+        # a real one from the project shape (pytest / npm test / compileall
+        # smoke) instead of vacuously passing. Set false to restore the legacy
+        # "no validation = pass" behavior.
+        "auto_derive": True,
+        # Explicit override for the derived command (null = auto-detect).
+        "derived_command": None,
     },
     "casting": {
         "max_dynamic_roles": 12,
@@ -230,14 +237,18 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         # off | on_careful (fan out only stages marked careful=true) | always.
         "auto_consensus": "on_careful",
         # Critic-judge inner refinement loop.
-        # off | careful_only (default) | all
-        "auto_refine": "careful_only",
+        # off | careful_only | all
+        # FM3 — default is now "all": every producing stage gets at least one
+        # critic pass so refinement actually fires without relying on the chief
+        # remembering to mark a stage careful. Set back to "careful_only" to
+        # reduce token cost.
+        "auto_refine": "all",
         # Cap on automatic re-dispatch attempts after a quality failure.
         "max_quality_retries": 4,
         # Below this, responses are treated as suspect and may be re-run.
         "min_response_chars": 40,
         # Critic-judge loop bounds.
-        "refine_max_rounds": 6,
+        "refine_max_rounds": 10,
         "refine_accept_threshold": 0.8,
         # Inter-agent Q&A bounds.
         "qa_parallel_judges": 1,
@@ -248,6 +259,53 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         "plateau_window": 15,
         # escalate_then_reframe | escalate_only | reframe_only | off
         "plateau_action": "escalate_then_reframe",
+    },
+    # Autonomous mission driver: one objective -> full lifecycle to a
+    # code-gated done, no human follow-up. Wraps the per-workflow loops with a
+    # macro plan->execute->evaluate->refine->iterate loop.
+    "mission": {
+        "max_phases": 12,              # hard cap on phase advances (incl. inserts)
+        "max_iterations_per_phase": 3, # outer repeat budget when a gate says "repeat"
+        "max_total_cycles": 60,        # global cap across all phases (cost cap)
+        "phase_gate": True,            # False -> advance on micro-loop completion
+        "refine_required": True,       # a cycle must run >=1 refine before done-gate
+        "auto_consensus_on_stall": True,  # fan-out consensus only after a stall
+        "charter_first": True,         # author a charter before the plan
+        "commit_trace": True,          # structured trace commits at boundaries
+        "commit_granularity": "batch", # boundary | batch | coarse
+        "min_cycles_before_done": 1,
+        "telemetry_stdout": True,      # print the per-cycle summary line
+        "on_budget_exhausted": "advance",  # advance (lenient) | fail (strict)
+        "default_phases": ["discovery", "product", "engineering", "validation", "deployment"],
+    },
+    # Intra- and inter-agent deliberation (the team "thinks" before acting).
+    "deliberation": {
+        "enabled": True,
+        "encourage_questions": True,
+        "require_open_questions_resolved": True,
+        "self_reflect_preamble": True,
+        "min_debate_rounds": 1,
+    },
+    # FM2 — machine-checkable completion gate. ACTION:done becomes a *request*;
+    # the loop only stops (writes done_granted.md) when every enabled check
+    # passes. Adaptive: tests-green is relaxed when no real test command exists.
+    "done_gate": {
+        "enabled": True,
+        "require_tests_green": True,
+        "require_deliverables": True,
+        "min_deliverable_files": 1,
+        "require_qa_pass": True,
+        "require_ralph_pass": True,
+        "forbid_todo_markers": False,
+        "max_finish_attempts": 5,
+    },
+    # FM1 — no-op guard. A producing stage that changed no files is
+    # re-dispatched with an escalating repair preamble.
+    "noop_guard": {
+        "enabled": True,
+        "max_redispatch": 2,
+        "producing_agents": ["engineer", "ralph"],
+        "treat_outputs_stage_as_producing": True,
     },
 }
 

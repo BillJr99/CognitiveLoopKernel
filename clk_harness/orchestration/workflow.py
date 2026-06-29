@@ -30,12 +30,26 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config import Paths
-from ..git_ops import add_all, commit as git_commit, has_changes, head_sha, revert_to, snapshot_rollback
+from ..git_ops import (
+    add_all,
+    commit as git_commit,
+    commit_trace,
+    has_changes,
+    head_sha,
+    revert_to,
+    snapshot_rollback,
+)
 from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
 from . import blackboard as _blackboard
 from . import response_quality as _response_quality
+from . import noop_guard as _noop_guard
+from . import deliberation as _deliberation
+from . import done_gate as _done_gate
+from . import evaluator as _evaluator
+from . import charter as _charter
 from .agent import AgentRunner, AgentRun
+from .telemetry import CycleTelemetry
 
 
 _ROUND_STATUS_RE = re.compile(r"^\s*ROUND_STATUS\s*:\s*(continue|done|finished)\s*$", re.IGNORECASE | re.MULTILINE)
@@ -384,6 +398,17 @@ class WorkflowRunner:
     def __init__(self, paths: Paths, runner: AgentRunner) -> None:
         self.paths = paths
         self.runner = runner
+        # When set by the MissionRunner, the per-cycle telemetry object is
+        # threaded into each stage's dispatch extra so the dispatch-path hooks
+        # accumulate into the active cycle. When None, ``run`` creates one per
+        # supervise cycle so standalone ``clk run`` is observable too.
+        self.telemetry: Optional[CycleTelemetry] = None
+        # When True, producing dispatches get the deliberation preamble and
+        # the done-gate / phase semantics lean toward unattended autonomy.
+        self.mission_mode: bool = False
+        # When the MissionRunner drives phases, it owns the outer loop, so it
+        # sets this to 1 to make each WorkflowRunner.run() a single pass.
+        self.supervise_cycles_override: Optional[int] = None
 
     # Default cap on chief recovery dispatches per stage. A stage that
     # still has unmet deps after this many recovery passes gets a final
@@ -416,6 +441,8 @@ class WorkflowRunner:
 
     @property
     def max_supervise_cycles(self) -> int:
+        if self.supervise_cycles_override is not None:
+            return int(self.supervise_cycles_override)
         cfg = (self.runner.clk_cfg.get("supervise") or {})
         return int(cfg.get("max_cycles") or self.DEFAULT_MAX_SUPERVISE_CYCLES)
 
@@ -449,6 +476,106 @@ class WorkflowRunner:
             return False
         return bool(stage.careful)
 
+    # -- done gate (FM2) ---------------------------------------------------
+
+    def _done_gate_enabled(self) -> bool:
+        cfg = (self.runner.clk_cfg.get("done_gate") or {})
+        return bool(cfg.get("enabled", True))
+
+    def _telemetry_stdout(self) -> bool:
+        cfg = (self.runner.clk_cfg.get("mission") or {})
+        return bool(cfg.get("telemetry_stdout", True))
+
+    def _evaluate_done_gate(self) -> "_done_gate.DoneGateVerdict":
+        """Build a real eval result + charter criteria and run the done gate."""
+        val_cfg = (self.runner.clk_cfg.get("validation") or {})
+        evaluator = _evaluator.Evaluator(
+            root=self.paths.root,
+            default_checks=list(self.runner.clk_cfg.get("validation_checks") or []),
+            auto_derive=bool(val_cfg.get("auto_derive", True)),
+            derived_command=val_cfg.get("derived_command"),
+        )
+        try:
+            eval_result = evaluator.run()
+        except Exception as exc:
+            log_exception("orchestration.workflow._evaluate_done_gate.eval", exc)
+            eval_result = None
+        try:
+            charter = _charter.load_charter(self.paths)
+            extra_criteria = _charter.derive_done_criteria(charter)
+        except Exception:
+            extra_criteria = []
+        return _done_gate.evaluate_done_gate(
+            self.paths, self.runner.clk_cfg, eval_result, extra_criteria=extra_criteria,
+        )
+
+    def _stop_requested(self, workflow: Workflow) -> bool:
+        """Whether the loop may stop now.
+
+        ``done_granted.md`` (written only by the gate) is the authoritative
+        stop signal. A bare ``done.md`` is an agent *request*: when the gate
+        is enabled it is honored only if every completion criterion passes,
+        otherwise it is downgraded so the loop keeps working. When the gate
+        is disabled, ``done.md`` stops the loop as it always did.
+        """
+        state = self.paths.state
+        if (state / "done_granted.md").exists():
+            return True
+        done_md = state / "done.md"
+        if not done_md.exists():
+            return False
+        if not self._done_gate_enabled():
+            return True
+        verdict = self._evaluate_done_gate()
+        if self.telemetry is not None:
+            try:
+                self.telemetry.record_done_gate(verdict)
+            except Exception:
+                pass
+        if verdict.passed:
+            self._grant_done(verdict)
+            return True
+        # Reject: downgrade the request so a later cycle can re-earn it.
+        try:
+            done_md.rename(state / "done_requested.md")
+        except Exception:
+            try:
+                done_md.unlink()
+            except Exception:
+                pass
+        log(
+            f"workflow {workflow.name}: ACTION:done REJECTED by done-gate — "
+            f"unmet: {', '.join(verdict.failures) or '?'}",
+            level="WARN",
+        )
+        log_event(
+            self.paths,
+            "done_gate_rejected",
+            workflow=workflow.name,
+            failures=list(verdict.failures),
+            checked=verdict.checked,
+        )
+        return False
+
+    def _grant_done(self, verdict: "_done_gate.DoneGateVerdict") -> None:
+        try:
+            (self.paths.state / "done_granted.md").write_text(
+                "# Mission complete\n\n" + verdict.summary() + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            log_exception("orchestration.workflow._grant_done", exc)
+        log_event(self.paths, "done_gate_granted", checked=verdict.checked)
+        try:
+            commit_trace(
+                self.paths.root,
+                kind="done",
+                summary="done-gate granted",
+                meta={"checked": list(verdict.checked.keys())},
+            )
+        except Exception:
+            pass
+
     def run(self, workflow: Workflow, *, dry_run: Optional[bool] = None) -> List[StageResult]:
         """Execute the workflow, looping it under chief supervision.
 
@@ -472,11 +599,13 @@ class WorkflowRunner:
         """
         all_results: List[StageResult] = []
         stopped_for_provider_failure = False
+        stopped_done = False
         no_progress = 0
         rescue_attempted = False
         for cycle in range(1, self.max_supervise_cycles + 1):
-            if (self.paths.state / "done.md").exists():
-                log(f"workflow {workflow.name}: done.md present, stopping supervise loop")
+            if self._stop_requested(workflow):
+                log(f"workflow {workflow.name}: stop granted, ending supervise loop")
+                stopped_done = True
                 break
 
             cancel_file = self.paths.state / "cancel_requested.txt"
@@ -490,6 +619,14 @@ class WorkflowRunner:
 
             if cycle > 1:
                 log(f"workflow {workflow.name}: supervise cycle {cycle}/{self.max_supervise_cycles}")
+            # Per-cycle telemetry: when the MissionRunner owns one it is set on
+            # self.telemetry already; otherwise create one for this cycle so
+            # standalone `clk run` is observable too (FM5).
+            owns_telemetry = self.telemetry is None
+            if owns_telemetry:
+                self.telemetry = CycleTelemetry(
+                    n=cycle, max_cycles=self.max_supervise_cycles, workflow=workflow.name,
+                )
             try:
                 refreshed = load_workflow(self.paths.workflows / f"{workflow.name}.yaml")
             except Exception:
@@ -515,6 +652,13 @@ class WorkflowRunner:
             explicit = [s for s in signals if s is not None]
             self_reported_stall = bool(explicit) and not any(explicit)
             progress = material and not self_reported_stall
+            # Emit the per-cycle telemetry line (FM5). When the MissionRunner
+            # owns the telemetry object it records eval/done-gate and emits
+            # itself, so only emit here for standalone supervise cycles.
+            if owns_telemetry and self.telemetry is not None:
+                self.telemetry.progress = progress
+                self.telemetry.emit(self.paths, to_stdout=self._telemetry_stdout())
+                self.telemetry = None
             if not progress:
                 no_progress += 1
                 why = "agents reported PROGRESS: no" if (material and self_reported_stall) else "no commits or file writes"
@@ -528,8 +672,9 @@ class WorkflowRunner:
                         rescue_attempted = True
                         no_progress = 0
                         self._dispatch_stall_rescue(workflow, cycle, cycle_results)
-                        if (self.paths.state / "done.md").exists():
-                            log(f"workflow {workflow.name}: chief declared done during stall rescue")
+                        if self._stop_requested(workflow):
+                            log(f"workflow {workflow.name}: stop granted during stall rescue")
+                            stopped_done = True
                             break
                         continue
                     log(
@@ -555,7 +700,8 @@ class WorkflowRunner:
                 break
         if (
             not stopped_for_provider_failure
-            and not (self.paths.state / "done.md").exists()
+            and not stopped_done
+            and not (self.paths.state / "done_granted.md").exists()
             and self.max_supervise_cycles > 1
         ):
             log(
@@ -761,9 +907,29 @@ class WorkflowRunner:
             "cycle_context": cycle_context,
             "blackboard_inputs": bb_inputs,
             "stage_outputs": list(stage.outputs),
+            # Carried for the no-op guard (commit=producing) and the telemetry
+            # hooks on the dispatch path.
+            "commit": bool(stage.commit),
+            "telemetry": self.telemetry,
         }
         if stage.phase:
             base_extra["phase"] = stage.phase
+
+        # Deliberation: in mission mode, prepend the self-reflect + ask-peers
+        # preamble to producing dispatches so the team "thinks" before acting.
+        if (
+            not dry_run
+            and self.mission_mode
+            and stage.phase != "review"
+            and _deliberation.enabled(self.runner.clk_cfg)
+            and _noop_guard.is_mutation_expected(
+                stage.agent, outputs=stage.outputs, commit=stage.commit,
+                cfg=self.runner.clk_cfg,
+            )
+        ):
+            preamble = _deliberation.dispatch_preamble(self.runner.clk_cfg)
+            if preamble:
+                objective = preamble + objective
 
         stop_when_file = self.paths.state / "stop_when.txt"
         stop_when = stop_when_file.read_text(encoding="utf-8").strip() if stop_when_file.exists() else ""
@@ -938,6 +1104,11 @@ class WorkflowRunner:
             committed=committed,
             failure_reason=failure_reason,
         )
+        if self.telemetry is not None:
+            try:
+                self.telemetry.record_stage(ok=bool(ok and v_ok))
+            except Exception:
+                pass
 
         # Per-stage chief checkpoint for sensitive stages. Cheap, gated,
         # and never blocks: it just keeps the chief in the loop without
@@ -1123,6 +1294,11 @@ class WorkflowRunner:
 
         current_run = first_run
         for round_idx in range(1, max_rounds + 1):
+            if self.telemetry is not None:
+                try:
+                    self.telemetry.add_refine_round()
+                except Exception:
+                    pass
             verdict, judge_score, feedback = self._dispatch_critic(
                 workflow, stage, current_run, critic_name, round_idx, max_rounds, dry_run,
             )
@@ -1173,6 +1349,7 @@ class WorkflowRunner:
                     "stage_outputs": list(stage.outputs),
                     "refine_round": round_idx + 1,
                     "refine_max_rounds": max_rounds,
+                    "telemetry": self.telemetry,
                 },
                 dry_run=dry_run,
             )
@@ -1590,8 +1767,23 @@ class WorkflowRunner:
         return merged, new_mtime
 
     def _validate(self, stage: WorkflowStage) -> tuple[bool, str]:
-        if not stage.validation:
-            return True, ""
+        cmd = stage.validation
+        # FM4: a producing stage with no explicit validation no longer
+        # auto-passes — derive a real command from the project shape. Non-
+        # producing stages (chief/critic prose) keep the auto-pass.
+        if not cmd:
+            val_cfg = (self.runner.clk_cfg.get("validation") or {})
+            if val_cfg.get("auto_derive", True) and _noop_guard.is_mutation_expected(
+                stage.agent, outputs=stage.outputs, commit=stage.commit,
+                cfg=self.runner.clk_cfg,
+            ):
+                if val_cfg.get("derived_command"):
+                    cmd = str(val_cfg.get("derived_command"))
+                else:
+                    derived, _weak = _evaluator.derive_validation(self.paths.root)
+                    cmd = derived[0] if derived else None
+            if not cmd:
+                return True, ""
         try:
             log_event(
                 self.paths,
@@ -1599,12 +1791,12 @@ class WorkflowRunner:
                 agent=stage.agent,
                 action="validation",
                 stage_id=stage.id,
-                cmd=stage.validation,
+                cmd=cmd,
                 cwd=str(self.paths.root),
                 timeout_s=120,
             )
             r = subprocess.run(
-                stage.validation,
+                cmd,
                 shell=True,
                 cwd=str(self.paths.root),
                 capture_output=True,
@@ -1618,7 +1810,7 @@ class WorkflowRunner:
                 agent=stage.agent,
                 action="validation",
                 stage_id=stage.id,
-                cmd=stage.validation,
+                cmd=cmd,
                 ok=r.returncode == 0,
                 returncode=r.returncode,
                 output=output,
@@ -1633,7 +1825,7 @@ class WorkflowRunner:
                 agent=stage.agent,
                 action="validation",
                 stage_id=stage.id,
-                cmd=stage.validation,
+                cmd=cmd,
                 ok=False,
                 error=str(exc),
             )

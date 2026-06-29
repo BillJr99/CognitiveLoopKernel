@@ -212,7 +212,10 @@ def test_quality_retry_fires_on_empty_response(paths: Paths) -> None:
             "auto_consensus": "off",
             "auto_refine": "off",
             "max_quality_retries": 1,
-        }
+        },
+        # Isolate the quality-retry path: the no-op guard would otherwise
+        # re-dispatch the (action-less) engineer response on its own.
+        "noop_guard": {"enabled": False},
     })
     run = runner.run("engineer", "Implement feature X.")
     assert run.response.text == good

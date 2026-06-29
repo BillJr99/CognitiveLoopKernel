@@ -178,6 +178,49 @@ def commit(
         return False
 
 
+def commit_trace(
+    root: Path,
+    *,
+    kind: str,
+    summary: str,
+    meta: Optional[dict] = None,
+    stage_all: bool = True,
+    allow_empty: bool = True,
+) -> bool:
+    """Write a structured *execution-trace* commit.
+
+    Used at mission boundaries (charter / plan / phase-start /
+    phase-gate:<verdict> / cycle:<n>) and per ACTION batch so the git log
+    itself becomes the audit trail of an autonomous run. The title is
+    ``[clk:<kind>] <summary>`` — a machine-greppable marker — and the body
+    carries the ``meta`` key/values (agent, phase, files, verdicts, tokens).
+
+    ``allow_empty`` defaults True so a boundary marker lands even when the
+    cycle produced no file change, keeping the trace gap-free. Returns True
+    on a successful commit (or when there was genuinely nothing to do and
+    ``allow_empty`` is False).
+    """
+    if not is_repo(root):
+        return False
+    if stage_all:
+        add_all(root)
+    body_lines: List[str] = []
+    for key, value in (meta or {}).items():
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(v) for v in value)
+        body_lines.append(f"{key}: {value}")
+    body_extra = "\n".join(body_lines) if body_lines else None
+    return commit(
+        root,
+        agent=f"clk:{kind}",
+        objective=summary,
+        body_extra=body_extra,
+        allow_empty=allow_empty,
+    )
+
+
 def head_sha(root: Path) -> Optional[str]:
     try:
         r = subprocess.run(

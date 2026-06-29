@@ -20,6 +20,19 @@ committed automatically.
 
 If you've used CLK before, the highlights of this release:
 
+- **Autonomous missions — one prompt to done.** `clk run` (and the TUI's first
+  message) now drive the whole lifecycle autonomously: the chief writes a
+  **charter**, authors a **living plan**, and walks discovery → … →
+  deployment through chief-evaluated phase gates to a **code-gated** done.
+  Reliability is enforced, not hoped for: a machine-checkable **done-gate**
+  (tests/qa/ralph/deliverables, adaptive for test-less projects) makes
+  `ACTION:done` a *request*; a **no-op guard** re-dispatches stages that changed
+  no files; evaluation **auto-derives** a real command instead of vacuously
+  passing; refinement is on for every producing stage by default; agents
+  **deliberate** (blocking Q&A + self-reflection); and every boundary leaves a
+  structured **git commit trace** with a per-cycle telemetry line. Use
+  `clk mission "<idea>"` for the explicit form or `clk run --once` for a single
+  cycle. See [Autonomous missions](#autonomous-missions).
 - **Web dashboard (`clk web`).** A beautiful browser UI that mirrors the
   TUI: configure every feature and `.env` setting, kick off workflows,
   and watch the agents work in real time with live cards, a colour-coded
@@ -1247,9 +1260,9 @@ quality. Use this table to pick a regime:
 | Knob                                   | Worst-case multiplier per affected dispatch                              | Recommended starting point |
 |----------------------------------------|--------------------------------------------------------------------------|----------------------------|
 | `robustness.auto_consensus`            | `off` → ×1; `on_careful` → ×(N+1) on careful stages only; `always` → ×(N+1) on every dispatch (where N = `consensus.max_samples`, default 6) | `on_careful` (default)     |
-| `robustness.auto_refine`               | `off` → ×1; `careful_only` → ×(1 + 1 worker revision + 1 critic) on careful stages; `all` → that on every stage | `careful_only` (default)   |
-| `robustness.max_quality_retries`       | At most this many extra dispatches when a response fails the quality check; 0 disables | 2 (default)                |
-| `robustness.refine_max_rounds`         | Cap on critic↔worker round-trips inside a refine loop                    | 3 (default)                |
+| `robustness.auto_refine`               | `off` → ×1; `careful_only` → ×(1 + 1 worker revision + 1 critic) on careful stages; `all` → that on every producing stage | `all` (default — every producing stage refines) |
+| `robustness.max_quality_retries`       | At most this many extra dispatches when a response fails the quality check; 0 disables | 4 (default)                |
+| `robustness.refine_max_rounds`         | Cap on critic↔worker round-trips inside a refine loop                    | 10 (default)               |
 | `robustness.max_qa_depth`              | Cap on inter-agent Q&A chain depth (each peer answer can ask one peer)   | 3 (default)                |
 | `robustness.plateau_window`            | How many no-improvement Ralph/autoresearch iterations before escalation  | 3 (default)                |
 | `robustness.plateau_action`            | `off` disables adaptive loop termination entirely                        | `escalate_then_reframe`    |
@@ -1660,6 +1673,95 @@ blackboard) so `git log` in the kickoff dir tells the project's story
 without harness chatter. Deleting `.clk/` resets the harness without
 touching the project tree.
 
+## Autonomous missions
+
+Give CLK one objective and it drives the **whole lifecycle to a code-gated
+"done" on its own** — no babysitting with separate `plan` / `run` / `loop`
+commands. This is the plan→execute→evaluate→refine→iterate loop made
+*reliable*: the guarantees that used to live only in prompt text are now
+enforced in the harness.
+
+**Autonomy is the default.** `clk run` (and the TUI's first message, and the
+web/REST single-prompt flow) drive the full mission. `clk mission "<idea>"`
+(alias `clk auto`) is the explicit form; `clk run --once` restores the legacy
+single-workflow pass.
+
+```bash
+clk mission "a local-first journaling app that summarizes my week"
+# charter → plan → discovery → product → engineering(+ralph) → validation
+#         → deployment → done-gate → done_granted.md
+```
+
+### Charter first, then a living plan
+
+1. **Charter** — before any work, the chief authors `.clk/state/charter.md`
+   (+ `charter.json`): mission statement, scope, explicit non-goals, success
+   criteria, constraints. The plan and the done-gate are *derived from it*, so
+   "done" is judged against an up-front commitment instead of drifting.
+2. **Living plan** — the chief emits a `PROPOSE_PLAN` block; the harness
+   persists an ordered phase plan to `.clk/state/mission.json` (human mirror
+   `MISSION.md`). After each phase a chief **phase-gate** returns
+   `pass | repeat | revise | done`; `revise` re-plans the remaining phases, so
+   the chief can reorder, insert, or skip phases as it learns.
+
+Three nested loops: the per-stage **supervise/ralph** loops (unchanged) inside a
+per-phase **repeat** loop inside the **phase-sequencing** loop — bounded by
+`mission.max_phases` and `mission.max_total_cycles`.
+
+### Reliability reinforcements (enforced in code, not prose)
+
+- **Machine-checkable done-gate.** `ACTION:done` / `done.md` is now a *request*.
+  The loop only stops when `done_gate.evaluate_done_gate` passes and writes
+  `.clk/state/done_granted.md`. Default checks: tests green, deliverables on
+  disk, a `POST: qa` PASS, a ralph refinement pass, plus any file-named charter
+  success criteria. **Adaptive:** the tests-green check is auto-relaxed when no
+  real test command can be derived (docs / research / content projects), so the
+  gate is strict where it's meaningful but never deadlocks. Each `require_*` is
+  an independent switch; `done_gate.enabled: false` restores legacy behavior.
+- **No-op guard.** A producing stage (engineer/ralph, or any stage with an
+  `outputs` contract) whose response changed **no files** is re-dispatched with
+  an escalating "emit ACTION blocks now" preamble — descriptions stop counting
+  as work. Kill: `noop_guard.enabled: false`.
+- **Evaluation never silently skips.** A producing stage with no `validation:`
+  no longer auto-passes — the harness derives a real command from the project
+  shape (`pytest` / `npm test` / a `compileall` smoke). Kill:
+  `validation.auto_derive: false`.
+- **Ungated refinement.** `robustness.auto_refine` defaults to `all`, so every
+  producing stage gets a critic pass without the chief having to mark it
+  `careful`.
+- **Deliberation — the team thinks.** Producing dispatches get a
+  self-reflect preamble and an invitation to ask peers
+  `POST: question TO: <peer> URGENCY: blocking`; a phase gate cannot `pass`
+  while a blocking question is unanswered. Kill: `deliberation.enabled: false`.
+- **Execution trace.** Structured `[clk:charter|plan|phase-start|phase-gate:*|done]`
+  commits land at every boundary, so the git log *is* the audit trail. Kill:
+  `mission.commit_trace: false`.
+- **Observability.** Each cycle prints a one-line summary and writes a
+  `loop_cycle_summary` event to `.clk/logs/activity.jsonl`, e.g.
+  `cycle 3/60 | phase engineering | stages 5 (4 ok) | actions 7 | refine 1r | eval FAIL(2) | done-gate REJECT(no_qa_pass)`.
+
+### Mission config (`clk.config.json`)
+
+```jsonc
+"mission":      { "max_phases": 12, "max_iterations_per_phase": 3,
+                  "max_total_cycles": 60, "phase_gate": true,
+                  "refine_required": true, "charter_first": true,
+                  "commit_trace": true, "telemetry_stdout": true,
+                  "default_phases": ["discovery","product","engineering","validation","deployment"] },
+"done_gate":    { "enabled": true, "require_tests_green": true,
+                  "require_deliverables": true, "min_deliverable_files": 1,
+                  "require_qa_pass": true, "require_ralph_pass": true,
+                  "forbid_todo_markers": false },
+"noop_guard":   { "enabled": true, "max_redispatch": 2,
+                  "producing_agents": ["engineer","ralph"] },
+"deliberation": { "enabled": true, "encourage_questions": true,
+                  "require_open_questions_resolved": true,
+                  "self_reflect_preamble": true, "min_debate_rounds": 1 }
+```
+
+CLI overrides: `clk run --max-phases N --max-cycles M`, `clk run --once`,
+`clk mission "<idea>" --resume` (continue a persisted plan).
+
 ## Chief supervisor loop
 
 The default `engineering` workflow ends with a `supervise` stage where
@@ -1992,8 +2094,8 @@ decides whether one round runs anyway:
 | `auto_refine`              | Behavior                                                |
 |----------------------------|---------------------------------------------------------|
 | `off`                      | Only stages with `refine:` use the inner loop.          |
-| `careful_only` *(default)* | Stages marked `careful: true` get one critic pass.      |
-| `all`                      | Every non-chief, non-qa, non-critic stage gets one pass.|
+| `careful_only`             | Stages marked `careful: true` get one critic pass.      |
+| `all` *(default)*          | Every non-chief, non-qa, non-critic stage gets a critic pass — so refinement fires without relying on the chief marking stages careful. |
 
 The critic's last two lines must be:
 
@@ -2055,7 +2157,7 @@ A typical "careful" engineering stage now runs:
 1. Stage dispatched with `careful: true`.
 2. `auto_consensus=on_careful` → N samples fan out in parallel.
 3. Chief coalesces the samples.
-4. `auto_refine=careful_only` → critic scores the coalesced output;
+4. `auto_refine=all` (default) → critic scores the coalesced output;
    the worker is revised until critic accepts or `max_rounds`.
 5. Stage validation runs.
 6. Checkpoint (if enabled) — chief CONTINUE / REDIRECT / ABORT

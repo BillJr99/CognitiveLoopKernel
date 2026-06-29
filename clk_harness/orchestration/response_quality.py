@@ -108,6 +108,9 @@ _REFUSAL_RES: Sequence[re.Pattern] = tuple(
     )
 )
 _HEADERLESS_ACTION_RE = re.compile(r"^\s*ACTION\s*:\s*([A-Za-z]+)", re.IGNORECASE | re.MULTILINE)
+_FILE_ACTION_RE = re.compile(
+    r"^\s*ACTION\s*:\s*(write|edit|append|delete)\b", re.IGNORECASE | re.MULTILINE
+)
 _END_ACTION_RE = re.compile(r"^\s*END_ACTION\s*$", re.IGNORECASE | re.MULTILINE)
 _POST_HEAD_RE = re.compile(r"^\s*POST\s*:\s*([A-Za-z][A-Za-z0-9_]*)\s*$", re.IGNORECASE | re.MULTILINE)
 _POST_END_RE = re.compile(r"^\s*END_POST\s*$", re.IGNORECASE | re.MULTILINE)
@@ -208,6 +211,7 @@ def score(
     min_chars: int = 40,
     expected_outputs: Optional[Sequence[str]] = None,
     require_confidence: bool = False,
+    expect_file_action: bool = False,
 ) -> ResponseQuality:
     """Score a single response text against the harness's quality rules.
 
@@ -224,6 +228,12 @@ def score(
         When True, missing the ``CONFIDENCE:`` line itself counts as a flag.
         Off by default so existing agents that have not been re-prompted
         yet aren't penalised.
+    expect_file_action:
+        When True, a response that contains no file-mutating ACTION block
+        (write / edit / append / delete) is flagged ``noop`` (recoverable) —
+        the worker described work instead of doing it. Parse-level only; the
+        dispatch loop also enforces this at apply time via
+        ``AgentRun.file_mutations_applied``.
     """
 
     q = ResponseQuality()
@@ -289,6 +299,15 @@ def score(
             "comma-separated on a single line."
         )
 
+    # 5b. No-op: a producing stage that emitted no file-mutating ACTION.
+    if expect_file_action and not _FILE_ACTION_RE.search(text or ""):
+        q.flags.append("noop")
+        q.reasons.append(
+            "Your response changed no files — it contained no ACTION:write/"
+            "edit/append/delete block. Descriptions do nothing here. Emit at "
+            "least one real file-mutating ACTION block."
+        )
+
     # 6. Self-reported low confidence
     if q.confidence is not None and q.confidence < 0.5:
         q.flags.append("low_confidence")
@@ -320,6 +339,7 @@ def score(
         "malformed_action": 0.4,
         "malformed_post": 0.3,
         "outputs_missing": 0.4,
+        "noop": 0.5,
         "low_confidence": 0.3,
         "needs_review_self": 0.2,
         "confidence_missing": 0.1,

@@ -14,6 +14,36 @@ import {
   progressSignal,
 } from "../src/quality.ts";
 
+describe("scoreResponse — no-op guard (FM1)", () => {
+  const prose =
+    "I would build the parser module and then add tests for it. This plan is " +
+    "detailed enough to clear the minimum character threshold comfortably.";
+
+  test("substantive prose with no file action is flagged noop when expected", () => {
+    const q = scoreResponse(prose, { expectFileAction: true });
+    assert.ok(q.flags.includes("noop"));
+    assert.equal(q.ok, false);
+    assert.equal(isRecoverable(q), true);
+  });
+
+  test("a real file-mutating ACTION clears the noop flag", () => {
+    const text = "ACTION: write\nPATH: src/app.ts\nCONTENT:\nconsole.log(1);\nEND_ACTION";
+    const q = scoreResponse(text, { expectFileAction: true });
+    assert.ok(!q.flags.includes("noop"));
+  });
+
+  test("noop is not raised when not expected", () => {
+    const q = scoreResponse(prose);
+    assert.ok(!q.flags.includes("noop"));
+  });
+
+  test("empty response gets `empty`, not `noop`", () => {
+    const q = scoreResponse("", { expectFileAction: true });
+    assert.ok(q.flags.includes("empty"));
+    assert.ok(!q.flags.includes("noop"));
+  });
+});
+
 describe("scoreResponse — happy paths", () => {
   test("substantive prose passes with score 1.0", () => {
     const text = "This is a substantive response covering the requested work in detail. " +
