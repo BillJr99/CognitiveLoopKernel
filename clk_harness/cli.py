@@ -2,6 +2,7 @@
 
 Sub-commands:
   init        - bootstrap .clk/, configs, prompts, workflows, git repo
+  kickoff     - bootstrap a self-contained kickoff workspace (port of kickoff.sh)
   idea        - capture an idea
   plan        - run the discovery + product workflows
   run         - drive the autonomous mission to a code-gated done (--once for one cycle)
@@ -53,6 +54,7 @@ from .git_ops import (
     init_repo,
     is_repo,
 )
+from .kickoff import cmd_kickoff
 from .orchestration import (
     AgentRunner,
     AutoresearchLoop,
@@ -909,6 +911,42 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init", help="Initialize CLK in the current directory.")
     p_init.add_argument("--name", help="Project name (defaults to directory name).")
     p_init.set_defaults(func=cmd_init)
+
+    p_kick = sub.add_parser(
+        "kickoff",
+        help="Bootstrap a self-contained kickoff workspace under ./workspace/ "
+             "(driven by .env and optional --arg overrides).",
+        description=(
+            "Bootstrap a self-contained kickoff workspace under ./workspace/. "
+            "Driven entirely by .env and optional --arg overrides; normal runs "
+            "ask no questions. If required configuration is missing, kickoff "
+            "prints exactly what is needed and offers to launch --setup. "
+            "Configuration precedence (highest-to-lowest): --arg overrides -> "
+            ".env file / shell env vars -> built-in defaults."
+        ),
+    )
+    p_kick.add_argument("idea", nargs="?", help="Idea or problem statement.")
+    p_kick.add_argument("--setup", action="store_true",
+                        help="Interactive wizard to write or update .env.")
+    p_kick.add_argument("--restore", action="store_true",
+                        help="Restore .env from .env.bak (undo last --setup).")
+    p_kick.add_argument("--list", action="store_true", dest="list_mode",
+                        help="List past kickoff dirs under workspace/.")
+    p_kick.add_argument("--clean", metavar="DURATION",
+                        help="Delete kickoff dirs older than DURATION (e.g. 7d, 30m). "
+                             "Always asks y/N before deleting.")
+    p_kick.add_argument("--provider", help="Override CLK_PROVIDER.")
+    p_kick.add_argument("--max-iterations", help="Override CLK_MAX_ITERATIONS.")
+    p_kick.add_argument("--project-name", help="Override CLK_PROJECT_NAME.")
+    p_kick.add_argument("--no-tui", action="store_const", const="true",
+                        dest="no_tui_override",
+                        help="Set CLK_NO_TUI=true (non-interactive pipeline).")
+    p_kick.add_argument("--tui", action="store_const", const="false",
+                        dest="no_tui_override",
+                        help="Set CLK_NO_TUI=false (TUI dashboard, the default).")
+    p_kick.add_argument("--run-install", action="store_true",
+                        help="Set CLK_RUN_INSTALL=true.")
+    p_kick.set_defaults(func=cmd_kickoff)
 
     p_idea = sub.add_parser("idea", help="Capture an idea.")
     p_idea.add_argument("statement", help="The idea, problem statement, or vision.")

@@ -1,0 +1,111 @@
+{
+  "auto_commit": true,
+  "casting": {
+    "auto_cast_on_idea": true,
+    "max_dynamic_roles": 12
+  },
+  "consensus": {
+    "max_parallel": 4,
+    "max_samples": 6
+  },
+  "default_provider": "shell",
+  "default_workflow": "engineering",
+  "deliberation": {
+    "enabled": true,
+    "encourage_questions": true,
+    "min_debate_rounds": 1,
+    "require_open_questions_resolved": true,
+    "self_reflect_preamble": true
+  },
+  "done_gate": {
+    "enabled": true,
+    "forbid_todo_markers": false,
+    "max_finish_attempts": 5,
+    "min_deliverable_files": 1,
+    "require_deliverables": true,
+    "require_qa_pass": true,
+    "require_ralph_pass": true,
+    "require_tests_green": true
+  },
+  "dry_run": false,
+  "max_iterations": 100,
+  "meta_prompt": {
+    "dispatch": "always",
+    "role": "on"
+  },
+  "mission": {
+    "auto_consensus_on_stall": true,
+    "charter_first": true,
+    "commit_granularity": "batch",
+    "commit_trace": true,
+    "default_phases": [
+      "discovery",
+      "product",
+      "engineering",
+      "validation",
+      "deployment"
+    ],
+    "max_iterations_per_phase": 3,
+    "max_phases": 12,
+    "max_total_cycles": 60,
+    "min_cycles_before_done": 1,
+    "on_budget_exhausted": "advance",
+    "phase_gate": true,
+    "refine_required": true,
+    "telemetry_stdout": true
+  },
+  "noop_guard": {
+    "enabled": true,
+    "max_redispatch": 2,
+    "producing_agents": [
+      "engineer",
+      "ralph"
+    ],
+    "treat_outputs_stage_as_producing": true
+  },
+  "project_name": "golden-proj",
+  "provider_no_output_timeout_s": 0,
+  "provider_retry": {
+    "backoff_s": 5,
+    "max_retries": 10,
+    "stage_backoff_s": 30,
+    "stage_max_retries": 10
+  },
+  "provider_timeout_s": 0,
+  "recovery": {
+    "dispatch_on_unmet_outputs": true,
+    "max_per_stage": 3
+  },
+  "robustness": {
+    "auto_consensus": "on_careful",
+    "auto_refine": "all",
+    "debate": "careful_only",
+    "debate_lenses": [
+      "correctness",
+      "security",
+      "simplicity"
+    ],
+    "debate_max_rounds": 2,
+    "max_qa_depth": 6,
+    "max_quality_retries": 4,
+    "min_response_chars": 40,
+    "plateau_action": "escalate_then_reframe",
+    "plateau_window": 15,
+    "qa_parallel_judges": 1,
+    "refine_accept_threshold": 0.8,
+    "refine_max_rounds": 10
+  },
+  "supervise": {
+    "max_consecutive_no_progress": 8,
+    "max_cycles": 100,
+    "stall_rescue": true
+  },
+  "validation": {
+    "auto_derive": true,
+    "derived_command": null,
+    "max_files_per_batch": 25,
+    "rollback_on_failure": "careful",
+    "warn_files_per_batch": 5
+  },
+  "version": 1
+}

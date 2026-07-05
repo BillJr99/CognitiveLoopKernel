@@ -1,0 +1,111 @@
+{
+  "auto_commit": false,
+  "casting": {
+    "auto_cast_on_idea": true,
+    "max_dynamic_roles": 6
+  },
+  "consensus": {
+    "max_parallel": 2,
+    "max_samples": 5
+  },
+  "default_provider": "shell",
+  "default_workflow": "engineering",
+  "deliberation": {
+    "enabled": false,
+    "encourage_questions": false,
+    "min_debate_rounds": 2,
+    "require_open_questions_resolved": false,
+    "self_reflect_preamble": false
+  },
+  "done_gate": {
+    "enabled": true,
+    "forbid_todo_markers": true,
+    "max_finish_attempts": 9,
+    "min_deliverable_files": 3,
+    "require_deliverables": true,
+    "require_qa_pass": false,
+    "require_ralph_pass": false,
+    "require_tests_green": false
+  },
+  "dry_run": false,
+  "max_iterations": 100,
+  "meta_prompt": {
+    "dispatch": "off",
+    "role": "careful_only"
+  },
+  "mission": {
+    "auto_consensus_on_stall": false,
+    "charter_first": false,
+    "commit_granularity": "coarse",
+    "commit_trace": true,
+    "default_phases": [
+      "discovery",
+      "engineering"
+    ],
+    "max_iterations_per_phase": 2,
+    "max_phases": 8,
+    "max_total_cycles": 33,
+    "min_cycles_before_done": 2,
+    "on_budget_exhausted": "fail",
+    "phase_gate": false,
+    "refine_required": true,
+    "telemetry_stdout": false
+  },
+  "noop_guard": {
+    "enabled": false,
+    "max_redispatch": 4,
+    "producing_agents": [
+      "engineer",
+      "ralph",
+      "builder"
+    ],
+    "treat_outputs_stage_as_producing": false
+  },
+  "project_name": "golden-proj",
+  "provider_no_output_timeout_s": 120,
+  "provider_retry": {
+    "backoff_s": 2.5,
+    "max_retries": 3,
+    "stage_backoff_s": 12.75,
+    "stage_max_retries": 4
+  },
+  "provider_timeout_s": 600,
+  "recovery": {
+    "dispatch_on_unmet_outputs": true,
+    "max_per_stage": 1
+  },
+  "review": {
+    "per_stage": true
+  },
+  "robustness": {
+    "auto_consensus": "always",
+    "auto_refine": "careful_only",
+    "debate": "all",
+    "debate_lenses": [
+      "correctness",
+      "performance"
+    ],
+    "debate_max_rounds": 5,
+    "max_qa_depth": 2,
+    "max_quality_retries": 7,
+    "min_response_chars": 99,
+    "plateau_action": "escalate_only",
+    "plateau_window": 9,
+    "qa_parallel_judges": 3,
+    "refine_accept_threshold": 0.65,
+    "refine_max_rounds": 4
+  },
+  "supervise": {
+    "max_consecutive_no_progress": 8,
+    "max_cycles": 50,
+    "stall_rescue": true
+  },
+  "validation": {
+    "auto_derive": false,
+    "derived_command": null,
+    "max_files_per_batch": 10,
+    "rollback_on_failure": "careful",
+    "warn_files_per_batch": 3
+  },
+  "version": 1
+}
