@@ -30,8 +30,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..config import Paths
-from ..utils.logging_utils import log_exception
+from ..log import get_logger, log_exception
 from . import blackboard as _blackboard
+
+logger = get_logger(__name__)
 
 _EXCLUDE_TOP = {".clk", ".git", "node_modules", "__pycache__", ".pytest_cache", "venv", ".venv"}
 _STATEISH_ROOT_FILES = {"PROGRESS.md", "DECISIONS.md", "MISSION.md", "CHARTER.md"}
@@ -136,7 +138,8 @@ def todo_markers(root: Path, *, max_files: int = 2000) -> List[str]:
             if fp.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".bin"}:
                 continue
             text = fp.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
+        except Exception as _exc:
+            logger.debug("done-gate: skipping unreadable %s: %s", rel, _exc)
             continue
         if _TODO_RE.search(text):
             hits.append(rel)

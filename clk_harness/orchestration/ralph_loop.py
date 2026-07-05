@@ -34,11 +34,13 @@ from ..git_ops import (
 from ..git_ops import (
     commit as git_commit,
 )
+from ..log import get_logger, log, log_exception
 from ..utils.activity_log import log_event
-from ..utils.logging_utils import log, log_exception
 from . import response_quality as _response_quality
 from .agent import AgentRunner
 from .evaluator import Evaluator
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -75,8 +77,8 @@ class RalphLoop:
         if obs is not None:
             try:
                 obs.log(line)
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("observer log failed: %s", _exc)
 
     def run(self, *, dry_run: bool = False) -> List[IterationOutcome]:
         outcomes: List[IterationOutcome] = []

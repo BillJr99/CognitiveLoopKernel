@@ -54,8 +54,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from ..config import Paths
+from ..log import get_logger, log, log_exception
 from ..utils.activity_log import log_event
-from ..utils.logging_utils import log, log_exception
+
+logger = get_logger(__name__)
 
 
 def blackboard_dir(paths: Paths) -> Path:
@@ -200,8 +202,8 @@ def post(
             produces=list(p.produces),
             body_chars=len(p.body or ""),
         )
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("blackboard: activity mirror failed: %s", _exc)
     return p
 
 

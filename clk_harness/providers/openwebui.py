@@ -30,7 +30,10 @@ import urllib.request
 import uuid
 from typing import Any, Dict, List, Tuple
 
+from ..log import get_logger
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens
+
+logger = get_logger(__name__)
 
 
 def _auth_header(api_key: str) -> Dict[str, str]:
@@ -157,8 +160,8 @@ class OpenWebUIProvider(AgentProvider):
                 progress("http_retry", f"attempt {attempt}/{attempts} failed; sleeping {delay}s before retry")
                 try:
                     time.sleep(float(delay))
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("retry backoff sleep failed: %s", _exc)
                 continue
             break
         return last_err
@@ -285,8 +288,8 @@ def _retry_after_seconds(exc: urllib.error.HTTPError) -> float:
         ra = exc.headers.get("Retry-After") if exc.headers else None
         if ra:
             return float(ra)
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("could not parse Retry-After header: %s", _exc)
     return 0.0
 
 
@@ -307,6 +310,6 @@ def _read_error_detail(exc: urllib.error.HTTPError) -> Tuple[str, str]:
                 if v:
                     parts.append(f"{h}={v}")
             headers_str = ";".join(parts)
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("could not extract error headers: %s", _exc)
     return detail, headers_str

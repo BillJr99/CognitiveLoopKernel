@@ -42,7 +42,10 @@ from .config import (
     save_json,
     save_providers_config,
 )
+from .log import get_logger
 from .providers import available_providers
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -927,13 +930,13 @@ def _discover_blocking() -> List[Dict[str, Any]]:
         for name, block in saved.items():
             if name in blocks and isinstance(block, dict):
                 blocks[name] = {**blocks[name], **block}
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("providers: could not merge saved config: %s", _exc)
     env: Dict[str, str] = {}
     try:
         env = env_file.read_env()
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("providers: could not read .env: %s", _exc)
 
     def _env(*keys: str) -> str:
         for k in keys:

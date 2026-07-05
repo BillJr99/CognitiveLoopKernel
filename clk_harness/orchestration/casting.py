@@ -56,8 +56,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..config import Paths, load_agents_config, save_json
+from ..log import get_logger, log_exception
 from ..utils.activity_log import log_event
-from ..utils.logging_utils import log_exception
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Baseline (always-present) agents
@@ -703,7 +705,8 @@ def _similar_existing_prompt(
             continue
         try:
             ex_body = ex_path.read_text(encoding="utf-8")
-        except Exception:
+        except Exception as _exc:
+            logger.debug("casting: could not read exemplar %s: %s", ex_path, _exc)
             continue
         # Compare domain content only: the harness appends a shared
         # protocol suffix to every dynamic prompt, which would inflate
@@ -897,8 +900,8 @@ def register_role(
             if on_change is not None:
                 try:
                     on_change(name, "prompt_updated")
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("casting: on_change callback failed: %s", _exc)
             return True, "baseline_prompt_refreshed"
         return False, "baseline_protected"
 
@@ -958,8 +961,8 @@ def register_role(
     if on_change is not None:
         try:
             on_change(name, status)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("casting: on_change callback failed: %s", _exc)
     return True, status
 
 
@@ -984,8 +987,8 @@ def remove_role(
     if on_change is not None:
         try:
             on_change(name, "removed")
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("casting: on_change callback failed: %s", _exc)
     return True, "removed"
 
 
@@ -1052,8 +1055,8 @@ def write_workflow(
     if on_change is not None:
         try:
             on_change(name, "workflow_written")
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("casting: on_change callback failed: %s", _exc)
     return True, "written"
 
 

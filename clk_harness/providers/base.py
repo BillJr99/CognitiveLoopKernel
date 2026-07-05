@@ -13,6 +13,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ..log import get_logger
+
+logger = get_logger(__name__)
+
 
 class ProviderUnavailable(RuntimeError):
     """Raised when a provider cannot service a request."""
@@ -193,8 +197,8 @@ def run_streaming(
             parts = (r.stdout or "").strip().split()
             if len(parts) >= 2:
                 return f"cpu={parts[0]} rss_kb={parts[1]}"
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("resource sample failed for pid %s: %s", proc.pid, _exc)
         return "cpu=? rss_kb=?"
 
     def _kill(reason: str, rc_value: int) -> int:
@@ -206,8 +210,8 @@ def run_streaming(
             progress("killed", f"pid={proc.pid} reason={reason} kill_error={exc}")
         try:
             proc.wait(timeout=5)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("wait after kill failed for pid %s: %s", proc.pid, _exc)
         return rc_value
 
     def _feed_stdin() -> None:
@@ -215,14 +219,14 @@ def run_streaming(
             if stdin_text is not None and proc.stdin is not None:
                 proc.stdin.write(stdin_text)
                 proc.stdin.flush()
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("stdin feed to pid %s failed: %s", proc.pid, _exc)
         finally:
             try:
                 if proc.stdin is not None:
                     proc.stdin.close()
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("stdin close for pid %s failed: %s", proc.pid, _exc)
 
     def _read_stream(stream, buf: List[str], kind: str) -> None:
         try:
@@ -230,8 +234,8 @@ def run_streaming(
                 buf.append(line)
                 last_output[0] = time.monotonic()
                 progress(kind, line.rstrip())
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("%s stream reader stopped: %s", kind, _exc)
 
     threads = [
         threading.Thread(target=_feed_stdin, name=f"clk-stdin-{proc.pid}", daemon=True),

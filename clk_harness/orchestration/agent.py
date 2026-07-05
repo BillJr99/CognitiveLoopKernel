@@ -20,14 +20,16 @@ from typing import Any, Dict, List, Optional
 from ..config import Paths
 from ..git_ops import add_all, has_changes, head_sha, is_repo
 from ..git_ops import commit as git_commit
+from ..log import get_logger, log_exception
 from ..providers import AgentProvider, AgentRequest, AgentResponse, load_provider
 from ..utils.activity_log import log_event
-from ..utils.logging_utils import log, log_exception
 from . import actions as _actions
 from . import blackboard as _blackboard
 from . import casting as _casting
 from . import noop_guard as _noop_guard
 from . import response_quality as _response_quality
+
+logger = get_logger(__name__)
 
 
 def _read_recent_casting_rejections(paths: Paths, *, limit: int = 8) -> str:
@@ -40,13 +42,15 @@ def _read_recent_casting_rejections(paths: Paths, *, limit: int = 8) -> str:
         return ""
     try:
         raw_lines = log_path.read_text(encoding="utf-8").strip().splitlines()
-    except Exception:
+    except Exception as _exc:
+        logger.debug("could not read casting log %s: %s", log_path, _exc)
         return ""
     rows: List[Dict[str, Any]] = []
     for line in reversed(raw_lines):
         try:
             obj = json.loads(line)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("skipping unparseable casting-log line: %s", _exc)
             continue
         if not isinstance(obj, dict):
             continue
@@ -206,7 +210,7 @@ class AgentRunner:
             # we still call the real provider instead of silently echoing.
             prov_cfg = (DEFAULT_PROVIDERS.get("providers") or {}).get(target)
         if prov_cfg is None:
-            log(f"unknown provider '{target}', falling back to shell", level="WARN")
+            logger.warning(f"unknown provider '{target}', falling back to shell")
             target = "shell"
             prov_cfg = (self.providers_cfg.get("providers") or {}).get("shell") or {"type": "shell"}
         return load_provider(target, prov_cfg)
@@ -350,8 +354,8 @@ class AgentRunner:
                 if tel is not None:
                     try:
                         tel.add_noop_redispatch()
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        logger.debug("telemetry add_noop_redispatch failed: %s", _exc)
                 log_event(
                     self.paths,
                     "agent_noop_redispatch",
@@ -398,8 +402,8 @@ class AgentRunner:
             if tel is not None:
                 try:
                     tel.add_quality_retry()
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("telemetry add_quality_retry failed: %s", _exc)
             log_event(
                 self.paths,
                 "agent_quality_retry",
@@ -470,8 +474,8 @@ class AgentRunner:
         if tel is not None:
             try:
                 tel.add_consensus_run()
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("telemetry add_consensus_run failed: %s", _exc)
         name = f"auto_{agent_name}_{datetime.now().strftime('%H%M%S%f')}"
         log_event(
             self.paths,
@@ -626,8 +630,8 @@ class AgentRunner:
                     message_chars=len(message or ""),
                     **extra,
                 )
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("activity log_event failed: %s", _exc)
             if observer is None:
                 return
             try:
@@ -809,7 +813,7 @@ class AgentRunner:
         return any(s in msg for s in retryable) and not any(s in msg for s in non_retryable)
 
     def _observer_log(self, line: str) -> None:
-        log(line)
+        logger.info(line)
         if self.observer is not None:
             try:
                 self.observer.log(line)
@@ -918,8 +922,8 @@ class AgentRunner:
             if self.observer is not None:
                 try:
                     self.observer.progress(label, kind, message)
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("observer progress failed: %s", _exc)
 
         log_event(
             self.paths,
@@ -1014,7 +1018,8 @@ class AgentRunner:
                 for line in fh:
                     try:
                         obj = json.loads(line)
-                    except Exception:
+                    except Exception as _exc:
+                        logger.debug("skipping unparseable meta-cache line: %s", _exc)
                         continue
                     if isinstance(obj, dict) and obj.get("key") == key:
                         return obj.get("value") or ""
@@ -1212,7 +1217,7 @@ class AgentRunner:
         observer = self.observer
 
         def _on_change(name: str, status: str) -> None:
-            log(f"casting :: {name} :: {status}")
+            logger.info(f"casting :: {name} :: {status}")
             if observer is not None:
                 try:
                     observer.roster_changed(name, status)
@@ -1229,7 +1234,7 @@ class AgentRunner:
                 on_change=_on_change,
             )
         if not result.is_empty():
-            log(f"casting from {run.agent}: {result.summary()}")
+            logger.info(f"casting from {run.agent}: {result.summary()}")
 
     def _apply_posts(self, run: AgentRun, extra: Dict[str, Any]) -> None:
         """Persist any POST blocks the agent emitted onto the blackboard.
@@ -1356,8 +1361,8 @@ class AgentRunner:
             if tel is not None:
                 try:
                     tel.add_qa_exchange()
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("telemetry add_qa_exchange failed: %s", _exc)
             self._dispatch_once(
                 target,
                 answer_objective,
@@ -1393,8 +1398,8 @@ class AgentRunner:
                 tel.add_actions(len(result.files_written) + len(result.files_deleted)
                                 + len(result.commands_run))
                 tel.add_files(len(result.files_written))
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("telemetry add_actions/add_files failed: %s", _exc)
         if result.is_empty():
             return
         # Merge into run.files_written so downstream consumers (TUI,
@@ -1407,17 +1412,17 @@ class AgentRunner:
         # Also surface deletes so they get attributed to this run.
         for f in result.files_deleted:
             run.files_written.append(f"deleted:{f}")
-        log(f"actions from {run.agent}: {result.summary()}")
+        logger.info(f"actions from {run.agent}: {result.summary()}")
         # Annotate the response so the TUI can show it in the log pane:
         # we tack a short summary onto the text preview path.
         if result.commands_run or result.errors:
             for cmd, out in zip(result.commands_run, result.command_outputs):
-                log(f"actions[{run.agent}] $ {cmd}")
+                logger.info(f"actions[{run.agent}] $ {cmd}")
                 if out.strip():
                     for line in out.strip().splitlines()[:6]:
-                        log(f"actions[{run.agent}]   {line[:200]}")
+                        logger.info(f"actions[{run.agent}]   {line[:200]}")
             for err in result.errors:
-                log(f"actions[{run.agent}] !! {err}", level="WARN")
+                logger.warning(f"actions[{run.agent}] !! {err}")
         # Auto-commit any file changes from this batch so the git log
         # has a per-agent-run granularity. Only fires when this run
         # actually wrote (or deleted) files.
@@ -1471,9 +1476,9 @@ class AgentRunner:
                 if tel is not None:
                     try:
                         tel.add_commit()
-                    except Exception:
-                        pass
-                log(
+                    except Exception as _exc:
+                        logger.debug("telemetry add_commit failed: %s", _exc)
+                logger.info(
                     f"commit: [{run.agent}] {len(result.files_written)} files, "
                     f"{len(result.files_deleted)} deletes"
                 )

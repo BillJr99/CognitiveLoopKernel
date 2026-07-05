@@ -35,6 +35,9 @@ from datetime import datetime
 from typing import Any, Dict
 
 from ..config import Paths
+from ..log import get_logger
+
+logger = get_logger(__name__)
 
 _LOCK = threading.Lock()
 _HANDLES: Dict[str, Any] = {}
@@ -101,6 +104,6 @@ def close_all() -> None:
         for fh in list(_HANDLES.values()):
             try:
                 fh.close()
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("activity log close failed: %s", _exc)
         _HANDLES.clear()

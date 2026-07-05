@@ -38,8 +38,8 @@ from ..git_ops import (
 from ..git_ops import (
     commit as git_commit,
 )
+from ..log import get_logger, log_exception
 from ..utils.activity_log import log_event
-from ..utils.logging_utils import log, log_exception
 from . import blackboard as _blackboard
 from . import charter as _charter
 from . import deliberation as _deliberation
@@ -49,6 +49,8 @@ from . import noop_guard as _noop_guard
 from . import response_quality as _response_quality
 from .agent import AgentRun, AgentRunner
 from .telemetry import CycleTelemetry
+
+logger = get_logger(__name__)
 
 _ROUND_STATUS_RE = re.compile(r"^\s*ROUND_STATUS\s*:\s*(continue|done|finished)\s*$", re.IGNORECASE | re.MULTILINE)
 
@@ -66,10 +68,11 @@ def _round_status(text: str) -> str:
 
 try:
     import yaml  # type: ignore
-except Exception:
+except Exception as _exc:
     # PyYAML is optional. The mini-YAML loader below covers the workflow
-    # subset CLK uses, so we silently fall back rather than spraying a
+    # subset CLK uses, so we quietly fall back rather than spraying a
     # warning across stderr (which would also corrupt the TUI).
+    logger.debug("PyYAML unavailable; using the built-in mini-YAML loader: %s", _exc)
     yaml = None
 
 
@@ -528,8 +531,8 @@ class WorkflowRunner:
         if self.telemetry is not None:
             try:
                 self.telemetry.record_done_gate(verdict)
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("telemetry record_done_gate failed: %s", _exc)
         if verdict.passed:
             self._grant_done(verdict)
             return True
@@ -539,12 +542,11 @@ class WorkflowRunner:
         except Exception:
             try:
                 done_md.unlink()
-            except Exception:
-                pass
-        log(
+            except Exception as _exc:
+                logger.debug("could not clear done request %s: %s", done_md, _exc)
+        logger.warning(
             f"workflow {workflow.name}: ACTION:done REJECTED by done-gate — "
             f"unmet: {', '.join(verdict.failures) or '?'}",
-            level="WARN",
         )
         log_event(
             self.paths,
@@ -571,8 +573,8 @@ class WorkflowRunner:
                 summary="done-gate granted",
                 meta={"checked": list(verdict.checked.keys())},
             )
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("done-gate trace commit failed: %s", _exc)
 
     def run(self, workflow: Workflow, *, dry_run: Optional[bool] = None) -> List[StageResult]:
         """Execute the workflow, looping it under chief supervision.
@@ -602,7 +604,7 @@ class WorkflowRunner:
         rescue_attempted = False
         for cycle in range(1, self.max_supervise_cycles + 1):
             if self._stop_requested(workflow):
-                log(f"workflow {workflow.name}: stop granted, ending supervise loop")
+                logger.info(f"workflow {workflow.name}: stop granted, ending supervise loop")
                 stopped_done = True
                 break
 
@@ -610,13 +612,13 @@ class WorkflowRunner:
             if cancel_file.exists():
                 try:
                     cancel_file.unlink()
-                except Exception:
-                    pass
-                log(f"workflow {workflow.name}: graceful cancel requested; stopping after cycle {cycle - 1}")
+                except Exception as _exc:
+                    logger.debug("could not remove cancel marker %s: %s", cancel_file, _exc)
+                logger.info(f"workflow {workflow.name}: graceful cancel requested; stopping after cycle {cycle - 1}")
                 break
 
             if cycle > 1:
-                log(f"workflow {workflow.name}: supervise cycle {cycle}/{self.max_supervise_cycles}")
+                logger.info(f"workflow {workflow.name}: supervise cycle {cycle}/{self.max_supervise_cycles}")
             # Per-cycle telemetry: when the MissionRunner owns one it is set on
             # self.telemetry already; otherwise create one for this cycle so
             # standalone `clk run` is observable too (FM5).
@@ -664,10 +666,9 @@ class WorkflowRunner:
                     if (material and self_reported_stall)
                     else "no commits or file writes"
                 )
-                log(
+                logger.info(
                     f"workflow {workflow.name}: cycle {cycle} made no progress — {why} "
-                    f"({no_progress}/{self.max_consecutive_no_progress})",
-                    level="WARN" if no_progress >= 2 else "INFO",
+                    f"({no_progress}/{self.max_consecutive_no_progress})" if no_progress >= 2 else "INFO",
                 )
                 if no_progress >= self.max_consecutive_no_progress:
                     if self.stall_rescue_enabled and not rescue_attempted and not dry_run:
@@ -675,14 +676,13 @@ class WorkflowRunner:
                         no_progress = 0
                         self._dispatch_stall_rescue(workflow, cycle, cycle_results)
                         if self._stop_requested(workflow):
-                            log(f"workflow {workflow.name}: stop granted during stall rescue")
+                            logger.info(f"workflow {workflow.name}: stop granted during stall rescue")
                             stopped_done = True
                             break
                         continue
-                    log(
+                    logger.error(
                         f"workflow {workflow.name}: stopping after {no_progress} consecutive "
                         "no-progress cycles (set supervise.max_consecutive_no_progress to change)",
-                        level="ERROR",
                     )
                     log_event(self.paths, "workflow_stalled", workflow=workflow.name,
                               no_progress_cycles=no_progress,
@@ -694,9 +694,8 @@ class WorkflowRunner:
             if any(
                 self._is_provider_failure((r.run.response.error or "")) for r in cycle_results if not r.run.response.ok
             ):
-                log(
+                logger.error(
                     f"workflow {workflow.name}: stopping supervise cycles after provider failure",
-                    level="ERROR",
                 )
                 stopped_for_provider_failure = True
                 break
@@ -708,17 +707,16 @@ class WorkflowRunner:
             and not (self.paths.state / "done_granted.md").exists()
             and self.max_supervise_cycles > 1
         ):
-            log(
+            logger.warning(
                 f"workflow {workflow.name}: supervise cycle limit reached "
                 f"({self.max_supervise_cycles}); type /run to continue or set "
                 "supervise.max_cycles in clk.config.json",
-                level="WARN",
             )
         return all_results
 
     def _run_once(self, workflow: Workflow, *, dry_run: Optional[bool] = None, cycle: int = 1) -> List[StageResult]:
         """Single pass through the workflow; stages with no inter-dependencies run in parallel."""
-        log(f"workflow start: {workflow.name} ({len(workflow.stages)} stages)")
+        logger.info(f"workflow start: {workflow.name} ({len(workflow.stages)} stages)")
         results: List[StageResult] = []
         completed: Dict[str, bool] = {}
         result_by_id: Dict[str, StageResult] = {}
@@ -769,12 +767,12 @@ class WorkflowRunner:
                 dispatched.add(s.id)
 
             if len(ready) > 1:
-                log(
+                logger.info(
                     f"workflow {workflow.name}: parallel batch "
                     f"[{', '.join(s.id for s in ready)}]"
                 )
             else:
-                log(f"stage {ready[0].id} -> agent {ready[0].agent}")
+                logger.info(f"stage {ready[0].id} -> agent {ready[0].agent}")
 
             # Run: parallel when multiple independent stages are ready
             if len(ready) == 1 or dry_run:
@@ -796,11 +794,10 @@ class WorkflowRunner:
                     stage_retry_count[sr.stage.id] = st
                     if self._is_retryable_stage_error(error_msg) and st <= self.max_stage_retries:
                         wait = self.stage_backoff_s * (2 ** (st - 1))
-                        log(
+                        logger.warning(
                             f"workflow {workflow.name}: stage {sr.stage.id} retryable error "
                             f"(attempt {st}/{self.max_stage_retries}): {error_msg!r}; "
                             f"backing off {wait:.0f}s",
-                            level="WARN",
                         )
                         log_event(
                             self.paths, "workflow_stage_retry",
@@ -816,15 +813,14 @@ class WorkflowRunner:
                                     f"stage {sr.stage.id} backing off {wait:.0f}s "
                                     f"(attempt {st}/{self.max_stage_retries}): {error_msg}",
                                 )
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                logger.debug("observer progress failed: %s", _exc)
                         dispatched.discard(sr.stage.id)
                         time.sleep(wait)
                         continue  # retry: don't add to results/completed
-                    log(
+                    logger.error(
                         f"workflow {workflow.name}: aborting after provider failure "
                         f"in stage {sr.stage.id} (retries exhausted): {error_msg}",
-                        level="ERROR",
                     )
                     log_event(
                         self.paths, "workflow_aborted",
@@ -848,7 +844,7 @@ class WorkflowRunner:
                 dispatched | set(completed),
             )
 
-        log(f"workflow done: {workflow.name}")
+        logger.info(f"workflow done: {workflow.name}")
         return results
 
     def _run_stage(
@@ -1014,10 +1010,9 @@ class WorkflowRunner:
         # downstream stages don't silently consume missing inputs.
         unmet_outputs = self._check_outputs_contract(stage)
         if unmet_outputs:
-            log(
+            logger.warning(
                 f"workflow {workflow.name}: stage {stage.id} did not satisfy "
                 f"declared outputs: {unmet_outputs}",
-                level="WARN",
             )
             log_event(
                 self.paths,
@@ -1056,7 +1051,7 @@ class WorkflowRunner:
 
         if not v_ok and pre_stage_sha and not dry_run:
             if self._should_rollback(stage):
-                log(f"stage {stage.id}: validation failed; rolling back to {pre_stage_sha[:8]}", level="WARN")
+                logger.warning(f"stage {stage.id}: validation failed; rolling back to {pre_stage_sha[:8]}")
                 log_event(self.paths, "workflow_stage_rollback",
                           agent=stage.agent, workflow=workflow.name,
                           stage_id=stage.id, sha=pre_stage_sha)
@@ -1072,11 +1067,10 @@ class WorkflowRunner:
                 if rolled_back and post_sha == pre_stage_sha:
                     committed = False
                 else:
-                    log(
+                    logger.error(
                         f"stage {stage.id}: rollback to {pre_stage_sha[:8]} FAILED "
                         f"(HEAD is {(post_sha or 'unknown')[:8]}); workspace may "
                         "contain unvalidated changes",
-                        level="ERROR",
                     )
                     log_event(self.paths, "workflow_rollback_failed",
                               agent=stage.agent, workflow=workflow.name,
@@ -1087,10 +1081,9 @@ class WorkflowRunner:
                 # failure is recorded on the StageResult and the supervise /
                 # qa loop repairs forward — a hard reset here would delete
                 # batch-committed files from disk (and the Files tab).
-                log(
+                logger.warning(
                     f"stage {stage.id}: validation failed; keeping work in place "
                     "(validation.rollback_on_failure)",
-                    level="WARN",
                 )
                 log_event(self.paths, "workflow_rollback_skipped",
                           agent=stage.agent, workflow=workflow.name,
@@ -1117,8 +1110,8 @@ class WorkflowRunner:
         if self.telemetry is not None:
             try:
                 self.telemetry.record_stage(ok=bool(ok and v_ok))
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("telemetry record_stage failed: %s", _exc)
 
         # Per-stage chief checkpoint for sensitive stages. Cheap, gated,
         # and never blocks: it just keeps the chief in the loop without
@@ -1307,8 +1300,8 @@ class WorkflowRunner:
             if self.telemetry is not None:
                 try:
                     self.telemetry.add_refine_round()
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("telemetry add_refine_round failed: %s", _exc)
             verdict, judge_score, feedback = self._dispatch_critic(
                 workflow, stage, current_run, critic_name, round_idx, max_rounds, dry_run,
             )
@@ -1594,8 +1587,8 @@ class WorkflowRunner:
             if self.telemetry is not None:
                 try:
                     self.telemetry.add_refine_round()
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("telemetry add_refine_round failed: %s", _exc)
             verdicts: List[Tuple[str, str, float, str]] = []
             with ThreadPoolExecutor(max_workers=min(max_parallel, len(lenses))) as pool:
                 futs = {
@@ -1712,7 +1705,7 @@ class WorkflowRunner:
             "  CHECKPOINT: abort — emit ACTION:done if the project is finished.\n"
             "Keep the response short — this is a verification, not a redo."
         )
-        log(f"workflow {workflow.name}: checkpoint after stage {stage.id}")
+        logger.info(f"workflow {workflow.name}: checkpoint after stage {stage.id}")
         self.runner.run(
             "chief",
             objective,
@@ -1777,9 +1770,8 @@ class WorkflowRunner:
                 details.append(f"{d}={sr.failure_reason}")
             else:
                 details.append(f"{d}=incomplete")
-        log(
+        logger.warning(
             f"stage {stage.id} skipped after recovery limit: " + "; ".join(details),
-            level="WARN",
         )
 
     def _dispatch_recovery(
@@ -1814,7 +1806,7 @@ class WorkflowRunner:
             "      distinct specialist if no current agent fits (b).\n"
             "Do NOT skip silently. The harness will retry this stage after you respond."
         )
-        log(f"workflow {workflow.name}: dispatching chief recovery for stage {stage.id}")
+        logger.info(f"workflow {workflow.name}: dispatching chief recovery for stage {stage.id}")
         self.runner.run(
             "chief",
             objective,
@@ -1869,7 +1861,7 @@ class WorkflowRunner:
             "      why downstream stages can proceed without these keys.\n"
             "Do NOT skip silently."
         )
-        log(
+        logger.info(
             f"workflow {workflow.name}: dispatching chief outputs recovery "
             f"for stage {stage.id} (missing: {', '.join(missing)})"
         )
@@ -1926,7 +1918,7 @@ class WorkflowRunner:
             "Do NOT re-propose the same plan that is already stalling. This is "
             "the loop's last chance before the harness stops it."
         )
-        log(f"workflow {workflow.name}: dispatching chief stall rescue (cycle {cycle})", level="WARN")
+        logger.warning(f"workflow {workflow.name}: dispatching chief stall rescue (cycle {cycle})")
         log_event(self.paths, "workflow_stall_rescue", workflow=workflow.name, cycle=cycle)
         try:
             self.runner.run(
@@ -1966,7 +1958,7 @@ class WorkflowRunner:
         kept = [s for s in stages if s.id in done_ids]
         new_pending = [s for s in refreshed.stages if s.id not in done_ids]
         merged = kept + new_pending
-        log(
+        logger.info(
             f"workflow {workflow_name}: refreshed; "
             f"{len(kept)} done, {len(new_pending)} pending"
         )
@@ -2003,7 +1995,7 @@ class WorkflowRunner:
         processed_ids = {s.id for s in processed}
         pending = [s for s in refreshed.stages if s.id not in processed_ids]
         merged = processed + pending
-        log(
+        logger.info(
             f"workflow {workflow_name}: refreshed; "
             f"{len(processed)} processed, {len(pending)} pending"
         )

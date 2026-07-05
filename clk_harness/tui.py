@@ -67,6 +67,7 @@ from .git_ops import (
 from .git_ops import (
     push as git_push,
 )
+from .log import get_logger, log_exception
 from .orchestration import (
     AgentObserver,
     AgentRunner,
@@ -85,8 +86,9 @@ from .orchestration import (
     render_roster_summary,
 )
 from .pricing import estimate_usd, format_usd
-from .utils.logging_utils import log_exception
 from .utils.text_extract import classify_error, extract_thought
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Error classifier — now lives in clk_harness.utils.text_extract so the
@@ -411,8 +413,8 @@ class DashboardState:
                 f"\n=== session start {datetime.now().isoformat(timespec='seconds')} ===\n"
             )
             fh.flush()
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("session log unavailable: %s", _exc)
 
     def close_session_log(self) -> None:
         with self.lock:
@@ -424,8 +426,8 @@ class DashboardState:
                     f"=== session end {datetime.now().isoformat(timespec='seconds')} ===\n"
                 )
                 fh.close()
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("session log close failed: %s", _exc)
 
     def begin_agent(self, name: str, objective: str) -> None:
         with self.lock:
@@ -504,13 +506,13 @@ class DashboardState:
                     elif tok.startswith("idle_s="):
                         try:
                             card.live_idle_s = float(tok.split("=", 1)[1])
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("ignoring malformed idle_s token %r: %s", tok, _exc)
                     elif tok.startswith("elapsed_s="):
                         try:
                             card.live_elapsed_s = float(tok.split("=", 1)[1])
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("ignoring malformed elapsed_s token %r: %s", tok, _exc)
             elif kind in ("command", "retry", "killed"):
                 card.live_last_line = message[:200]
             elif kind in ("end", "timeout"):
@@ -1288,8 +1290,8 @@ class Worker(threading.Thread):
                     if line:
                         sink.append(line)
                         self.state.add_log(line, level=level)
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("output pump stopped: %s", _exc)
         t1 = _t.Thread(target=_pump, args=(proc.stdout, out_lines, "INFO"), daemon=True)
         t2 = _t.Thread(target=_pump, args=(proc.stderr, err_lines, "WARN"), daemon=True)
         t1.start()
@@ -1538,8 +1540,8 @@ class Worker(threading.Thread):
             try:
                 if self.paths and self.paths.state:
                     (self.paths.state / ".seen-tutorial").write_text("seen\n", encoding="utf-8")
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("could not persist tutorial marker: %s", _exc)
         except Exception as exc:
             log_exception("tui.Worker._do_tutorial", exc)
             self.state.add_log(f"tutorial error: {exc}", level="ERROR")
@@ -1647,8 +1649,8 @@ class Worker(threading.Thread):
                 ahead = commits_ahead(self.paths.root)
                 with self.state.lock:
                     self.state.github_ahead = ahead
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("could not refresh unpushed-commit counter: %s", _exc)
         except Exception as exc:
             log_exception("tui.Worker._maybe_commit", exc)
 
@@ -1765,8 +1767,8 @@ class TuiApp:
                 try:
                     marker.parent.mkdir(parents=True, exist_ok=True)
                     marker.write_text("seen\n", encoding="utf-8")
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("could not persist welcome marker: %s", _exc)
         else:
             self.state.add_system_message(
                 "Welcome back. Type an idea, or /help for commands."
@@ -2762,8 +2764,8 @@ def run(initial_prompt: Optional[str] = None) -> int:
                 prior_session = prior_pid
         paths.state.mkdir(parents=True, exist_ok=True)
         lock_path.write_text(str(__import__('os').getpid()), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("could not write session lock: %s", _exc)
 
     state = DashboardState(agent_names, paths=paths, agents_cfg=agents_cfg)
     state.project_name = clk_cfg.get("project_name") or paths.root.name
@@ -2827,6 +2829,6 @@ def run(initial_prompt: Optional[str] = None) -> int:
         try:
             if lock_path.exists():
                 lock_path.unlink()
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("could not remove session lock: %s", _exc)
     return 0

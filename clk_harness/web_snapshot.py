@@ -20,8 +20,11 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .log import get_logger
 from .pricing import estimate_usd
 from .utils.text_extract import classify_error, extract_thought
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Low-level event iteration (with byte-offset seek for streaming)
@@ -63,7 +66,8 @@ def iter_events(path: Path, start_offset: int = 0) -> Tuple[List[dict], int]:
             obj = json.loads(raw_line.decode("utf-8", errors="replace"))
             if isinstance(obj, dict):
                 events.append(obj)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("skipping unparseable activity line: %s", _exc)
             continue
     return events, new_offset
 

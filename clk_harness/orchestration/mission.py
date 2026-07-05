@@ -28,8 +28,8 @@ from typing import Any, Dict, List, Optional
 
 from ..config import Paths, load_json, save_json
 from ..git_ops import commit_trace
+from ..log import get_logger, log_exception
 from ..utils.activity_log import log_event
-from ..utils.logging_utils import log, log_exception
 from . import blackboard as _blackboard
 from . import casting as _casting
 from . import charter as _charter
@@ -41,6 +41,8 @@ from .evaluator import Evaluator
 from .ralph_loop import RalphLoop
 from .telemetry import CycleTelemetry
 from .workflow import WorkflowRunner, load_workflow
+
+logger = get_logger(__name__)
 
 _GATE_RE = re.compile(r"^\s*GATE\s*:\s*(pass|repeat|revise|done)\b", re.IGNORECASE | re.MULTILINE)
 _DEFAULT_PHASES = ["discovery", "product", "engineering", "validation", "deployment"]
@@ -241,7 +243,7 @@ class MissionRunner:
             dry_run: bool = False) -> MissionPlan:
         objective = objective or self._idea_objective()
         if not objective:
-            log("mission: no objective and no captured idea; nothing to do", level="WARN")
+            logger.warning("mission: no objective and no captured idea; nothing to do")
             return MissionPlan(status="aborted")
 
         charter = None
@@ -252,7 +254,7 @@ class MissionRunner:
             plan = self._bootstrap_plan(objective, charter, dry_run=dry_run)
         else:
             charter = _charter.load_charter(self.paths)
-            log(f"mission: resuming plan with {len(plan.phases)} phases "
+            logger.info(f"mission: resuming plan with {len(plan.phases)} phases "
                 f"({sum(1 for p in plan.phases if p.status == 'done')} done)")
 
         plan.status = "running"
@@ -275,7 +277,7 @@ class MissionRunner:
             budget = phase.max_iterations or self.max_iterations_per_phase
             for _it in range(budget):
                 if total >= self.max_total_cycles:
-                    log(f"mission: total-cycle budget exhausted ({self.max_total_cycles})", level="WARN")
+                    logger.warning(f"mission: total-cycle budget exhausted ({self.max_total_cycles})")
                     plan.status = "stalled"
                     break
                 total += 1
@@ -340,7 +342,7 @@ class MissionRunner:
             else:
                 plan.status = "stalled"
         save_plan(self.paths, plan)
-        log(f"mission: finished with status={plan.status} after {plan.total_cycles_used} cycles")
+        logger.info(f"mission: finished with status={plan.status} after {plan.total_cycles_used} cycles")
         return plan
 
     # -- internals ---------------------------------------------------------
@@ -462,8 +464,8 @@ class MissionRunner:
         if _deliberation.require_open_questions_resolved(self.runner.clk_cfg):
             open_q = _deliberation.unresolved_blocking_questions(self.paths)
             if open_q:
-                log(f"mission: phase {phase.id} has {len(open_q)} unresolved blocking "
-                    "question(s); repeating", level="INFO")
+                logger.info(f"mission: phase {phase.id} has {len(open_q)} unresolved blocking "
+                    "question(s); repeating")
                 return "repeat"
         try:
             run = self.runner.run(
@@ -496,8 +498,8 @@ class MissionRunner:
             commit_trace(self.paths.root, kind="done", summary="mission done-gate granted",
                          meta={"checked": list(verdict.checked.keys())})
         else:
-            log(f"mission: done requested but gate REJECTED — unmet: "
-                f"{', '.join(verdict.failures) or '?'}", level="WARN")
+            logger.warning(f"mission: done requested but gate REJECTED — unmet: "
+                f"{', '.join(verdict.failures) or '?'}")
             log_event(self.paths, "done_gate_rejected", failures=list(verdict.failures),
                       checked=verdict.checked, scope="mission")
         return verdict

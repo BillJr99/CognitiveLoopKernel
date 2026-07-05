@@ -54,6 +54,7 @@ from .git_ops import (
     commit as git_commit,
 )
 from .kickoff import cmd_kickoff
+from .log import close_log, get_logger, init_log_file, log, log_exception
 from .orchestration import (
     AgentRunner,
     AutoresearchLoop,
@@ -71,7 +72,8 @@ from .orchestration import (
 )
 from .providers import available_providers
 from .templates import PROMPTS, WORKFLOWS
-from .utils.logging_utils import close_log, init_log_file, log, log_exception
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -687,8 +689,8 @@ def cmd_web(args: argparse.Namespace) -> int:
             _t.sleep(1.0)
             try:
                 webbrowser.open(url)
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("could not open browser for %s: %s", url, _exc)
         threading.Thread(target=_open, daemon=True).start()
 
     import uvicorn as _uvicorn
@@ -857,8 +859,8 @@ def cmd_diag(args: argparse.Namespace) -> int:
         if redacted and redacted.exists():
             try:
                 redacted.unlink()
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("diag: could not remove temp %s: %s", redacted, _exc)
     print(f"clk diag: wrote {out_path}")
     print("API keys are redacted; share this in your bug report.")
     return 0
