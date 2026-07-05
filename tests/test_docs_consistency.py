@@ -1,15 +1,16 @@
 """Documentation-consistency tests.
 
 These assertions exist so that future edits don't let the README,
-``.env.example``, the ``DEFAULT_CLK_CONFIG`` schema, and ``kickoff.sh``'s
-env-var mapping drift apart. They run against the literal file
+``.env.example``, the ``DEFAULT_CLK_CONFIG`` schema, and the kickoff
+env-var mapping (``clk_harness/kickoff.py``, which the ``kickoff.sh``
+wrapper delegates to) drift apart. They run against the literal file
 contents — no harness behavior is exercised.
 
 When a knob is added or renamed, the change must touch four places:
 
 1. ``clk_harness/config.py::DEFAULT_CLK_CONFIG`` — the schema.
 2. ``.env.example`` — the user-facing override.
-3. ``kickoff.sh`` — translation from env var → JSON key.
+3. ``clk_harness/kickoff.py`` — translation from env var → JSON key.
 4. ``README.md`` — the Robustness-loops or Cost-guardrails section.
 
 The tests below check (1) ↔ (2) ↔ (4) for the new ``robustness`` block
@@ -30,7 +31,9 @@ from clk_harness.config import DEFAULT_CLK_CONFIG
 
 REPO = Path(__file__).resolve().parent.parent
 ENV_EXAMPLE = (REPO / ".env.example").read_text(encoding="utf-8")
-KICKOFF = (REPO / "kickoff.sh").read_text(encoding="utf-8")
+# kickoff.sh is a thin wrapper now; the env-var → config mapping lives in
+# the `clk kickoff` subcommand.
+KICKOFF = (REPO / "clk_harness" / "kickoff.py").read_text(encoding="utf-8")
 README = (REPO / "README.md").read_text(encoding="utf-8")
 
 
@@ -88,13 +91,13 @@ def test_env_example_documents_every_robustness_key() -> None:
 
 
 def test_kickoff_sh_maps_every_robustness_key() -> None:
-    """kickoff.sh's env-var override block must recognise every
+    """The kickoff env-var override block (clk_harness/kickoff.py) must recognise every
     CLK_ROBUSTNESS_* variable."""
     block = DEFAULT_CLK_CONFIG["robustness"]
     for key in block.keys():
         var = _env_var_for(key)
         assert var in KICKOFF, (
-            f"{var} not handled in kickoff.sh's env→config mapping "
+            f"{var} not handled in the kickoff env→config mapping (clk_harness/kickoff.py) "
             f"(needed to make the .env.example override actually take effect)"
         )
 
@@ -139,7 +142,7 @@ def test_readme_documents_robustness_keys() -> None:
 # ---------------------------------------------------------------------------
 # The autonomy blocks must be overridable from the environment the same way
 # robustness is: every key gets a CLK_<BLOCK>_<KEY> var in .env.example AND a
-# matching mapping in kickoff.sh, so an override actually takes effect.
+# matching mapping in clk_harness/kickoff.py, so an override actually takes effect.
 
 _AUTONOMY_BLOCKS = ("mission", "done_gate", "noop_guard", "deliberation")
 
@@ -164,7 +167,7 @@ def test_kickoff_sh_maps_new_blocks() -> None:
         for key in DEFAULT_CLK_CONFIG[block].keys():
             var = _block_env_var(block, key)
             assert var in KICKOFF, (
-                f"{var} not handled in kickoff.sh's env→config mapping"
+                f"{var} not handled in the kickoff env→config mapping (clk_harness/kickoff.py)"
             )
 
 
@@ -210,11 +213,11 @@ def test_env_example_documents_prior_knobs() -> None:
 
 
 def test_kickoff_handles_prior_knobs() -> None:
-    """kickoff.sh's env-var override block must recognise every prior
+    """The kickoff env-var override block (clk_harness/kickoff.py) must recognise every prior
     CLK_* knob too — the docs claim parity, so the script must honor it."""
     for var in _PRIOR_KNOBS:
         assert var in KICKOFF, (
-            f"{var} listed in .env.example but not handled by kickoff.sh — "
+            f"{var} listed in .env.example but not handled by the kickoff env→config mapping — "
             "the override would silently no-op."
         )
 

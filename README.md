@@ -174,9 +174,11 @@ section you followed.
 
 ## Quick start
 
-The fastest path is the kickoff script, which copies the harness into a
+The fastest path is `clk kickoff`, which copies the harness into a
 fresh `workspace/kickoff-<timestamp>/` directory, gives it its own git repo, and
 launches the TUI dashboard. The source tree is never modified.
+(`./kickoff.sh` still works — it is now a thin wrapper that execs
+`clk kickoff` with the same flags, so existing scripts keep running.)
 
 > **Want chat control?** After running `--setup` once, see the
 > [Telegram Bot](#telegram-bot) section to drive CLK from your phone with
@@ -184,26 +186,29 @@ launches the TUI dashboard. The source tree is never modified.
 
 ```bash
 # Optional: copy .env.example to .env to set defaults non-interactively.
-./kickoff.sh "A local-first journaling app that summarizes my week"
+clk kickoff "A local-first journaling app that summarizes my week"
 
 # First time? Run the setup wizard to create your .env:
-./kickoff.sh --setup
+clk kickoff --setup
 
 # Or omit the prompt and type your idea into the TUI:
-./kickoff.sh
+clk kickoff
 ```
 
-`kickoff.sh` reads all settings from `.env` (and optional CLI overrides) and
+`clk kickoff` reads all settings from `.env` (and optional CLI overrides) and
 requires no interactive prompts during a normal run. If required config is
 missing it prints exactly what's needed and offers to run `--setup` for you.
 
 ```bash
 # CLI overrides (override any .env value for a single run)
-./kickoff.sh --provider claude --max-iterations 10 "My idea"
-./kickoff.sh --no-tui "My idea"
+clk kickoff --provider claude --max-iterations 10 "My idea"
+clk kickoff --no-tui "My idea"
 
 # Re-run setup at any time to update your .env:
-./kickoff.sh --setup
+clk kickoff --setup
+
+# No install? ./kickoff.sh is an equivalent entry point from a bare clone.
+./kickoff.sh --no-tui "My idea"
 ```
 
 The TUI shows live agent cards (idle / working / done / failed), a
