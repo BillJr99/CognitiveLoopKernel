@@ -1,9 +1,10 @@
 """Documentation-consistency tests.
 
-These assertions exist so that future edits don't let the README,
-``.env.example``, the ``DEFAULT_CLK_CONFIG`` schema, and the kickoff
-env-var mapping (``clk_harness/kickoff.py``, which the ``kickoff.sh``
-wrapper delegates to) drift apart. They run against the literal file
+These assertions exist so that future edits don't let the docs
+(``docs/MISSIONS.md`` / ``docs/CONFIGURATION.md``, split out of the
+README), ``.env.example``, the ``DEFAULT_CLK_CONFIG`` schema, and the
+kickoff env-var mapping (``clk_harness/kickoff.py``, which the
+``kickoff.sh`` wrapper delegates to) drift apart. They run against the literal file
 contents — no harness behavior is exercised.
 
 When a knob is added or renamed, the change must touch four places:
@@ -11,7 +12,8 @@ When a knob is added or renamed, the change must touch four places:
 1. ``clk_harness/config.py::DEFAULT_CLK_CONFIG`` — the schema.
 2. ``.env.example`` — the user-facing override.
 3. ``clk_harness/kickoff.py`` — translation from env var → JSON key.
-4. ``README.md`` — the Robustness-loops or Cost-guardrails section.
+4. ``docs/MISSIONS.md`` (Robustness loops) or ``docs/CONFIGURATION.md``
+   (Cost guardrails) — the user-facing knob documentation.
 
 The tests below check (1) ↔ (2) ↔ (4) for the new ``robustness`` block
 specifically, and that (3) sees the same env-var family. The "prior
@@ -30,7 +32,11 @@ ENV_EXAMPLE = (REPO / ".env.example").read_text(encoding="utf-8")
 # kickoff.sh is a thin wrapper now; the env-var → config mapping lives in
 # the `clk kickoff` subcommand.
 KICKOFF = (REPO / "clk_harness" / "kickoff.py").read_text(encoding="utf-8")
-README = (REPO / "README.md").read_text(encoding="utf-8")
+# The README's deep-dive sections were split into docs/; the robustness
+# documentation now lives in MISSIONS.md (Robustness loops) and
+# CONFIGURATION.md (Cost guardrails / multiplier table).
+MISSIONS_DOC = (REPO / "docs" / "MISSIONS.md").read_text(encoding="utf-8")
+CONFIG_DOC = (REPO / "docs" / "CONFIGURATION.md").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -39,10 +45,10 @@ README = (REPO / "README.md").read_text(encoding="utf-8")
 
 
 # Some keys are introspected at runtime by name (e.g. "plateau_action")
-# while others are knobs the user only sees on a coarser axis (the README
-# explains plateau as a single concept rather than enumerating
+# while others are knobs the user only sees on a coarser axis (the docs
+# explain plateau as a single concept rather than enumerating
 # `plateau_window` and `plateau_action` separately). Keys listed here are
-# excluded from the README-mention check below; everything else must
+# excluded from the docs-mention check below; everything else must
 # appear by name in the Robustness-loops or Cost-guardrails section.
 _README_OPTIONAL_KEYS: frozenset = frozenset({
     "qa_parallel_judges",  # internal cap, documented as part of the Q&A protocol
@@ -99,28 +105,29 @@ def test_kickoff_sh_maps_every_robustness_key() -> None:
 
 
 def test_readme_documents_robustness_keys() -> None:
-    """The README's Robustness-loops or Cost-guardrails section must
-    mention every robustness knob by name."""
+    """The docs' Robustness-loops (docs/MISSIONS.md) or Cost-guardrails
+    (docs/CONFIGURATION.md) section must mention every robustness knob
+    by name."""
     # Slice off the relevant chunk so we don't count incidental mentions
     # elsewhere (e.g. in the changelog "What's new" block which is
     # already lossier on purpose).
-    rl_start = README.find("## Robustness loops")
+    rl_start = MISSIONS_DOC.find("## Robustness loops")
     rl_end_marker = "## Completion criteria"
-    rl_end = README.find(rl_end_marker, rl_start) if rl_start != -1 else -1
+    rl_end = MISSIONS_DOC.find(rl_end_marker, rl_start) if rl_start != -1 else -1
     assert rl_start != -1 and rl_end != -1, (
-        "README is missing the ## Robustness loops section "
+        "docs/MISSIONS.md is missing the ## Robustness loops section "
         "(must live between ## Loops and ## Completion criteria)"
     )
-    rl_section = README[rl_start:rl_end]
+    rl_section = MISSIONS_DOC[rl_start:rl_end]
 
-    cost_start = README.find("### Robustness-loop multipliers")
-    cost_end_marker = "## Pi extension"
-    cost_end = README.find(cost_end_marker, cost_start) if cost_start != -1 else -1
+    cost_start = CONFIG_DOC.find("### Robustness-loop multipliers")
+    cost_end_marker = "## Customization"
+    cost_end = CONFIG_DOC.find(cost_end_marker, cost_start) if cost_start != -1 else -1
     assert cost_start != -1 and cost_end != -1, (
-        "README is missing the ### Robustness-loop multipliers section "
-        "under ## Cost guardrails"
+        "docs/CONFIGURATION.md is missing the ### Robustness-loop multipliers "
+        "section under ## Cost guardrails"
     )
-    cost_section = README[cost_start:cost_end]
+    cost_section = CONFIG_DOC[cost_start:cost_end]
     combined = rl_section + "\n" + cost_section
 
     block = DEFAULT_CLK_CONFIG["robustness"]
@@ -128,8 +135,9 @@ def test_readme_documents_robustness_keys() -> None:
         if key in _README_OPTIONAL_KEYS:
             continue
         assert key in combined, (
-            f"robustness key '{key}' not mentioned in README "
-            "(Robustness-loops section or Cost-guardrails table)"
+            f"robustness key '{key}' not mentioned in the docs "
+            "(docs/MISSIONS.md Robustness-loops section or "
+            "docs/CONFIGURATION.md Cost-guardrails table)"
         )
 
 
@@ -240,7 +248,7 @@ def test_install_local_header_mentions_layout() -> None:
 
 
 def test_run_loop_header_links_robustness_section() -> None:
-    """scripts/run_loop.sh should point users at the README section so
+    """scripts/run_loop.sh should point users at the docs section so
     the wrapper isn't a black box."""
     text = (REPO / "scripts" / "run_loop.sh").read_text(encoding="utf-8")
     assert "Robustness loops" in text or "robustness" in text.lower(), (

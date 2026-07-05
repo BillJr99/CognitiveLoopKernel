@@ -2,7 +2,7 @@
 # Convenience wrapper: run the Ralph loop with a sensible default budget.
 #
 # This is a thin shim around `clk loop`. The loop's behavior is
-# documented in the README sections:
+# documented in docs/MISSIONS.md sections:
 #
 #   * "Loops"             — the two Ralph modes (refinement,
 #                           autoresearch) and how they pick what to do

@@ -428,12 +428,95 @@ curl -sN $BASE/api/research/$TASK2/stream
 
 ## Docker
 
-See the main [README](../README.md#rest-api) for Docker-specific instructions.
+See [Docker & kickoff](KICKOFF.md#run-the-rest-api) for Docker-specific instructions.
 
 ## Telegram bot
 
 The `clk-telegram-bot` console script consumes this API: `/api/workspaces`,
 `/api/research`, `/api/research/{id}`, `/api/research/{id}/cancel`,
 `/api/research/{id}/stream`, and `/api/research/{id}/artifacts`. See
-[README → Telegram Bot](../README.md#telegram-bot) for setup, the wizard,
+[Telegram bot](TELEGRAM.md#telegram-bot) for setup, the wizard,
 and the chat command reference.
+
+## REST API
+
+CLK ships a FastAPI-based HTTP server that exposes a subset of CLI
+commands programmatically — specifically: `init`, `idea`, `plan`, `run`,
+`loop`, and `status` (see `/api/capabilities` for the authoritative list).
+Use it to integrate CLK into your own tooling, drive it from a web UI,
+or orchestrate it from CI pipelines without spawning a terminal.
+
+### Install
+
+```bash
+pip install "clk-harness[api]"
+```
+
+### Start the server
+
+The REST API starts **automatically in the background** whenever you run
+any `clk` sub-command (provided the optional `[api]` extras are installed).
+A `[clk] REST API listening on http://…` banner is printed to stderr at
+startup.  You can also start it standalone:
+
+```bash
+# Using the console-script entry point (recommended)
+clk-api
+
+# Or via the module entry point
+python -m clk_harness.api
+
+# Or via uvicorn directly
+uvicorn clk_harness.api:app --host 0.0.0.0 --port 8001
+```
+
+The server listens on port `8001` by default.  Override with
+`CLK_API_PORT=<port>`.
+
+### Security and network bind address
+
+> **Warning: the REST API has no authentication and binds to `0.0.0.0`
+> (all interfaces) by default.**  This default suits sandbox / container
+> environments where network isolation is provided by the runtime.
+> **Do not expose the API port to an untrusted network without additional
+> access controls.**  For local development, restrict the server to
+> loopback (`127.0.0.1`) using the mechanisms below.
+
+When the CLI starts, the REST API auto-starts on a background daemon thread
+and prints a `[clk]` banner to stderr.  Override the bind address or disable
+the API entirely:
+
+| Mechanism | Effect |
+|---|---|
+| `CLK_API_HOST=127.0.0.1` | Restrict the API to loopback (recommended for local dev) |
+| `CLK_API_PORT=<port>` | Change the listen port (default `8001`) |
+| `clk --no-api <cmd>` | Skip the background API for this invocation |
+| `CLK_DISABLE_API=1` | Disable the background API for all CLI invocations |
+
+If the optional `[api]` extras (`fastapi`, `uvicorn`) are not installed,
+the background thread is silently skipped and the CLI works normally.
+
+### Quick curl example
+
+```bash
+# Health check
+curl http://localhost:8001/api/healthz
+
+# Create a workspace
+WS=$(curl -s -X POST http://localhost:8001/api/workspaces \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "my-project"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['workspace_id'])")
+
+# Capture an idea
+TASK=$(curl -s -X POST http://localhost:8001/api/research \
+  -H 'Content-Type: application/json' \
+  -d "{\"command\":\"idea\",\"args\":[\"A local-first journaling app\"],\"workspace_id\":\"$WS\"}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['task_id'])")
+
+# Stream live output
+curl -sN http://localhost:8001/api/research/$TASK/stream
+```
+
+See [docs/REST_API.md](docs/REST_API.md) for the full endpoint reference,
+SSE event format, and more examples.
