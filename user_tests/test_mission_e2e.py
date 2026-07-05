@@ -115,6 +115,75 @@ def test_mission_charter_before_plan_in_trace(initialized_project: Path):
     assert charter_idx > plan_idx, f"charter should precede plan: {log}"
 
 
+def test_kickoff_cli_drives_mission_end_to_end(tmp_path: Path):
+    """`clk kickoff --no-tui --provider shell` in a fresh directory must run
+    the whole bootstrap + init → idea → plan → run → loop pipeline offline,
+    and the mission must behave exactly as the direct e2e above: telemetry
+    fires and the done-gate blocks premature completion.
+
+    CLK_* env overrides are passed through so the kickoff env→config
+    mapping (the ported heredoc) is exercised end to end as well.
+    """
+    res = run_clk(
+        "kickoff", "--no-tui", "--provider", "shell",
+        "--max-iterations", "1", "--project-name", "e2e-kickoff",
+        "build a tiny tool",
+        cwd=tmp_path,
+        env={
+            # Keep the run fast and prove the CLK_* -> clk.config.json
+            # override path works through the real CLI.
+            "CLK_MISSION_MAX_TOTAL_CYCLES": "1",
+            "CLK_MISSION_DEFAULT_PHASES": "engineering",
+            "CLK_MISSION_MAX_ITERATIONS_PER_PHASE": "1",
+            "CLK_SUPERVISE_MAX_CYCLES": "1",
+            "CLK_ROBUSTNESS_AUTO_REFINE": "off",
+            "CLK_ROBUSTNESS_AUTO_CONSENSUS": "off",
+            "CLK_ROBUSTNESS_MAX_QUALITY_RETRIES": "0",
+            "CLK_ROBUSTNESS_PLATEAU_ACTION": "off",
+            "CLK_META_PROMPT_DISPATCH": "off",
+            "CLK_META_PROMPT_ROLE": "off",
+            "CLK_DELIBERATION_ENABLED": "false",
+        },
+        timeout=600,
+    )
+    assert res.returncode == 0, (
+        f"kickoff exited {res.returncode}\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
+    )
+    assert "[kickoff] complete" in res.stdout
+
+    kickoffs = sorted((tmp_path / "workspace").glob("kickoff-*"))
+    assert kickoffs, "no kickoff-* dir under workspace/"
+    proj = kickoffs[-1]
+
+    # Bootstrap artifacts.
+    assert (proj / "KICKOFF.md").is_file()
+    assert (proj / ".clk" / "harness" / "clk_harness").is_dir()
+    assert (proj / ".clk" / "scripts" / "clk").is_file()
+    assert (proj / ".git").is_dir()
+
+    # Idea + provider wiring.
+    idea = json.loads((proj / ".clk" / "state" / "idea.json").read_text())
+    assert idea["statement"] == "build a tiny tool"
+    providers = json.loads((proj / ".clk" / "config" / "providers.json").read_text())
+    assert providers["active"] == "shell"
+    cfg = json.loads((proj / ".clk" / "config" / "clk.config.json").read_text())
+    assert cfg["default_provider"] == "shell"
+    # The env overrides passed above must have landed in the config.
+    assert cfg["mission"]["max_total_cycles"] == 1
+    assert cfg["mission"]["default_phases"] == ["engineering"]
+    assert cfg["robustness"]["auto_refine"] == "off"
+
+    # Mission ran and completed the same way the direct e2e does: the
+    # shell provider yields no qa PASS / deliverables, so the done-gate
+    # must NOT grant completion, and telemetry must have fired.
+    assert (proj / ".clk" / "state" / "mission.json").exists()
+    plan = json.loads((proj / ".clk" / "state" / "mission.json").read_text())
+    assert plan["status"] in ("stalled", "running")
+    assert not (proj / ".clk" / "state" / "done_granted.md").exists()
+    events = _read_jsonl(proj / ".clk" / "logs" / "activity.jsonl")
+    assert any(e.get("event") == "loop_cycle_summary" for e in events)
+
+
 def test_mission_writes_plan_post_to_blackboard(initialized_project: Path):
     proj = initialized_project
     _fast_mission(proj)

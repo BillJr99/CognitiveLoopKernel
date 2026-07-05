@@ -1,0 +1,57 @@
+{
+  "active": "claude",
+  "providers": {
+    "claude": {
+      "args": [
+        "--print"
+      ],
+      "command": "claude",
+      "description": "Claude Code CLI. Detected via 'claude' on PATH.",
+      "mode": "cli",
+      "type": "claude"
+    },
+    "codex": {
+      "args": [
+        "exec"
+      ],
+      "command": "codex",
+      "description": "OpenAI Codex CLI. Detected via 'codex' on PATH.",
+      "mode": "cli",
+      "type": "codex"
+    },
+    "gemini": {
+      "args": [],
+      "command": "gemini",
+      "description": "Google Gemini CLI. Detected via 'gemini' on PATH.",
+      "mode": "cli",
+      "type": "gemini"
+    },
+    "ollama": {
+      "description": "Local Ollama HTTP API.",
+      "endpoint": "http://localhost:11434",
+      "model": "llama3.1",
+      "type": "ollama"
+    },
+    "openwebui": {
+      "api_key": "",
+      "description": "OpenWebUI server (OpenAI-compatible HTTP). Set host/key/model on kickoff.",
+      "endpoint": "http://localhost:8080",
+      "model": "",
+      "type": "openwebui"
+    },
+    "pi": {
+      "api_key": "",
+      "args": [],
+      "command": "pi",
+      "description": "Pi terminal harness. Cloned to .clk/tools/pi if needed.",
+      "key_type": "openrouter",
+      "model": "",
+      "type": "pi"
+    },
+    "shell": {
+      "command": null,
+      "description": "Dummy provider that echoes prompts. Always available.",
+      "type": "shell"
+    }
+  }
+}

@@ -9,13 +9,11 @@ from __future__ import annotations
 import glob
 import json
 import subprocess
-import sys
-import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from ..utils.logging_utils import log, log_exception
+from ..utils.logging_utils import log_exception
 
 
 @dataclass

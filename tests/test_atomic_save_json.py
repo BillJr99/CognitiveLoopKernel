@@ -1,9 +1,8 @@
 """Tests for the atomic-write behavior of clk_harness.config.save_json."""
 
 import json
-from pathlib import Path
 
-from clk_harness.config import save_json, load_json
+from clk_harness.config import load_json, save_json
 
 
 def test_save_json_writes_payload(tmp_path):

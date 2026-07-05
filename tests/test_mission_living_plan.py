@@ -5,14 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from clk_harness.config import Paths
-from clk_harness.orchestration.mission import (
-    MissionPlan, PhaseSpec, load_plan, save_plan,
-)
 from clk_harness.orchestration.charter import Charter, load_charter, save_charter
-from clk_harness.orchestration.evaluator import Evaluator, EvalResult, derive_validation
+from clk_harness.orchestration.evaluator import Evaluator, derive_validation
+from clk_harness.orchestration.mission import (
+    MissionPlan,
+    PhaseSpec,
+    load_plan,
+    save_plan,
+)
 
 
 def _paths(tmp_path: Path) -> Paths:

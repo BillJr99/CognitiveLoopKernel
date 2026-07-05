@@ -19,7 +19,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ..config import Paths
+from ..log import get_logger
 from ..utils.activity_log import log_event
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -200,8 +203,8 @@ class CycleTelemetry:
         if paths is not None:
             try:
                 log_event(paths, "loop_cycle_summary", **self.as_dict())
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("activity log_event failed: %s", _exc)
         if to_stdout:
             print(line, flush=True)
         return line

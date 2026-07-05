@@ -9,14 +9,12 @@ tests/test_tui_hints.py.
 
 from __future__ import annotations
 
-import threading
-from collections import deque
 from pathlib import Path
 
 import pytest
 
 from clk_harness.config import Paths
-from clk_harness.tui import AgentCard, AgentStatus, DashboardState
+from clk_harness.tui import AgentStatus, DashboardState
 
 
 @pytest.fixture

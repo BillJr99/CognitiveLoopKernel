@@ -231,7 +231,8 @@ async def _run_task(task_id: str) -> None:
         # actual init marker (clk.config.json), not just that `.clk/` exists --
         # endpoints like set_idea create `.clk/` subdirs, which would otherwise
         # trick us into skipping init and then failing with "not initialized".
-        from .config import Paths as _Paths, is_initialized as _is_initialized
+        from .config import Paths as _Paths
+        from .config import is_initialized as _is_initialized
         if command != "init" and not _is_initialized(_Paths(root=ws_path)):
             try:
                 init_proc = await asyncio.create_subprocess_exec(
@@ -389,7 +390,10 @@ async def list_workflows() -> Dict[str, Any]:
         logger.exception("Failed to load workflow templates")
         raise HTTPException(
             status_code=500,
-            detail={"ok": False, "error": {"code": "template_load_failed", "message": "Failed to load workflow templates."}},
+            detail={
+                "ok": False,
+                "error": {"code": "template_load_failed", "message": "Failed to load workflow templates."},
+            },
         ) from exc
 
 
@@ -479,8 +483,8 @@ async def create_research(body: ResearchRequest) -> Dict[str, Any]:
             state_dir = _workspace_path(workspace_id) / ".clk" / "state"
             state_dir.mkdir(parents=True, exist_ok=True)
             (state_dir / "stop_when.txt").write_text(body.stop_when.strip(), encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.warning("could not persist stop_when for %s: %s", workspace_id, _exc)
     TASKS[task_id] = task
     _task_handles[task_id] = asyncio.create_task(_run_task(task_id))
     return {"ok": True, "task_id": task_id, "workspace_id": workspace_id}
@@ -586,8 +590,8 @@ async def cancel_task(task_id: str) -> Dict[str, Any]:
             state_dir = _workspace_path(ws_id) / ".clk" / "state"
             state_dir.mkdir(parents=True, exist_ok=True)
             (state_dir / "cancel_requested.txt").write_text("cancel\n", encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.warning("could not write cancel marker for %s: %s", ws_id, _exc)
     proc = task.get("proc")
     if proc is not None:
         try:

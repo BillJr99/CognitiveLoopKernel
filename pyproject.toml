@@ -39,6 +39,32 @@ include = ["clk_harness*"]
 # inside the wheel so `clk web` can serve it without a Node toolchain.
 clk_harness = ["webui_dist/**/*"]
 
+[tool.ruff]
+# Matches the prevailing style: most lines are <100 chars, with a small tail
+# of longer prompt/format strings; 120 flags only the egregious outliers.
+line-length = 120
+
+[tool.ruff.lint]
+# pycodestyle errors/warnings, pyflakes, import sorting, and no bare excepts.
+# (E722 is part of "E"; listed explicitly because it is a hard requirement.)
+select = ["E", "F", "W", "I", "E722"]
+
+[tool.ruff.lint.per-file-ignores]
+# Agent prompt templates hold long lines inside triple-quoted strings whose
+# content must not be rewrapped (it is sent verbatim to the model).
+"clk_harness/templates/prompts.py" = ["E501"]
+
+[tool.mypy]
+# Lenient baseline: keep the run clean without requiring annotations yet.
+ignore_missing_imports = true
+# PyYAML ships untyped; don't require types-PyYAML to be installed.
+disable_error_code = ["import-untyped"]
+check_untyped_defs = false
+disallow_untyped_defs = false
+warn_unused_configs = true
+no_implicit_optional = false
+follow_imports = "normal"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

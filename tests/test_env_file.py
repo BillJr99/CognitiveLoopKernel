@@ -115,7 +115,7 @@ def test_unknown_key_lands_in_extra_group(env: Path) -> None:
 
 def test_quotes_and_export_parsed() -> None:
     lines = env_file.parse_env('export FOO="a b"\nBAR=plain\n# c\n')
-    kv = {l.key: l.value for l in lines if l.kind == "kv"}
+    kv = {ln.key: ln.value for ln in lines if ln.kind == "kv"}
     assert kv["FOO"] == "a b"
     assert kv["BAR"] == "plain"
-    assert any(l.kind == "comment" for l in lines)
+    assert any(ln.kind == "comment" for ln in lines)

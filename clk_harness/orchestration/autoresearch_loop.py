@@ -15,20 +15,20 @@ autoresearch step.
 from __future__ import annotations
 
 import json
-import sys
-import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from ..config import Paths
-from ..git_ops import add_all, commit as git_commit, has_changes, head_sha, revert_to
+from ..git_ops import add_all, has_changes, head_sha, revert_to
+from ..git_ops import commit as git_commit
+from ..log import get_logger, log, log_exception
 from ..utils.activity_log import log_event
-from ..utils.logging_utils import log, log_exception
 from . import response_quality as _response_quality
 from .agent import AgentRunner
 from .evaluator import Evaluator
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -75,8 +75,8 @@ class AutoresearchLoop:
         if obs is not None:
             try:
                 obs.log(line)
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("observer log failed: %s", _exc)
 
     def _step(self, idx: int, *, dry_run: bool) -> Experiment:
         started = datetime.now().isoformat(timespec="seconds")
@@ -114,7 +114,7 @@ class AutoresearchLoop:
             )
         question_lines = (survey.response.text or "").strip().splitlines()
         question = next(
-            (l for l in question_lines if l.strip().startswith(("Q:", "Question:", "Hypothesis:"))),
+            (ln for ln in question_lines if ln.strip().startswith(("Q:", "Question:", "Hypothesis:"))),
             f"Open question #{idx}",
         )
 

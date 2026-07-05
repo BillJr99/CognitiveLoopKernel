@@ -20,8 +20,8 @@ os.environ.setdefault("CLK_WORKSPACES_DIR", "/tmp/clk-workspaces-webui-test")
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 
-from clk_harness.api import app  # noqa: E402
 from clk_harness import env_file  # noqa: E402
+from clk_harness.api import app  # noqa: E402
 
 
 @pytest_asyncio.fixture
@@ -191,10 +191,13 @@ def _seed_activity(ws_path: str) -> None:
     log = Path(ws_path) / ".clk" / "logs" / "activity.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)
     events = [
-        {"event": "agent_dispatch", "agent": "engineer", "run_id": "r1", "provider": "shell (shell)", "workflow": "engineering"},
-        {"event": "prompt_sent", "agent": "engineer", "run_id": "r1", "prompt": "go", "prompt_path": ".clk/runs/r1/prompt.txt"},
+        {"event": "agent_dispatch", "agent": "engineer", "run_id": "r1", "provider": "shell (shell)",
+         "workflow": "engineering"},
+        {"event": "prompt_sent", "agent": "engineer", "run_id": "r1", "prompt": "go",
+         "prompt_path": ".clk/runs/r1/prompt.txt"},
         {"event": "agent_response", "agent": "engineer", "run_id": "r1", "ok": True,
-         "tokens_in": 100, "tokens_out": 50, "tokens_total": 150, "response_text": "Decision: done", "files_reported": ["a.py"]},
+         "tokens_in": 100, "tokens_out": 50, "tokens_total": 150, "response_text": "Decision: done",
+         "files_reported": ["a.py"]},
         {"event": "git_commit", "message": "init"},
     ]
     log.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")

@@ -19,6 +19,9 @@ import sys
 from typing import Optional
 from urllib.parse import urlparse, urlunparse
 
+from ..log import get_logger
+
+logger = get_logger(__name__)
 
 _LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _DOCKER_HOST = "host.docker.internal"
@@ -64,7 +67,8 @@ def docker_host_swap(endpoint: str) -> Optional[str]:
     """
     try:
         url = urlparse(endpoint)
-    except Exception:
+    except Exception as _exc:
+        logger.debug("could not parse endpoint %r: %s", endpoint, _exc)
         return None
     if (url.hostname or "").lower() not in _LOCALHOST_HOSTS:
         return None

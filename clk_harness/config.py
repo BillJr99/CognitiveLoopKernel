@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-
 CLK_DIR_NAME = ".clk"
 
 
@@ -376,7 +375,11 @@ DEFAULT_AGENTS: Dict[str, Any] = {
     # analyst.md, ...) still ship to disk as scaffolds so the chief can cast a
     # role with an empty PROMPT body and the existing file will be picked up.
     "agents": {
-        "chief": {"prompt": "chief.md", "provider": None, "role": "decompose objectives, cast the team, author workflows"},
+        "chief": {
+            "prompt": "chief.md",
+            "provider": None,
+            "role": "decompose objectives, cast the team, author workflows",
+        },
         "qa":    {"prompt": "qa.md",    "provider": None, "role": "test and audit changes (baseline validator)"},
         "ralph": {"prompt": "ralph.md", "provider": None, "role": "drive iterative refinement and autoresearch loops"},
     }

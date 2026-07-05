@@ -20,9 +20,11 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .log import get_logger
 from .pricing import estimate_usd
 from .utils.text_extract import classify_error, extract_thought
 
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Low-level event iteration (with byte-offset seek for streaming)
@@ -64,7 +66,8 @@ def iter_events(path: Path, start_offset: int = 0) -> Tuple[List[dict], int]:
             obj = json.loads(raw_line.decode("utf-8", errors="replace"))
             if isinstance(obj, dict):
                 events.append(obj)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("skipping unparseable activity line: %s", _exc)
             continue
     return events, new_offset
 
@@ -284,9 +287,10 @@ def build_snapshot(
         elif kind == "action_applied":
             path = raw.get("path")
             if path:
-                c = card(agent) if agent else None
-                if c is not None and path not in c["files"]:
-                    c["files"].append(path)
+                if agent:
+                    c = card(agent)
+                    if path not in c["files"]:
+                        c["files"].append(path)
                 if path not in files_changed:
                     files_changed.append(path)
 

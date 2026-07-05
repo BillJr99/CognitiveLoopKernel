@@ -14,8 +14,8 @@ import traceback
 import urllib.error
 import urllib.request
 
-from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens
 from ._endpoint_fallback import maybe_docker_host_fallback, normalize_endpoint, probe_endpoint
+from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens
 
 
 def list_models(endpoint: str, *, timeout_s: float = 5.0) -> list:

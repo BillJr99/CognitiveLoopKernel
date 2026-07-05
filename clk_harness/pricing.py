@@ -18,7 +18,7 @@ from the table so they render as ``$0.00`` everywhere.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 
 @dataclass(frozen=True)

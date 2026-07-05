@@ -35,12 +35,9 @@ log = logging.getLogger("clk.telegram")
 # importing this module for unit tests (which mock out the bot) does not
 # require the package to be installed.
 try:  # pragma: no cover
-    from telegram import Update
     from telegram.ext import (
-        Application,
         ApplicationBuilder,
         CommandHandler,
-        ContextTypes,
         MessageHandler,
         filters,
     )
@@ -170,14 +167,14 @@ async def _start_command(update, context, command: str, args_text: str) -> None:
     if not workspace:
         try:
             ws = await state.client.create_workspace()
-            workspace = ws.get("id") or ws.get("workspace_id") or ws.get("name")
-            state.chat_workspace[chat_id] = workspace
+            workspace = ws.get("id") or ws.get("workspace_id") or ws.get("name")  # type: ignore[assignment]
+            state.chat_workspace[chat_id] = workspace  # type: ignore[assignment]
         except Exception as exc:
             await _reply(update, f"No workspace and could not create one: {exc}", token=state.token)
             return
     args = [a for a in args_text.strip().split() if a] if args_text else []
     try:
-        resp = await state.client.start_task(workspace, command, args=args)
+        resp = await state.client.start_task(workspace, command, args=args)  # type: ignore[arg-type]
         task_id = resp.get("task_id") or resp.get("id") or "?"
         state.last_task_id = task_id
         await _reply(
@@ -255,7 +252,11 @@ async def cmd_unsubscribe(update, context) -> None:  # pragma: no cover
 async def cmd_workspace(update, context) -> None:  # pragma: no cover
     state = _state(context)
     if not context.args:
-        await _reply(update, f"Current workspace: {state.workspace_for(update.effective_chat.id) or '(none)'}", token=state.token)
+        await _reply(
+            update,
+            f"Current workspace: {state.workspace_for(update.effective_chat.id) or '(none)'}",
+            token=state.token,
+        )
         return
     state.chat_workspace[update.effective_chat.id] = context.args[0]
     await _reply(update, f"Workspace set to `{context.args[0]}`.", token=state.token)

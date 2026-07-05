@@ -98,7 +98,6 @@ def test_install_tool_check_handles_missing_tool():
 def test_install_tool_install_print_only_prints_command(tmp_path):
     # --print-only never executes — just confirms the recipe surfaces a
     # candidate command without prompting.
-    fake_tool_marker = tmp_path / "fake_marker"
     # We use the `tmux` recipe because it's deterministic across platforms
     # and the script's --print-only branch returns rc=1 (user-declined).
     r = subprocess.run(

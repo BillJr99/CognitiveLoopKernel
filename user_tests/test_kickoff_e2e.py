@@ -122,7 +122,10 @@ def test_kickoff_with_provider_override(kickoff_sandbox: Path) -> None:
 def test_kickoff_rejects_unknown_option(kickoff_sandbox: Path) -> None:
     res = _run_kickoff(kickoff_sandbox, "--definitely-not-a-real-flag")
     assert res.returncode != 0
-    assert "unknown option" in (res.stdout + res.stderr).lower()
+    # The shell parser said "unknown option"; argparse (which the thin
+    # wrapper delegates to) says "unrecognized arguments".
+    out = (res.stdout + res.stderr).lower()
+    assert "unknown option" in out or "unrecognized arguments" in out
 
 
 def test_kickoff_creates_independent_git_repo(kickoff_sandbox: Path) -> None:

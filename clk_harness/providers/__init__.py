@@ -6,13 +6,13 @@ shell-based dummy uniformly.
 """
 
 from .base import AgentProvider, AgentRequest, AgentResponse, ProviderUnavailable
-from .shell import ShellProvider
 from .claude import ClaudeProvider
 from .codex import CodexProvider
 from .gemini import GeminiProvider
-from .pi import PiProvider
 from .ollama import OllamaProvider
 from .openwebui import OpenWebUIProvider
+from .pi import PiProvider
+from .shell import ShellProvider
 
 __all__ = [
     "AgentProvider",

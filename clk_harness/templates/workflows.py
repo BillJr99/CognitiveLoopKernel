@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Dict
 
-
 WORKFLOWS: Dict[str, str] = {
     "discovery.yaml": """name: discovery
 description: Validate the problem, users, and landscape before building anything.

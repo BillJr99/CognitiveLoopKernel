@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
-import traceback
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -316,7 +314,7 @@ def changed_files_since(root: Path, sha: str) -> List[str]:
             ["git", "diff", "--name-only", sha, "HEAD"],
             cwd=root, check=True, capture_output=True, text=True,
         )
-        return [l for l in r.stdout.splitlines() if l.strip()]
+        return [ln for ln in r.stdout.splitlines() if ln.strip()]
     except Exception as exc:
         log_exception("git_ops.changed_files_since", exc)
         return []

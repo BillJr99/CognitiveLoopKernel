@@ -2,6 +2,7 @@
 
 Sub-commands:
   init        - bootstrap .clk/, configs, prompts, workflows, git repo
+  kickoff     - bootstrap a self-contained kickoff workspace (port of kickoff.sh)
   idea        - capture an idea
   plan        - run the discovery + product workflows
   run         - drive the autonomous mission to a code-gated done (--once for one cycle)
@@ -22,11 +23,10 @@ import subprocess
 import sys
 import textwrap
 import threading
-import traceback
 import venv
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 try:
     from . import __version__
@@ -35,24 +35,26 @@ except ImportError:
     # empty package __init__.py) shouldn't make the whole CLI unimportable.
     __version__ = "0.0.0+unknown"
 from .config import (
-    DEFAULT_CLK_CONFIG,
     Paths,
     is_initialized,
     load_agents_config,
     load_clk_config,
     load_providers_config,
     project_paths,
-    save_agents_config,
     save_json,
     write_default_configs,
 )
 from .git_ops import (
     add_all,
-    commit as git_commit,
     has_changes,
     init_repo,
     is_repo,
 )
+from .git_ops import (
+    commit as git_commit,
+)
+from .kickoff import cmd_kickoff
+from .log import close_log, get_logger, init_log_file, log, log_exception
 from .orchestration import (
     AgentRunner,
     AutoresearchLoop,
@@ -62,17 +64,16 @@ from .orchestration import (
     RoleProposal,
     WorkflowRunner,
     casting_objective,
-    is_baseline,
     list_roles,
     load_workflow,
     register_role,
     remove_role,
     render_roster_summary,
 )
-from .providers import available_providers, load_provider
+from .providers import available_providers
 from .templates import PROMPTS, WORKFLOWS
-from .utils.logging_utils import close_log, init_log_file, log, log_exception
 
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -140,7 +141,7 @@ def _ensure_gitignore(paths: Paths) -> bool:
                 return False
             # If the whole .clk/ directory is already ignored (e.g. by kickoff),
             # the detailed block is redundant — skip it.
-            existing_lines = {l.strip() for l in current.splitlines()}
+            existing_lines = {ln.strip() for ln in current.splitlines()}
             if ".clk/" in existing_lines or ".clk" in existing_lines:
                 return False
             gi.write_text(current.rstrip() + "\n\n" + block, encoding="utf-8")
@@ -275,7 +276,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             )
 
     print("CLK initialized.")
-    print("\n".join("  " + l for l in summary_lines))
+    print("\n".join("  " + ln for ln in summary_lines))
     print("\nNext: clk idea \"<your idea>\"")
     close_log()
     return 0
@@ -542,8 +543,8 @@ def cmd_loop(args: argparse.Namespace) -> int:
         committed = sum(1 for o in outcomes if o.committed)
         print(f"ralph loop: {improved}/{len(outcomes)} improved, {committed} committed")
     else:
-        loop = AutoresearchLoop(paths, runner, evaluator, max_iterations=max_iter)
-        experiments = loop.run(dry_run=args.dry_run)
+        aloop = AutoresearchLoop(paths, runner, evaluator, max_iterations=max_iter)
+        experiments = aloop.run(dry_run=args.dry_run)
         committed = sum(1 for e in experiments if e.committed)
         print(f"autoresearch loop: {len(experiments)} experiments, {committed} committed")
     close_log()
@@ -615,7 +616,6 @@ def cmd_tui(args: argparse.Namespace) -> int:
 
 def _build_webui(log=sys.stderr) -> bool:
     """Build the React web UI bundle with npm. Returns True on success."""
-    import shutil
     import subprocess
     repo_root = Path(__file__).resolve().parent.parent
     webui_dir = repo_root / "webui"
@@ -647,8 +647,9 @@ def cmd_web(args: argparse.Namespace) -> int:
     """
     try:
         import uvicorn  # noqa: F401
-        from .api import app, get_bind_host, get_bind_port
+
         from . import static_spa
+        from .api import app, get_bind_host, get_bind_port
     except ImportError:
         print(
             "Error: web UI dependencies not installed. Run: "
@@ -688,8 +689,8 @@ def cmd_web(args: argparse.Namespace) -> int:
             _t.sleep(1.0)
             try:
                 webbrowser.open(url)
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("could not open browser for %s: %s", url, _exc)
         threading.Thread(target=_open, daemon=True).start()
 
     import uvicorn as _uvicorn
@@ -777,7 +778,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         findings.append(("fail", "anthropic_key", "CLK_AUTH_MODE=apikey but ANTHROPIC_API_KEY is unset"))
     if active == "codex" and auth_mode == "apikey" and not _os.environ.get("OPENAI_API_KEY"):
         findings.append(("fail", "openai_key", "CLK_AUTH_MODE=apikey but OPENAI_API_KEY is unset"))
-    if active == "gemini" and auth_mode == "apikey" and not _os.environ.get("GEMINI_API_KEY") and not _os.environ.get("GOOGLE_API_KEY"):
+    if (
+        active == "gemini"
+        and auth_mode == "apikey"
+        and not _os.environ.get("GEMINI_API_KEY")
+        and not _os.environ.get("GOOGLE_API_KEY")
+    ):
         findings.append(("fail", "gemini_key", "CLK_AUTH_MODE=apikey but GEMINI_API_KEY/GOOGLE_API_KEY are unset"))
     if not is_repo(paths.root):
         findings.append(("warn", "git", "no git repo at project root; auto-commit disabled"))
@@ -853,8 +859,8 @@ def cmd_diag(args: argparse.Namespace) -> int:
         if redacted and redacted.exists():
             try:
                 redacted.unlink()
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("diag: could not remove temp %s: %s", redacted, _exc)
     print(f"clk diag: wrote {out_path}")
     print("API keys are redacted; share this in your bug report.")
     return 0
@@ -909,6 +915,42 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init", help="Initialize CLK in the current directory.")
     p_init.add_argument("--name", help="Project name (defaults to directory name).")
     p_init.set_defaults(func=cmd_init)
+
+    p_kick = sub.add_parser(
+        "kickoff",
+        help="Bootstrap a self-contained kickoff workspace under ./workspace/ "
+             "(driven by .env and optional --arg overrides).",
+        description=(
+            "Bootstrap a self-contained kickoff workspace under ./workspace/. "
+            "Driven entirely by .env and optional --arg overrides; normal runs "
+            "ask no questions. If required configuration is missing, kickoff "
+            "prints exactly what is needed and offers to launch --setup. "
+            "Configuration precedence (highest-to-lowest): --arg overrides -> "
+            ".env file / shell env vars -> built-in defaults."
+        ),
+    )
+    p_kick.add_argument("idea", nargs="?", help="Idea or problem statement.")
+    p_kick.add_argument("--setup", action="store_true",
+                        help="Interactive wizard to write or update .env.")
+    p_kick.add_argument("--restore", action="store_true",
+                        help="Restore .env from .env.bak (undo last --setup).")
+    p_kick.add_argument("--list", action="store_true", dest="list_mode",
+                        help="List past kickoff dirs under workspace/.")
+    p_kick.add_argument("--clean", metavar="DURATION",
+                        help="Delete kickoff dirs older than DURATION (e.g. 7d, 30m). "
+                             "Always asks y/N before deleting.")
+    p_kick.add_argument("--provider", help="Override CLK_PROVIDER.")
+    p_kick.add_argument("--max-iterations", help="Override CLK_MAX_ITERATIONS.")
+    p_kick.add_argument("--project-name", help="Override CLK_PROJECT_NAME.")
+    p_kick.add_argument("--no-tui", action="store_const", const="true",
+                        dest="no_tui_override",
+                        help="Set CLK_NO_TUI=true (non-interactive pipeline).")
+    p_kick.add_argument("--tui", action="store_const", const="false",
+                        dest="no_tui_override",
+                        help="Set CLK_NO_TUI=false (TUI dashboard, the default).")
+    p_kick.add_argument("--run-install", action="store_true",
+                        help="Set CLK_RUN_INSTALL=true.")
+    p_kick.set_defaults(func=cmd_kickoff)
 
     p_idea = sub.add_parser("idea", help="Capture an idea.")
     p_idea.add_argument("statement", help="The idea, problem statement, or vision.")

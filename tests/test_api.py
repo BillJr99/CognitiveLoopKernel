@@ -27,14 +27,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 # Point workspaces at a temp location before importing the app so the module-
 # level WORKSPACES_DIR is set correctly.
 os.environ.setdefault("CLK_WORKSPACES_DIR", "/tmp/clk-workspaces-test")
 
-from clk_harness.api import app, TASKS, WORKSPACES, _task_handles  # noqa: E402
-
+from clk_harness.api import TASKS, WORKSPACES, _task_handles, app  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers

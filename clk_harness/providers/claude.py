@@ -20,7 +20,6 @@ from typing import Any, Dict
 
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens, run_streaming
 
-
 _DEFAULT_API_ENDPOINT = "https://api.anthropic.com/v1/messages"
 _DEFAULT_API_VERSION = "2023-06-01"
 _DEFAULT_API_MODEL = "claude-sonnet-4-5"
@@ -149,7 +148,7 @@ class ClaudeProvider(AgentProvider):
 
         text = stdout or ""
         envelope: Dict[str, Any] = {}
-        usage: Dict[str, Any] = {}
+        usage = {}
         stripped = text.strip()
         if stripped.startswith("{"):
             try:

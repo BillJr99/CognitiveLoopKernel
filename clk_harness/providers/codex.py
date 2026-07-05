@@ -9,9 +9,9 @@ import sys
 import traceback
 import urllib.error
 import urllib.request
+from typing import Any, Dict
 
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens, run_streaming
-
 
 _DEFAULT_API_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 _DEFAULT_API_MODEL = "gpt-4o-mini"
@@ -93,7 +93,7 @@ class CodexProvider(AgentProvider):
         progress = req.on_progress or (lambda kind, msg: None)
         endpoint = self.config.get("endpoint") or _DEFAULT_API_ENDPOINT
         model = self.config.get("model") or _DEFAULT_API_MODEL
-        body = {
+        body: Dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": req.prompt}],
         }

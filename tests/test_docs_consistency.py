@@ -1,16 +1,19 @@
 """Documentation-consistency tests.
 
-These assertions exist so that future edits don't let the README,
-``.env.example``, the ``DEFAULT_CLK_CONFIG`` schema, and ``kickoff.sh``'s
-env-var mapping drift apart. They run against the literal file
+These assertions exist so that future edits don't let the docs
+(``docs/MISSIONS.md`` / ``docs/CONFIGURATION.md``, split out of the
+README), ``.env.example``, the ``DEFAULT_CLK_CONFIG`` schema, and the
+kickoff env-var mapping (``clk_harness/kickoff.py``, which the
+``kickoff.sh`` wrapper delegates to) drift apart. They run against the literal file
 contents — no harness behavior is exercised.
 
 When a knob is added or renamed, the change must touch four places:
 
 1. ``clk_harness/config.py::DEFAULT_CLK_CONFIG`` — the schema.
 2. ``.env.example`` — the user-facing override.
-3. ``kickoff.sh`` — translation from env var → JSON key.
-4. ``README.md`` — the Robustness-loops or Cost-guardrails section.
+3. ``clk_harness/kickoff.py`` — translation from env var → JSON key.
+4. ``docs/MISSIONS.md`` (Robustness loops) or ``docs/CONFIGURATION.md``
+   (Cost guardrails) — the user-facing knob documentation.
 
 The tests below check (1) ↔ (2) ↔ (4) for the new ``robustness`` block
 specifically, and that (3) sees the same env-var family. The "prior
@@ -20,18 +23,20 @@ documented there to ensure the docs-parity pass covers them too.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
-
-import pytest
 
 from clk_harness.config import DEFAULT_CLK_CONFIG
 
-
 REPO = Path(__file__).resolve().parent.parent
 ENV_EXAMPLE = (REPO / ".env.example").read_text(encoding="utf-8")
-KICKOFF = (REPO / "kickoff.sh").read_text(encoding="utf-8")
-README = (REPO / "README.md").read_text(encoding="utf-8")
+# kickoff.sh is a thin wrapper now; the env-var → config mapping lives in
+# the `clk kickoff` subcommand.
+KICKOFF = (REPO / "clk_harness" / "kickoff.py").read_text(encoding="utf-8")
+# The README's deep-dive sections were split into docs/; the robustness
+# documentation now lives in MISSIONS.md (Robustness loops) and
+# CONFIGURATION.md (Cost guardrails / multiplier table).
+MISSIONS_DOC = (REPO / "docs" / "MISSIONS.md").read_text(encoding="utf-8")
+CONFIG_DOC = (REPO / "docs" / "CONFIGURATION.md").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -40,10 +45,10 @@ README = (REPO / "README.md").read_text(encoding="utf-8")
 
 
 # Some keys are introspected at runtime by name (e.g. "plateau_action")
-# while others are knobs the user only sees on a coarser axis (the README
-# explains plateau as a single concept rather than enumerating
+# while others are knobs the user only sees on a coarser axis (the docs
+# explain plateau as a single concept rather than enumerating
 # `plateau_window` and `plateau_action` separately). Keys listed here are
-# excluded from the README-mention check below; everything else must
+# excluded from the docs-mention check below; everything else must
 # appear by name in the Robustness-loops or Cost-guardrails section.
 _README_OPTIONAL_KEYS: frozenset = frozenset({
     "qa_parallel_judges",  # internal cap, documented as part of the Q&A protocol
@@ -88,40 +93,41 @@ def test_env_example_documents_every_robustness_key() -> None:
 
 
 def test_kickoff_sh_maps_every_robustness_key() -> None:
-    """kickoff.sh's env-var override block must recognise every
+    """The kickoff env-var override block (clk_harness/kickoff.py) must recognise every
     CLK_ROBUSTNESS_* variable."""
     block = DEFAULT_CLK_CONFIG["robustness"]
     for key in block.keys():
         var = _env_var_for(key)
         assert var in KICKOFF, (
-            f"{var} not handled in kickoff.sh's env→config mapping "
+            f"{var} not handled in the kickoff env→config mapping (clk_harness/kickoff.py) "
             f"(needed to make the .env.example override actually take effect)"
         )
 
 
 def test_readme_documents_robustness_keys() -> None:
-    """The README's Robustness-loops or Cost-guardrails section must
-    mention every robustness knob by name."""
+    """The docs' Robustness-loops (docs/MISSIONS.md) or Cost-guardrails
+    (docs/CONFIGURATION.md) section must mention every robustness knob
+    by name."""
     # Slice off the relevant chunk so we don't count incidental mentions
     # elsewhere (e.g. in the changelog "What's new" block which is
     # already lossier on purpose).
-    rl_start = README.find("## Robustness loops")
+    rl_start = MISSIONS_DOC.find("## Robustness loops")
     rl_end_marker = "## Completion criteria"
-    rl_end = README.find(rl_end_marker, rl_start) if rl_start != -1 else -1
+    rl_end = MISSIONS_DOC.find(rl_end_marker, rl_start) if rl_start != -1 else -1
     assert rl_start != -1 and rl_end != -1, (
-        "README is missing the ## Robustness loops section "
+        "docs/MISSIONS.md is missing the ## Robustness loops section "
         "(must live between ## Loops and ## Completion criteria)"
     )
-    rl_section = README[rl_start:rl_end]
+    rl_section = MISSIONS_DOC[rl_start:rl_end]
 
-    cost_start = README.find("### Robustness-loop multipliers")
-    cost_end_marker = "## Pi extension"
-    cost_end = README.find(cost_end_marker, cost_start) if cost_start != -1 else -1
+    cost_start = CONFIG_DOC.find("### Robustness-loop multipliers")
+    cost_end_marker = "## Customization"
+    cost_end = CONFIG_DOC.find(cost_end_marker, cost_start) if cost_start != -1 else -1
     assert cost_start != -1 and cost_end != -1, (
-        "README is missing the ### Robustness-loop multipliers section "
-        "under ## Cost guardrails"
+        "docs/CONFIGURATION.md is missing the ### Robustness-loop multipliers "
+        "section under ## Cost guardrails"
     )
-    cost_section = README[cost_start:cost_end]
+    cost_section = CONFIG_DOC[cost_start:cost_end]
     combined = rl_section + "\n" + cost_section
 
     block = DEFAULT_CLK_CONFIG["robustness"]
@@ -129,8 +135,9 @@ def test_readme_documents_robustness_keys() -> None:
         if key in _README_OPTIONAL_KEYS:
             continue
         assert key in combined, (
-            f"robustness key '{key}' not mentioned in README "
-            "(Robustness-loops section or Cost-guardrails table)"
+            f"robustness key '{key}' not mentioned in the docs "
+            "(docs/MISSIONS.md Robustness-loops section or "
+            "docs/CONFIGURATION.md Cost-guardrails table)"
         )
 
 
@@ -139,7 +146,7 @@ def test_readme_documents_robustness_keys() -> None:
 # ---------------------------------------------------------------------------
 # The autonomy blocks must be overridable from the environment the same way
 # robustness is: every key gets a CLK_<BLOCK>_<KEY> var in .env.example AND a
-# matching mapping in kickoff.sh, so an override actually takes effect.
+# matching mapping in clk_harness/kickoff.py, so an override actually takes effect.
 
 _AUTONOMY_BLOCKS = ("mission", "done_gate", "noop_guard", "deliberation")
 
@@ -164,7 +171,7 @@ def test_kickoff_sh_maps_new_blocks() -> None:
         for key in DEFAULT_CLK_CONFIG[block].keys():
             var = _block_env_var(block, key)
             assert var in KICKOFF, (
-                f"{var} not handled in kickoff.sh's env→config mapping"
+                f"{var} not handled in the kickoff env→config mapping (clk_harness/kickoff.py)"
             )
 
 
@@ -210,11 +217,11 @@ def test_env_example_documents_prior_knobs() -> None:
 
 
 def test_kickoff_handles_prior_knobs() -> None:
-    """kickoff.sh's env-var override block must recognise every prior
+    """The kickoff env-var override block (clk_harness/kickoff.py) must recognise every prior
     CLK_* knob too — the docs claim parity, so the script must honor it."""
     for var in _PRIOR_KNOBS:
         assert var in KICKOFF, (
-            f"{var} listed in .env.example but not handled by kickoff.sh — "
+            f"{var} listed in .env.example but not handled by the kickoff env→config mapping — "
             "the override would silently no-op."
         )
 
@@ -241,7 +248,7 @@ def test_install_local_header_mentions_layout() -> None:
 
 
 def test_run_loop_header_links_robustness_section() -> None:
-    """scripts/run_loop.sh should point users at the README section so
+    """scripts/run_loop.sh should point users at the docs section so
     the wrapper isn't a black box."""
     text = (REPO / "scripts" / "run_loop.sh").read_text(encoding="utf-8")
     assert "Robustness loops" in text or "robustness" in text.lower(), (

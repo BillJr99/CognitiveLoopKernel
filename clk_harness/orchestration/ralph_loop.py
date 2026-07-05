@@ -20,26 +20,27 @@ triggers a critic dispatch before the next plan.
 from __future__ import annotations
 
 import json
-import sys
-import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..config import Paths
 from ..git_ops import (
     add_all,
-    commit as git_commit,
     has_changes,
     head_sha,
     revert_to,
 )
+from ..git_ops import (
+    commit as git_commit,
+)
+from ..log import get_logger, log, log_exception
 from ..utils.activity_log import log_event
-from ..utils.logging_utils import log, log_exception
 from . import response_quality as _response_quality
 from .agent import AgentRunner
-from .evaluator import Evaluator, EvalResult
+from .evaluator import Evaluator
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -76,8 +77,8 @@ class RalphLoop:
         if obs is not None:
             try:
                 obs.log(line)
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("observer log failed: %s", _exc)
 
     def run(self, *, dry_run: bool = False) -> List[IterationOutcome]:
         outcomes: List[IterationOutcome] = []

@@ -27,11 +27,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional, Sequence
 
 from . import blackboard as _blackboard
-from . import actions as _actions
-
 
 # ---------------------------------------------------------------------------
 # Public dataclass
