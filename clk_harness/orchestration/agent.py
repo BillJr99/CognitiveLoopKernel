@@ -8,10 +8,8 @@ heavier orchestration lives in :mod:`workflow` and the loops.
 from __future__ import annotations
 
 import json
-import sys
 import threading
 import time
-import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,15 +18,16 @@ from string import Template
 from typing import Any, Dict, List, Optional
 
 from ..config import Paths
-from ..git_ops import add_all, commit as git_commit, has_changes, head_sha, is_repo
+from ..git_ops import add_all, has_changes, head_sha, is_repo
+from ..git_ops import commit as git_commit
 from ..providers import AgentProvider, AgentRequest, AgentResponse, load_provider
 from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
-from . import casting as _casting
 from . import actions as _actions
 from . import blackboard as _blackboard
-from . import response_quality as _response_quality
+from . import casting as _casting
 from . import noop_guard as _noop_guard
+from . import response_quality as _response_quality
 
 
 def _read_recent_casting_rejections(paths: Paths, *, limit: int = 8) -> str:
@@ -186,6 +185,7 @@ class AgentRunner:
 
     def get_provider(self, name: Optional[str]) -> AgentProvider:
         import os as _os
+
         from ..config import DEFAULT_PROVIDERS
         # CLK_PROVIDER (set in the global .env) is an explicit, authoritative
         # choice, so it overrides the workspace's saved `active`. Precedence:
@@ -952,7 +952,9 @@ class AgentRunner:
         except Exception as exc:
             resp = AgentResponse(ok=False, error=str(exc))
         finished = datetime.now().isoformat(timespec="seconds")
-        arun = AgentRun(agent=label, objective=sample_objective, response=resp, started_at=started, finished_at=finished)
+        arun = AgentRun(
+            agent=label, objective=sample_objective, response=resp, started_at=started, finished_at=finished
+        )
         self._record(arun, prompt, provider.describe())
         if self.observer is not None:
             self.observer.end(label, arun)
@@ -971,7 +973,14 @@ class AgentRunner:
             error=resp.error,
             response_text=resp.text or "",
         )
-        return {"sample": sample, "agent": agent_name, "label": label, "ok": resp.ok, "error": resp.error, "text": resp.text or ""}
+        return {
+            "sample": sample,
+            "agent": agent_name,
+            "label": label,
+            "ok": resp.ok,
+            "error": resp.error,
+            "text": resp.text or "",
+        }
 
     def _consensus_coalesce_objective(self, name: str, objective: str, results: List[Dict[str, Any]]) -> str:
         parts = [
@@ -983,7 +992,10 @@ class AgentRunner:
             "Samples:",
         ]
         for r in results:
-            parts.append(f"\n--- sample {r.get('sample')} agent={r.get('agent')} ok={r.get('ok')} error={r.get('error') or ''} ---")
+            parts.append(
+                f"\n--- sample {r.get('sample')} agent={r.get('agent')} "
+                f"ok={r.get('ok')} error={r.get('error') or ''} ---"
+            )
             parts.append((r.get("text") or "").strip() or "(no response)")
         parts.append("\nReturn a unified answer with agreements, disagreements, and the recommended decision.")
         return "\n".join(parts)

@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -58,8 +57,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..config import Paths, load_agents_config, save_json
 from ..utils.activity_log import log_event
-from ..utils.logging_utils import log, log_exception
-
+from ..utils.logging_utils import log_exception
 
 # ---------------------------------------------------------------------------
 # Baseline (always-present) agents
@@ -738,8 +736,8 @@ def _harness_protocol_suffix() -> str:
     try:
         from ..templates.prompts import (
             _ACTION_PROTOCOL_BLOCK,
-            _BLACKBOARD_PROTOCOL_BLOCK,
             _BASE_FOOTER,
+            _BLACKBOARD_PROTOCOL_BLOCK,
         )
         return "\n\n" + _ACTION_PROTOCOL_BLOCK + "\n" + _BLACKBOARD_PROTOCOL_BLOCK + "\n" + _BASE_FOOTER
     except Exception as exc:
@@ -1249,7 +1247,8 @@ def render_roster_summary(paths: Paths) -> str:
             log_exception(f"orchestration.casting.render_roster_summary.{name}", exc)
         lines.append(
             f"- {marker} {name} :: {role} "
-            f"(provider={prov}; capabilities={caps_str}; prompt={prompt_file}; prompt_preview={prompt_preview or '(missing)'})"
+            f"(provider={prov}; capabilities={caps_str}; prompt={prompt_file}; "
+            f"prompt_preview={prompt_preview or '(missing)'})"
         )
     return "\n".join(lines)
 

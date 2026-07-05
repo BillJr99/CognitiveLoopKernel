@@ -19,11 +19,8 @@ A workflow file looks like:
 from __future__ import annotations
 
 import re
-import shlex
 import subprocess
-import sys
 import time
-import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,25 +29,26 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ..config import Paths
 from ..git_ops import (
     add_all,
-    commit as git_commit,
     commit_trace,
     has_changes,
     head_sha,
     revert_to,
     snapshot_rollback,
 )
+from ..git_ops import (
+    commit as git_commit,
+)
 from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
 from . import blackboard as _blackboard
-from . import response_quality as _response_quality
-from . import noop_guard as _noop_guard
+from . import charter as _charter
 from . import deliberation as _deliberation
 from . import done_gate as _done_gate
 from . import evaluator as _evaluator
-from . import charter as _charter
-from .agent import AgentRunner, AgentRun
+from . import noop_guard as _noop_guard
+from . import response_quality as _response_quality
+from .agent import AgentRun, AgentRunner
 from .telemetry import CycleTelemetry
-
 
 _ROUND_STATUS_RE = re.compile(r"^\s*ROUND_STATUS\s*:\s*(continue|done|finished)\s*$", re.IGNORECASE | re.MULTILINE)
 
@@ -186,7 +184,7 @@ def _mini_yaml_loads(text: str) -> Dict[str, Any]:
             j += 1
         return " ".join(parts).strip(), j
 
-    lines = [l.rstrip() for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     result: Dict[str, Any] = {}
     i = 0
     while i < len(lines):
@@ -661,7 +659,11 @@ class WorkflowRunner:
                 self.telemetry = None
             if not progress:
                 no_progress += 1
-                why = "agents reported PROGRESS: no" if (material and self_reported_stall) else "no commits or file writes"
+                why = (
+                    "agents reported PROGRESS: no"
+                    if (material and self_reported_stall)
+                    else "no commits or file writes"
+                )
                 log(
                     f"workflow {workflow.name}: cycle {cycle} made no progress — {why} "
                     f"({no_progress}/{self.max_consecutive_no_progress})",
@@ -689,7 +691,9 @@ class WorkflowRunner:
             else:
                 no_progress = 0
 
-            if any(self._is_provider_failure((r.run.response.error or "")) for r in cycle_results if not r.run.response.ok):
+            if any(
+                self._is_provider_failure((r.run.response.error or "")) for r in cycle_results if not r.run.response.ok
+            ):
                 log(
                     f"workflow {workflow.name}: stopping supervise cycles after provider failure",
                     level="ERROR",
@@ -1619,7 +1623,7 @@ class WorkflowRunner:
                 self.paths, "debate_round",
                 agent=stage.agent, workflow=workflow.name, stage_id=stage.id,
                 round=round_idx, max_rounds=max_rounds,
-                lenses=[l for (l, *_r) in verdicts],
+                lenses=[lens for (lens, *_r) in verdicts],
                 revise_votes=revise_votes, avg_score=round(avg_score, 3),
                 accept_threshold=threshold,
             )

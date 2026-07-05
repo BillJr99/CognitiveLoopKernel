@@ -38,7 +38,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, Optional, TextIO, Tuple
+from typing import Callable, Dict, List, Mapping, MutableMapping, Optional, TextIO, Tuple
 
 from . import env_file
 
@@ -734,7 +734,7 @@ class _SetupIO:
         return answer.lower() in ("y", "yes")
 
 
-def _load_env_into(target: Dict[str, str], path: Path) -> None:
+def _load_env_into(target: MutableMapping[str, str], path: Path) -> None:
     """Mimic `set -a; . <file>; set +a`: every assignment is exported."""
     if not path.is_file():
         return
@@ -795,7 +795,7 @@ def run_setup_wizard(script_dir: Path) -> int:
     # Per-step resume.
     last_step = ""
     if progress_file.is_file():
-        lines = [l for l in progress_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+        lines = [ln for ln in progress_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
         if lines:
             last_step = lines[-1]
     skip_until = ""

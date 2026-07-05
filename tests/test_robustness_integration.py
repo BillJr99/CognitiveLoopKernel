@@ -18,7 +18,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from clk_harness.config import Paths, DEFAULT_CLK_CONFIG
+from clk_harness.config import DEFAULT_CLK_CONFIG, Paths
 from clk_harness.orchestration import blackboard as bb
 from clk_harness.orchestration import workflow as wf
 from clk_harness.orchestration.agent import AgentRunner

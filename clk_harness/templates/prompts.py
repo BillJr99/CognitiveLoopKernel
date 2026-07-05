@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from typing import Dict
 
-
 _CONFIDENCE_BLOCK = """
 Self-assessment footer (read by the harness's response-quality loop)
 End your response with exactly two lines:

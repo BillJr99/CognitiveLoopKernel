@@ -6,8 +6,6 @@ config-validation branches that don't touch the network.
 
 from __future__ import annotations
 
-import pytest
-
 from clk_harness.integrations.telegram import bot as bot_mod
 
 

@@ -15,15 +15,13 @@ autoresearch step.
 from __future__ import annotations
 
 import json
-import sys
-import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from ..config import Paths
-from ..git_ops import add_all, commit as git_commit, has_changes, head_sha, revert_to
+from ..git_ops import add_all, has_changes, head_sha, revert_to
+from ..git_ops import commit as git_commit
 from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
 from . import response_quality as _response_quality
@@ -114,7 +112,7 @@ class AutoresearchLoop:
             )
         question_lines = (survey.response.text or "").strip().splitlines()
         question = next(
-            (l for l in question_lines if l.strip().startswith(("Q:", "Question:", "Hypothesis:"))),
+            (ln for ln in question_lines if ln.strip().startswith(("Q:", "Question:", "Hypothesis:"))),
             f"Open question #{idx}",
         )
 

@@ -7,9 +7,7 @@ hook. The scheduler is a thin wrapper around ``time.sleep`` and a
 
 from __future__ import annotations
 
-import sys
 import time
-import traceback
 from dataclasses import dataclass
 from typing import Callable, Optional
 

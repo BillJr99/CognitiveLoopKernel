@@ -23,11 +23,10 @@ import subprocess
 import sys
 import textwrap
 import threading
-import traceback
 import venv
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 try:
     from . import __version__
@@ -36,23 +35,23 @@ except ImportError:
     # empty package __init__.py) shouldn't make the whole CLI unimportable.
     __version__ = "0.0.0+unknown"
 from .config import (
-    DEFAULT_CLK_CONFIG,
     Paths,
     is_initialized,
     load_agents_config,
     load_clk_config,
     load_providers_config,
     project_paths,
-    save_agents_config,
     save_json,
     write_default_configs,
 )
 from .git_ops import (
     add_all,
-    commit as git_commit,
     has_changes,
     init_repo,
     is_repo,
+)
+from .git_ops import (
+    commit as git_commit,
 )
 from .kickoff import cmd_kickoff
 from .orchestration import (
@@ -64,17 +63,15 @@ from .orchestration import (
     RoleProposal,
     WorkflowRunner,
     casting_objective,
-    is_baseline,
     list_roles,
     load_workflow,
     register_role,
     remove_role,
     render_roster_summary,
 )
-from .providers import available_providers, load_provider
+from .providers import available_providers
 from .templates import PROMPTS, WORKFLOWS
 from .utils.logging_utils import close_log, init_log_file, log, log_exception
-
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -142,7 +139,7 @@ def _ensure_gitignore(paths: Paths) -> bool:
                 return False
             # If the whole .clk/ directory is already ignored (e.g. by kickoff),
             # the detailed block is redundant — skip it.
-            existing_lines = {l.strip() for l in current.splitlines()}
+            existing_lines = {ln.strip() for ln in current.splitlines()}
             if ".clk/" in existing_lines or ".clk" in existing_lines:
                 return False
             gi.write_text(current.rstrip() + "\n\n" + block, encoding="utf-8")
@@ -277,7 +274,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             )
 
     print("CLK initialized.")
-    print("\n".join("  " + l for l in summary_lines))
+    print("\n".join("  " + ln for ln in summary_lines))
     print("\nNext: clk idea \"<your idea>\"")
     close_log()
     return 0
@@ -544,8 +541,8 @@ def cmd_loop(args: argparse.Namespace) -> int:
         committed = sum(1 for o in outcomes if o.committed)
         print(f"ralph loop: {improved}/{len(outcomes)} improved, {committed} committed")
     else:
-        loop = AutoresearchLoop(paths, runner, evaluator, max_iterations=max_iter)
-        experiments = loop.run(dry_run=args.dry_run)
+        aloop = AutoresearchLoop(paths, runner, evaluator, max_iterations=max_iter)
+        experiments = aloop.run(dry_run=args.dry_run)
         committed = sum(1 for e in experiments if e.committed)
         print(f"autoresearch loop: {len(experiments)} experiments, {committed} committed")
     close_log()
@@ -617,7 +614,6 @@ def cmd_tui(args: argparse.Namespace) -> int:
 
 def _build_webui(log=sys.stderr) -> bool:
     """Build the React web UI bundle with npm. Returns True on success."""
-    import shutil
     import subprocess
     repo_root = Path(__file__).resolve().parent.parent
     webui_dir = repo_root / "webui"
@@ -649,8 +645,9 @@ def cmd_web(args: argparse.Namespace) -> int:
     """
     try:
         import uvicorn  # noqa: F401
-        from .api import app, get_bind_host, get_bind_port
+
         from . import static_spa
+        from .api import app, get_bind_host, get_bind_port
     except ImportError:
         print(
             "Error: web UI dependencies not installed. Run: "
@@ -779,7 +776,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         findings.append(("fail", "anthropic_key", "CLK_AUTH_MODE=apikey but ANTHROPIC_API_KEY is unset"))
     if active == "codex" and auth_mode == "apikey" and not _os.environ.get("OPENAI_API_KEY"):
         findings.append(("fail", "openai_key", "CLK_AUTH_MODE=apikey but OPENAI_API_KEY is unset"))
-    if active == "gemini" and auth_mode == "apikey" and not _os.environ.get("GEMINI_API_KEY") and not _os.environ.get("GOOGLE_API_KEY"):
+    if (
+        active == "gemini"
+        and auth_mode == "apikey"
+        and not _os.environ.get("GEMINI_API_KEY")
+        and not _os.environ.get("GOOGLE_API_KEY")
+    ):
         findings.append(("fail", "gemini_key", "CLK_AUTH_MODE=apikey but GEMINI_API_KEY/GOOGLE_API_KEY are unset"))
     if not is_repo(paths.root):
         findings.append(("warn", "git", "no git repo at project root; auto-commit disabled"))

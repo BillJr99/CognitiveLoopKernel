@@ -64,7 +64,6 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -73,7 +72,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..config import Paths
 from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
-
 
 # ---------------------------------------------------------------------------
 # Parsing
@@ -557,7 +555,10 @@ def _do_run(paths: Paths, action: Action, result: ActionResult, *, timeout_s: in
 
 def _do_done(paths: Paths, action: Action, result: ActionResult) -> None:
     paths.state.mkdir(parents=True, exist_ok=True)
-    body = f"# Done\n\nReason: {action.reason or '(no reason given)'}\n\nMarked at {datetime.now().isoformat(timespec='seconds')}\n"
+    body = (
+        f"# Done\n\nReason: {action.reason or '(no reason given)'}\n\n"
+        f"Marked at {datetime.now().isoformat(timespec='seconds')}\n"
+    )
     (paths.state / "done.md").write_text(body, encoding="utf-8")
     result.done = True
     result.done_reason = action.reason or ""

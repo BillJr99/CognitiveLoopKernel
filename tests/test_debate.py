@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from clk_harness.config import Paths
 from clk_harness.orchestration.workflow import WorkflowRunner, WorkflowStage
 

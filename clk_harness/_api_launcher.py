@@ -16,7 +16,6 @@ import sys
 import threading
 from typing import Optional
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -59,6 +58,7 @@ def start_api_in_background(
     # Lazy import so missing dependencies do not crash the CLI.
     try:
         import uvicorn
+
         from clk_harness.api import app, get_bind_host, get_bind_port
     except ImportError as exc:
         print(

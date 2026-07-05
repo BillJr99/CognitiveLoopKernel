@@ -26,7 +26,7 @@ import pytest
 
 from clk_harness import kickoff
 from clk_harness.cli import build_parser
-from clk_harness.kickoff import activate_provider, apply_config_env_overrides, _bool, _csv
+from clk_harness.kickoff import _bool, _csv, activate_provider, apply_config_env_overrides
 
 GOLDEN = Path(__file__).resolve().parent / "golden" / "kickoff"
 

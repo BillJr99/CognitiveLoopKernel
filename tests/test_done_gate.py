@@ -5,13 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from clk_harness.config import Paths
 from clk_harness.orchestration import blackboard as bb
-from clk_harness.orchestration.done_gate import evaluate_done_gate, deliverable_files
-from clk_harness.orchestration.evaluator import EvalResult, CheckResult
 from clk_harness.orchestration.charter import Charter, derive_done_criteria
+from clk_harness.orchestration.done_gate import deliverable_files, evaluate_done_gate
+from clk_harness.orchestration.evaluator import CheckResult, EvalResult
 
 
 def _paths(tmp_path: Path) -> Paths:

@@ -26,14 +26,13 @@ import os
 import re
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import env_file
-from . import web_snapshot
+from . import env_file, web_snapshot
 from .config import (
     Paths,
     load_agents_config,
@@ -328,14 +327,19 @@ async def workspace_doctor(workspace_id: str) -> Dict[str, Any]:
     if active == "shell":
         findings.append({
             "level": "warn", "name": "active_provider",
-            "message": "active provider is 'shell' — a stub that echoes prompts and never calls an LLM. Pick a real provider on this tab.",
+            "message": (
+                "active provider is 'shell' — a stub that echoes prompts and never calls an LLM. "
+                "Pick a real provider on this tab."
+            ),
         })
     else:
         known = set(prov_cfg.get("providers") or {}) | set(DEFAULT_PROVIDERS.get("providers") or {})
         if active not in known:
             findings.append({
                 "level": "fail", "name": "active_provider",
-                "message": f"active provider '{active}' has no config block — runs will silently fall back to the shell stub.",
+                "message": (
+                    f"active provider '{active}' has no config block — runs will silently fall back to the shell stub."
+                ),
             })
     for name, ok in sorted(avail.items()):
         if ok:
@@ -345,9 +349,19 @@ async def workspace_doctor(workspace_id: str) -> Dict[str, Any]:
                 "level": "fail" if name == active else "warn",
                 "name": name, "message": "unavailable",
             })
-    if active == "claude" and auth_mode == "apikey" and not (env.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")):
-        findings.append({"level": "fail", "name": "anthropic_key", "message": "auth=apikey but ANTHROPIC_API_KEY unset"})
-    if active == "codex" and auth_mode == "apikey" and not (env.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")):
+    if (
+        active == "claude"
+        and auth_mode == "apikey"
+        and not (env.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
+    ):
+        findings.append(
+            {"level": "fail", "name": "anthropic_key", "message": "auth=apikey but ANTHROPIC_API_KEY unset"}
+        )
+    if (
+        active == "codex"
+        and auth_mode == "apikey"
+        and not (env.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+    ):
         findings.append({"level": "fail", "name": "openai_key", "message": "auth=apikey but OPENAI_API_KEY unset"})
     if active == "gemini" and auth_mode == "apikey" and not any(
         env.get(k) or os.environ.get(k) for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY")
@@ -413,7 +427,6 @@ async def get_activity(
     raw_events, new_offset = web_snapshot.iter_events(log_path, offset)
     wanted = {k.strip() for k in kinds.split(",")} if kinds else None
     out: List[dict] = []
-    seq = offset  # use byte offset as a coarse monotonic base for history
     for i, raw in enumerate(raw_events):
         if wanted and raw.get("event") not in wanted:
             continue
@@ -828,8 +841,11 @@ class ProbeRequest(BaseModel):
 def _probe_blocking(ptype: str, endpoint: str, api_key: str) -> Dict[str, Any]:
     """Synchronous probe worker (runs off the event loop via to_thread)."""
     from .providers._endpoint_fallback import (
-        normalize_endpoint, probe_endpoint, docker_host_swap,
+        docker_host_swap,
+        normalize_endpoint,
+        probe_endpoint,
     )
+    _list: Callable[[str], list]
     if ptype == "ollama":
         from .providers.ollama import list_models as _ollama_models
         ep = normalize_endpoint(endpoint) or "http://localhost:11434"

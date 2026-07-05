@@ -13,7 +13,6 @@ from __future__ import annotations
 from clk_harness import webui_router
 from clk_harness.providers import _endpoint_fallback, ollama, openwebui
 
-
 LOCAL = "http://localhost:11434"
 SWAP = "http://host.docker.internal:11434"
 

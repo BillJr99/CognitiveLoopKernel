@@ -37,15 +37,13 @@ import json
 import queue
 import re
 import sys
-import textwrap
 import threading
 import time
-import traceback
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, TextIO, Tuple
 
 from .config import (
     Paths,
@@ -58,11 +56,15 @@ from .config import (
 )
 from .git_ops import (
     add_all,
-    commit as git_commit,
     commits_ahead,
     has_changes,
     has_remote,
     is_repo,
+)
+from .git_ops import (
+    commit as git_commit,
+)
+from .git_ops import (
     push as git_push,
 )
 from .orchestration import (
@@ -77,7 +79,6 @@ from .orchestration import (
     casting_objective,
     is_baseline,
     is_provider_failure,
-    list_roles,
     load_workflow,
     register_role,
     remove_role,
@@ -86,7 +87,6 @@ from .orchestration import (
 from .pricing import estimate_usd, format_usd
 from .utils.logging_utils import log_exception
 from .utils.text_extract import classify_error, extract_thought
-
 
 # ---------------------------------------------------------------------------
 # Error classifier — now lives in clk_harness.utils.text_extract so the
@@ -331,7 +331,7 @@ class DashboardState:
         self.peak_run_tokens: int = 0
         # Session log file (mirror of the in-pane status log so we
         # have a persistent trace for later analysis).
-        self.session_log_fh = None
+        self.session_log_fh: Optional[TextIO] = None
         # Cost guardrails. ``total_usd`` is the rolling estimate based on
         # tokens × provider pricing; ``cost_per_provider`` lets /status
         # show a breakdown so the user can see which provider is eating
@@ -453,7 +453,7 @@ class DashboardState:
         # objectives (e.g. recovery dispatches that start with a blank line
         # after the header) don't produce a stray fragment in the log pane.
         _obj_first = next(
-            (l for l in (objective or "").splitlines() if l.strip()),
+            (ln for ln in (objective or "").splitlines() if ln.strip()),
             (objective or ""),
         )
         self.add_log(f"{name} :: start :: {_obj_first[:80]}", level="INFO")
@@ -579,7 +579,7 @@ class DashboardState:
         # Strip the boilerplate header lines so the preview shows the
         # role-specific objective, not the same operating constraints
         # for every card.
-        candidates = [l for l in snippet.splitlines() if l.strip()]
+        candidates = [ln for ln in snippet.splitlines() if ln.strip()]
         head = " ".join(candidates[:6])
         with self.lock:
             card = self.agents.setdefault(name, AgentCard(name=name))
@@ -685,13 +685,23 @@ class DashboardState:
     def _provider_resolution_message(self, error: str) -> str:
         msg = (error or "").lower()
         if "rate limit" in msg or "quota" in msg:
-            return "provider rate/quota failure; backing off by aborting this cycle, then retry after quota/reset or switch provider"
+            return (
+                "provider rate/quota failure; backing off by aborting this cycle, "
+                "then retry after quota/reset or switch provider"
+            )
         if "timeout" in msg or "no output" in msg or "operation was aborted" in msg:
-            return "provider call stalled/aborted; stalled PID is killed, configured retries are reissued with backoff, then the cycle stops if retries fail"
+            return (
+                "provider call stalled/aborted; stalled PID is killed, configured retries are reissued "
+                "with backoff, then the cycle stops if retries fail"
+            )
         if "api key" in msg or "authentication" in msg or "unauthorized" in msg or "forbidden" in msg:
             return "provider auth/config failure; fix credentials or switch provider before retrying"
         if "no endpoints available" in msg or "guardrail restrictions" in msg or "data policy" in msg:
-            return "provider endpoint/policy routing issue; configured retries are reissued with backoff because this can be transient, then switch provider or adjust provider privacy settings if retries fail"
+            return (
+                "provider endpoint/policy routing issue; configured retries are reissued with backoff "
+                "because this can be transient, then switch provider or adjust provider privacy settings "
+                "if retries fail"
+            )
         if "cli not found" in msg or "not found" in msg:
             return "provider executable/config missing; install/configure provider or switch provider"
         return "provider failure; workflow recovery is aborted until the provider is fixed or changed"
@@ -800,7 +810,8 @@ class DashboardObserver(AgentObserver):
         # Refresh the card from the (just-mutated) agents config so the
         # role / baseline / provider fields stay accurate.
         try:
-            agents = (load_agents_config(self.state.paths).get("agents") or {}) if hasattr(self.state, "paths") else {}
+            _paths = getattr(self.state, "paths", None)
+            agents = (load_agents_config(_paths).get("agents") or {}) if _paths is not None else {}
             cfg = agents.get(name) or {}
         except Exception:
             cfg = {}
@@ -1142,8 +1153,8 @@ class Worker(threading.Thread):
                     self.state.add_system_message(
                         f"autoresearch iteration {i}/{n} — exploring open questions"
                     )
-                    sub = AutoresearchLoop(self.paths, self.runner, self.evaluator, max_iterations=1)
-                    sub.run()
+                    asub = AutoresearchLoop(self.paths, self.runner, self.evaluator, max_iterations=1)
+                    asub.run()
                     completed = i
         except Exception as exc:
             log_exception("tui.Worker._do_loop", exc)
@@ -1212,7 +1223,7 @@ class Worker(threading.Thread):
             f"working on '{phase}'" if busy else f"idle (last phase: '{phase}')"
         )
         self.state.add_system_message(
-            f"--- session snapshot ---"
+            "--- session snapshot ---"
         )
         self.state.add_system_message(
             f"  status     {narrative}"
@@ -1281,9 +1292,11 @@ class Worker(threading.Thread):
                 pass
         t1 = _t.Thread(target=_pump, args=(proc.stdout, out_lines, "INFO"), daemon=True)
         t2 = _t.Thread(target=_pump, args=(proc.stderr, err_lines, "WARN"), daemon=True)
-        t1.start(); t2.start()
+        t1.start()
+        t2.start()
         rc = proc.wait()
-        t1.join(timeout=1); t2.join(timeout=1)
+        t1.join(timeout=1)
+        t2.join(timeout=1)
         return rc, "\n".join(out_lines), "\n".join(err_lines)
 
     def _script(self, name: str) -> Path:
@@ -1405,8 +1418,9 @@ class Worker(threading.Thread):
     def _do_doctor(self, fix: bool) -> None:
         self.state.set_phase("doctor", busy=True)
         try:
+            from .config import load_clk_config as _lcc
+            from .config import load_providers_config as _lpc
             from .providers import available_providers
-            from .config import load_clk_config as _lcc, load_providers_config as _lpc
             prov_cfg = _lpc(self.paths)
             clk_cfg = _lcc(self.paths)
             auth_mode = (clk_cfg.get("auth_mode") or "cli").lower() if isinstance(clk_cfg, dict) else "cli"
@@ -1545,7 +1559,11 @@ class Worker(threading.Thread):
         # created under <repo>/workspace/kickoff-<ts>). Walk up to find
         # the workspace/ parent.
         kickoff_dir = self.paths.root
-        ws_parent = kickoff_dir.parent if kickoff_dir.parent.name == "workspace" else (kickoff_dir / ".." / "..").resolve() / "workspace"
+        ws_parent = (
+            kickoff_dir.parent
+            if kickoff_dir.parent.name == "workspace"
+            else (kickoff_dir / ".." / "..").resolve() / "workspace"
+        )
         if action == "list":
             if not ws_parent.exists():
                 self.state.add_system_message("workspaces: no workspace/ dir found")
@@ -1687,7 +1705,7 @@ class TuiApp:
 
     # --- main loop -------------------------------------------------------
 
-    def _loop(self, stdscr: "curses._CursesWindow") -> None:
+    def _loop(self, stdscr: "curses.window") -> None:
         curses.curs_set(1)
         stdscr.nodelay(True)
         stdscr.timeout(80)
@@ -1759,8 +1777,8 @@ class TuiApp:
         if not self.state.paths:
             return
         try:
-            from .providers import available_providers
             from .config import save_providers_config
+            from .providers import available_providers
             prov_cfg = load_providers_config(self.state.paths)
             # Snapshot endpoints so we can detect auto-failover (localhost ->
             # host.docker.internal) inside available_providers and persist
@@ -1826,7 +1844,7 @@ class TuiApp:
 
     INPUT_MAX_ROWS = 5  # cap on how tall the input area can grow
 
-    def _render(self, stdscr: "curses._CursesWindow") -> None:
+    def _render(self, stdscr: "curses.window") -> None:
         h, w = stdscr.getmaxyx()
         if h < 13 or w < 60:
             stdscr.erase()
@@ -2288,7 +2306,6 @@ class TuiApp:
             has_idea = bool(s.idea)
             busy = s.busy
             err_kind = s.last_error_kind
-            err_cmd = s.last_error_command
             in_tut = s.in_tutorial
             stop_req = s.stop_requested
             active_provider = s.provider or "shell"
@@ -2651,7 +2668,9 @@ class TuiApp:
         for name, pid in targets:
             try:
                 os.kill(pid, signal.SIGTERM)
-                self.state.add_log(f"sent SIGTERM to {name} (pid {pid}) — the cycle will report a timeout", level="WARN")
+                self.state.add_log(
+                    f"sent SIGTERM to {name} (pid {pid}) — the cycle will report a timeout", level="WARN"
+                )
             except ProcessLookupError:
                 self.state.add_log(f"abort: {name} pid={pid} already gone", level="INFO")
             except Exception as exc:

@@ -20,7 +20,6 @@ from typing import Any, Dict
 
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens, run_streaming
 
-
 _DEFAULT_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _DEFAULT_API_MODEL = "gemini-2.0-flash"
 
@@ -142,7 +141,7 @@ class GeminiProvider(AgentProvider):
         base = (self.config.get("endpoint") or _DEFAULT_API_BASE).rstrip("/")
         model = self.config.get("model") or _DEFAULT_API_MODEL
         endpoint = f"{base}/models/{urllib.parse.quote(model)}:generateContent?key={urllib.parse.quote(api_key)}"
-        body = {
+        body: Dict[str, Any] = {
             "contents": [{"parts": [{"text": req.prompt}]}],
         }
         if req.system:

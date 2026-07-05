@@ -17,8 +17,8 @@ os.environ.setdefault("CLK_WORKSPACES_DIR", "/tmp/clk-workspaces-discover-test")
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 
-from clk_harness.api import app  # noqa: E402
 from clk_harness import env_file, webui_router  # noqa: E402
+from clk_harness.api import app  # noqa: E402
 
 
 @pytest_asyncio.fixture

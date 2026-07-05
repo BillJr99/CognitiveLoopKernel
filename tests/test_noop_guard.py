@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 from clk_harness.orchestration import noop_guard
 from clk_harness.orchestration.response_quality import score
-
 
 _CFG = {"noop_guard": {"enabled": True, "max_redispatch": 2,
                        "producing_agents": ["engineer", "ralph"],

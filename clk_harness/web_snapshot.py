@@ -23,7 +23,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from .pricing import estimate_usd
 from .utils.text_extract import classify_error, extract_thought
 
-
 # ---------------------------------------------------------------------------
 # Low-level event iteration (with byte-offset seek for streaming)
 # ---------------------------------------------------------------------------
@@ -284,9 +283,10 @@ def build_snapshot(
         elif kind == "action_applied":
             path = raw.get("path")
             if path:
-                c = card(agent) if agent else None
-                if c is not None and path not in c["files"]:
-                    c["files"].append(path)
+                if agent:
+                    c = card(agent)
+                    if path not in c["files"]:
+                        c["files"].append(path)
                 if path not in files_changed:
                     files_changed.append(path)
 

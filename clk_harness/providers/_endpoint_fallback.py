@@ -19,7 +19,6 @@ import sys
 from typing import Optional
 from urllib.parse import urlparse, urlunparse
 
-
 _LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _DOCKER_HOST = "host.docker.internal"
 

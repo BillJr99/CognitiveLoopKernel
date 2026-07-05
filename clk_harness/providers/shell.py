@@ -8,11 +8,9 @@ runs.
 
 from __future__ import annotations
 
-import json
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Dict
 
 from .base import AgentProvider, AgentRequest, AgentResponse, estimate_tokens
 
@@ -31,7 +29,7 @@ class ShellProvider(AgentProvider):
                 f"[shell-provider] agent={req.agent}",
                 f"[shell-provider] dry_run={req.dry_run}",
                 "[shell-provider] prompt preview:",
-                *[f"  {l}" for l in preview],
+                *[f"  {ln}" for ln in preview],
             ]
 
             if req.dry_run:

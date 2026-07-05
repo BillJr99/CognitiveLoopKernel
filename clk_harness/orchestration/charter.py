@@ -16,13 +16,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from ..config import Paths, save_json, load_json
+from ..config import Paths, load_json, save_json
 from ..git_ops import commit_trace
 from ..utils.activity_log import log_event
-from ..utils.logging_utils import log, log_exception
+from ..utils.logging_utils import log_exception
 from . import blackboard as _blackboard
 from . import casting as _casting
-
 
 # Filename tokens that make a success criterion machine-checkable as "exists".
 _FILE_EXT_RE = re.compile(

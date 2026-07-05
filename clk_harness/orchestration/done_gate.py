@@ -33,7 +33,6 @@ from ..config import Paths
 from ..utils.logging_utils import log_exception
 from . import blackboard as _blackboard
 
-
 _EXCLUDE_TOP = {".clk", ".git", "node_modules", "__pycache__", ".pytest_cache", "venv", ".venv"}
 _STATEISH_ROOT_FILES = {"PROGRESS.md", "DECISIONS.md", "MISSION.md", "CHARTER.md"}
 _TODO_RE = re.compile(r"\b(TODO|FIXME|XXX|HACK|PLACEHOLDER)\b", re.IGNORECASE)

@@ -21,13 +21,9 @@ documented there to ensure the docs-parity pass covers them too.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
-import pytest
-
 from clk_harness.config import DEFAULT_CLK_CONFIG
-
 
 REPO = Path(__file__).resolve().parent.parent
 ENV_EXAMPLE = (REPO / ".env.example").read_text(encoding="utf-8")

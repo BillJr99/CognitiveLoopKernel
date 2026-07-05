@@ -14,7 +14,6 @@ flow in a unit test, so we assert structurally that:
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[3]
 KICKOFF = ROOT / "clk_harness" / "kickoff.py"
 

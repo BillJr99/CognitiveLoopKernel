@@ -10,14 +10,11 @@ hard-coding the host is awkward, we instead set PATH to include a stub
 from __future__ import annotations
 
 import os
-import shutil
 import stat
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WIZARD = PROJECT_ROOT / "scripts" / "telegram_setup_wizard.sh"
@@ -35,7 +32,8 @@ def fake_curl(tmp_path: Path) -> Path:
         "url=\"${@: -1}\"\n"
         'case "$url" in\n'
         "  *getMe*) echo '{\"ok\":true,\"result\":{\"id\":1,\"username\":\"clk_test_bot\"}}';;\n"
-        "  *getUpdates*) echo '{\"ok\":true,\"result\":[{\"update_id\":1,\"message\":{\"from\":{\"id\":42,\"username\":\"alice\"},\"text\":\"hi\"}}]}';;\n"
+        "  *getUpdates*) echo '{\"ok\":true,\"result\":[{\"update_id\":1,"
+        "\"message\":{\"from\":{\"id\":42,\"username\":\"alice\"},\"text\":\"hi\"}}]}';;\n"
         "  *) echo '{}';;\n"
         "esac\n"
     )

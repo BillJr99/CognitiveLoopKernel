@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Sequence
 
-
 # Roles that are legitimately prose / verdict only.
 _NON_PRODUCING = {"chief", "qa", "critic"}
 _DEFAULT_PRODUCING = ("engineer", "ralph")

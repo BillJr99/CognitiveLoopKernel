@@ -13,7 +13,6 @@ import traceback
 from pathlib import Path
 from typing import Optional, TextIO
 
-
 _LOG_FH: Optional[TextIO] = None
 _LOG_PATH: Optional[Path] = None
 

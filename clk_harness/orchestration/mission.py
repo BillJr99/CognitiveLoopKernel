@@ -26,22 +26,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..config import Paths, save_json, load_json
+from ..config import Paths, load_json, save_json
 from ..git_ops import commit_trace
 from ..utils.activity_log import log_event
 from ..utils.logging_utils import log, log_exception
 from . import blackboard as _blackboard
-from . import charter as _charter
 from . import casting as _casting
+from . import charter as _charter
 from . import deliberation as _deliberation
 from . import done_gate as _done_gate
 from .agent import AgentRunner
+from .autoresearch_loop import AutoresearchLoop
 from .evaluator import Evaluator
+from .ralph_loop import RalphLoop
 from .telemetry import CycleTelemetry
 from .workflow import WorkflowRunner, load_workflow
-from .ralph_loop import RalphLoop
-from .autoresearch_loop import AutoresearchLoop
-
 
 _GATE_RE = re.compile(r"^\s*GATE\s*:\s*(pass|repeat|revise|done)\b", re.IGNORECASE | re.MULTILINE)
 _DEFAULT_PHASES = ["discovery", "product", "engineering", "validation", "deployment"]
@@ -416,10 +415,10 @@ class MissionRunner:
                 log_exception("orchestration.mission._run_phase.ralph", exc)
                 return []
         if engine == "autoresearch":
-            loop = AutoresearchLoop(self.paths, self.runner, self.evaluator,
-                                    max_iterations=phase.max_iterations or 1)
+            aloop = AutoresearchLoop(self.paths, self.runner, self.evaluator,
+                                     max_iterations=phase.max_iterations or 1)
             try:
-                return list(loop.run(dry_run=dry_run))
+                return list(aloop.run(dry_run=dry_run))
             except Exception as exc:
                 log_exception("orchestration.mission._run_phase.autoresearch", exc)
                 return []

@@ -32,11 +32,9 @@ import json
 import sys
 import threading
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from ..config import Paths
-
 
 _LOCK = threading.Lock()
 _HANDLES: Dict[str, Any] = {}

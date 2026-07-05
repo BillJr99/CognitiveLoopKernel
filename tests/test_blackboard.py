@@ -85,7 +85,7 @@ def test_digest_truncates_long_bodies(paths: Paths) -> None:
     text = bb.digest(paths, max_chars_per_post=200)
     assert "…" in text
     # No single line should exceed the truncation cap by much
-    assert max(len(l) for l in text.splitlines()) < 400
+    assert max(len(ln) for ln in text.splitlines()) < 400
 
 
 def test_digest_empty_when_no_posts(paths: Paths) -> None:
