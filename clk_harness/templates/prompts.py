@@ -30,6 +30,51 @@ will re-dispatch you (or fan out a consensus) with a repair preamble.
 """
 
 
+_TODOS_PROTOCOL_BLOCK = """
+Working checklist (TODOS — your private, mutable per-turn scratch plan):
+$todos
+
+- This is lightweight working memory that sits between the append-only
+  PROGRESS.md (a permanent log) and the heavyweight charter/plan. Use it to
+  track the concrete steps of the task you are on right now.
+- To update it, emit a TODOS block. Re-emit your FULL checklist each turn — it
+  OVERWRITES your previous one (last-write-wins), so include every item you
+  still care about, not just the changed ones. Omit the block to leave your
+  checklist unchanged.
+- Item grammar — mark is a space (todo), ~ (in progress), or x (done):
+    TODOS:
+    - [ ] not started
+    - [~] in progress
+    - [x] done
+    END_TODOS
+- Keep it short (a handful of items) and end the block with END_TODOS on its
+  own line. It is yours alone; to share findings with peers use a POST block.
+"""
+
+
+_DELEGATE_PROTOCOL_BLOCK = """
+Delegation (DELEGATE — hand a bounded subtask to a context-isolated child):
+- Use ONLY for a self-contained subtask whose result you can consume as a
+  short summary (e.g. "investigate X and report back", "implement and commit
+  the Y helper"). The child runs in a FRESH context: it does NOT see your
+  blackboard or history — it gets only the task you write here.
+- The child MAY do real work (emit ACTION blocks to change/commit files under
+  its own name). Its distilled result returns to you as a `delegate_result`
+  post on your NEXT turn (not inline) — so delegate, then continue other work
+  or end your turn; read the result next round.
+- Grammar:
+    DELEGATE: <short_name>
+    TO: <agent_or_role>
+    CONTEXT: <optional one-line context, or omit>
+    TASK:
+    <the bounded objective — be specific and self-contained>
+    END_DELEGATE
+- Delegation depth is capped (a delegated child cannot itself delegate). This
+  is not a substitute for a POST: question to a peer — use it to offload work,
+  not to ask a quick question.
+"""
+
+
 _BASE_FOOTER = _CONFIDENCE_BLOCK + """
 $outputs_contract
 Blackboard (shared context with peer agents)
@@ -74,9 +119,22 @@ Filesystem
   may mention it; if you emit ``PATH: workspace/foo``, the harness
   strips the prefix and writes to ``$project_root/foo``.
 
+- Context offload — keep big blobs out of your reply. When a command
+  produces a lot of output, or you generate a large dataset/log, DO NOT
+  paste it into your response. Park it under ``scratch/`` (git-ignored,
+  disposable) and then read back only the slice you need. Idiom:
+    ACTION: run
+    CMD: <cmd> > scratch/run.log 2>&1
+    END_ACTION
+    ACTION: run
+    CMD: grep -n <pattern> scratch/run.log   # or: head -n 40 / sed -n '80,120p'
+    END_ACTION
+  This keeps your context small and focused. ``scratch/`` is never a
+  deliverable — do not put project output there.
+
 Cross-iteration notes (shared memory — read AND update every cycle):
 $notes
-
+""" + _TODOS_PROTOCOL_BLOCK + _DELEGATE_PROTOCOL_BLOCK + """
 Iteration discipline (inspired by incremental autonomous loops):
 - Identify the SMALLEST verifiable unit of work that makes measurable
   progress toward the objective. Do that unit well and completely.
@@ -107,6 +165,9 @@ Creation discipline
   welcome when it has a clear job; otherwise use or extend what exists.
 - Avoid duplicate files, duplicate directories, and alternate
   implementations of the same thing.
+- ``scratch/`` is disposable working memory for context offload (see
+  Filesystem), not project output — never treat scratch files as
+  deliverables.
 
 FINAL COMPLIANCE CHECK — verify every item before you end your response.
 The harness validates these mechanically and re-dispatches you on any miss:

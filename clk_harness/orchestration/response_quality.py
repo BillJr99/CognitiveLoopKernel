@@ -112,6 +112,8 @@ _FILE_ACTION_RE = re.compile(
 _END_ACTION_RE = re.compile(r"^\s*END_ACTION\s*$", re.IGNORECASE | re.MULTILINE)
 _POST_HEAD_RE = re.compile(r"^\s*POST\s*:\s*([A-Za-z][A-Za-z0-9_]*)\s*$", re.IGNORECASE | re.MULTILINE)
 _POST_END_RE = re.compile(r"^\s*END_POST\s*$", re.IGNORECASE | re.MULTILINE)
+_TODOS_HEAD_RE = re.compile(r"^\s*TODOS\s*:\s*$", re.IGNORECASE | re.MULTILINE)
+_TODOS_END_RE = re.compile(r"^\s*END_TODOS\s*$", re.IGNORECASE | re.MULTILINE)
 _PROGRESS_RE = re.compile(r"^\s*PROGRESS\s*:\s*(yes|no|true|false)\s*$", re.IGNORECASE | re.MULTILINE)
 
 
@@ -177,6 +179,14 @@ def _action_block_balance(text: str) -> int:
 def _post_block_balance(text: str) -> int:
     heads = len(_POST_HEAD_RE.findall(text or ""))
     ends = len(_POST_END_RE.findall(text or ""))
+    if heads == 0:
+        return 0
+    return heads - ends
+
+
+def _todos_block_balance(text: str) -> int:
+    heads = len(_TODOS_HEAD_RE.findall(text or ""))
+    ends = len(_TODOS_END_RE.findall(text or ""))
     if heads == 0:
         return 0
     return heads - ends
@@ -279,6 +289,15 @@ def score(
             "Every POST block must terminate with a line `END_POST`."
         )
 
+    # 4b. Malformed TODOS blocks
+    todos_balance = _todos_block_balance(text or "")
+    if todos_balance > 0:
+        q.flags.append("malformed_todos")
+        q.reasons.append(
+            f"{todos_balance} TODOS header(s) had no matching END_TODOS. "
+            "Every TODOS checklist block must terminate with a line `END_TODOS`."
+        )
+
     # 5. Missing declared outputs
     missing = _missing_outputs(text or "", list(expected_outputs or []))
     if missing:
@@ -336,6 +355,7 @@ def score(
         "refusal": 0.5,
         "malformed_action": 0.4,
         "malformed_post": 0.3,
+        "malformed_todos": 0.3,
         "outputs_missing": 0.4,
         "noop": 0.5,
         "low_confidence": 0.3,

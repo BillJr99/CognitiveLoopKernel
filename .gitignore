@@ -41,6 +41,12 @@ Thumbs.db
 # Kickoff workspace (kickoff dirs created by kickoff.sh land here)
 workspace/
 
+# Context-offload scratch space: agents park large command output / generated
+# data / logs here and read back only slices (grep/head/sed). Disposable
+# working memory, never a deliverable — kept out of git so it can't pollute
+# history via the per-run `git add -A` auto-commit.
+scratch/
+
 # Local env overrides (kickoff.sh reads .env if present)
 .env
 

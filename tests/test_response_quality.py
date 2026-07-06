@@ -223,3 +223,17 @@ def test_require_confidence_off_by_default() -> None:
     q = rq.score(text)
     assert "confidence_missing" not in q.flags
     assert q.ok
+
+
+def test_malformed_todos_flagged() -> None:
+    q = rq.score("TODOS:\n- [ ] x\n(no closing marker)", min_chars=1)
+    assert "malformed_todos" in q.flags
+    assert not q.ok
+
+
+def test_balanced_todos_not_flagged() -> None:
+    q = rq.score(
+        "TODOS:\n- [ ] x\nEND_TODOS\nplus a substantive sentence of real content.",
+        min_chars=1,
+    )
+    assert "malformed_todos" not in q.flags

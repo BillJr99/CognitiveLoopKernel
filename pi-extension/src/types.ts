@@ -31,6 +31,19 @@ export type ProgressEntry = {
 };
 
 /**
+ * A single item on the mutable per-turn checklist (TODOS).
+ *   todo  -> [ ]   doing -> [~]   done -> [x]
+ * The checklist is overwritten wholesale each time the chief updates it
+ * (last-write-wins), unlike the append-only progress log.
+ */
+export type TodoStatus = "todo" | "doing" | "done";
+
+export type TodoItem = {
+  status: TodoStatus;
+  text: string;
+};
+
+/**
  * Watchdog counters — the supervise loop's memory between chief turns.
  * Mirrors the no-progress / rescue ladder in the Python harness's
  * WorkflowRunner.run().
@@ -63,4 +76,5 @@ export type ClkState = {
   homeBranch?: string;
   supervise?: SuperviseState;
   ralphOutcomes?: RalphOutcome[];
+  todos?: TodoItem[];
 };

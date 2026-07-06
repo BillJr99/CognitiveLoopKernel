@@ -141,3 +141,10 @@ END_ACTION
     result = actions.apply_actions(paths, text, agent_name="test")
     assert (paths.root / "README.md").exists()
     assert any(f.endswith("README.md") for f in result.files_written)
+
+
+def test_resolve_safe_accepts_scratch_path(paths: Paths) -> None:
+    """scratch/ (context-offload) needs no sandbox exception; it resolves like
+    any other non-.clk path under the project root."""
+    target = actions._resolve_safe(paths.root, "scratch/run.log")
+    assert target == paths.root / "scratch" / "run.log"

@@ -40,6 +40,69 @@ import {
  */
 export type SpawnFn = (opts: SpawnOptions) => Promise<{ output: string; sessionId: string }>;
 
+/** Cap on the distilled result returned from a delegated subtask. */
+export const MAX_DELEGATE_RESULT_CHARS = 8000;
+
+export interface DelegateOptions {
+  /** Target role label for the child. */
+  agent: string;
+  /** The bounded subtask. */
+  task: string;
+  /** Optional one-line context handed to the child. */
+  context?: string;
+  preferredModel?: string;
+  cwd: string;
+  signal?: AbortSignal;
+  onUpdate?: (text: string) => void;
+  /** Injectable spawn (tests pass a stub); defaults to the tmux impl. */
+  spawn?: SpawnFn;
+  /** Override the result cap (mainly for tests). */
+  maxResultChars?: number;
+}
+
+export interface DelegateResult {
+  output: string;
+  sessionId: string;
+}
+
+/**
+ * Hand a bounded subtask to a context-isolated child agent and return
+ * only its distilled result. The child runs as a fresh pi session
+ * (spawnSubagent) — it does NOT inherit the caller's conversation or
+ * blackboard — but MAY do real work (write/commit files) in the repo.
+ * Distillation is by instruction: the child is told to reply with only a
+ * concise summary, mirroring the Python harness's DELEGATE child
+ * objective. Depth is capped structurally — spawnSubagent's preamble
+ * forbids the child from spawning further subagents or calling clk_*.
+ */
+export async function runDelegate(opts: DelegateOptions): Promise<DelegateResult> {
+  const spawn = opts.spawn ?? defaultSpawnSubagent;
+  const preamble =
+    "Delegated, context-isolated subtask. You do NOT share the caller's " +
+    "conversation or blackboard — work only from the task below. You MAY do " +
+    "real work (read/write/edit files, run bash, commit with git). When " +
+    "finished, reply with ONLY a concise, self-contained summary of the " +
+    "result the caller needs — that summary is all that is returned.";
+  const composed =
+    preamble +
+    (opts.context ? `\n\nContext:\n${opts.context}` : "") +
+    `\n\nTask:\n${opts.task}`;
+  const { output, sessionId } = await spawn({
+    agent: opts.agent,
+    task: composed,
+    preferredModel: opts.preferredModel,
+    cwd: opts.cwd,
+    signal: opts.signal,
+    onUpdate: opts.onUpdate,
+  });
+  const cap = opts.maxResultChars ?? MAX_DELEGATE_RESULT_CHARS;
+  let distilled = output || "(delegate produced no output)";
+  if (distilled.length > cap) {
+    distilled = distilled.slice(0, cap) + `\n\n[result truncated at ${cap} chars]`;
+  }
+  return { output: distilled, sessionId };
+}
+
 export interface QualityDispatchOptions extends SpawnOptions {
   /**
    * Extra spawn attempts after the initial one. Default 1 (so up to
