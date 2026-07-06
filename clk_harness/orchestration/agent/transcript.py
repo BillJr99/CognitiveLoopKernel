@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional
 
 from ...git_ops import add_all, has_changes, head_sha, is_repo
@@ -20,6 +21,7 @@ from ...utils.activity_log import log_event
 from .. import actions as _actions
 from .. import blackboard as _blackboard
 from .. import casting as _casting
+from .. import todos as _todos
 
 if TYPE_CHECKING:
     import threading
@@ -125,6 +127,7 @@ class TranscriptMixin:
     clk_cfg: Dict[str, Any]
     observer: Optional[AgentObserver]
     _proposals_lock: "threading.RLock"
+    _todos_lock: "threading.Lock"
     _META_PHASES: FrozenSet[str]
 
     if TYPE_CHECKING:
@@ -184,7 +187,14 @@ class TranscriptMixin:
         That makes the asker's worker effectively block on the answer,
         which gets posted back to the blackboard with ``post_type:
         answer`` and ``consumes: [<question_id>]``.
+
+        A context-isolated DELEGATE child runs with ``suppress_posts`` (and
+        ``phase == "delegate"``): its own POST blocks are NOT persisted to the
+        shared board — only its distilled result returns to the caller as a
+        single ``delegate_result`` post created by ``_apply_delegate``.
         """
+        if str(extra.get("phase") or "") == "delegate" or extra.get("suppress_posts"):
+            return
         text = (run.response.text or "")
         if not text or "POST:" not in text:
             return
@@ -311,6 +321,158 @@ class TranscriptMixin:
                 },
                 dry_run=self.clk_cfg.get("dry_run", False),
             )
+
+    def _apply_todos(self, run: AgentRun, extra: Dict[str, Any]) -> None:
+        """Persist a ``TODOS:`` block the agent emitted as its live checklist.
+
+        The checklist is mutable and per-author: the latest block overwrites
+        this author's previous list (last-write-wins), and is re-injected into
+        this author's next prompt via the ``$todos`` placeholder. Skipped for
+        meta phases (consensus / qa_answer / delegate / etc.) so a subtask's
+        stray block can't clobber the driving agent's checklist.
+        """
+        if str(extra.get("phase") or "") in self._META_PHASES:
+            return
+        text = run.response.text or ""
+        if "TODOS:" not in text:
+            return
+        try:
+            with self._todos_lock:
+                _todos.apply_todos_blocks(
+                    self.paths,
+                    text,
+                    author=run.agent,
+                    stage_id=str(extra.get("stage_id") or ""),
+                    workflow=str(extra.get("workflow") or ""),
+                )
+        except Exception as exc:
+            log_exception("orchestration.agent._apply_todos", exc)
+
+    def _apply_delegate(self, run: AgentRun, extra: Dict[str, Any]) -> None:
+        """Spawn context-isolated DELEGATE children for a bounded subtask.
+
+        Each ``DELEGATE:`` block dispatches the named target once, with the
+        caller's blackboard withheld (``delegate_isolated``) and the child's
+        own POST blocks suppressed. The child MAY do real work — its ACTION
+        blocks execute and commit under its own name. The child's distilled
+        result returns to the caller as a single ``delegate_result`` post it
+        sees on its next turn.
+
+        Skipped from any meta phase (so a child cannot itself delegate) and
+        bounded by ``max_delegate_depth`` (default 1), a per-turn cap, and
+        unknown-target / self / cycle guards — mirroring the blocking-Q&A
+        routing in ``_route_blocking_questions``.
+        """
+        text = run.response.text or ""
+        if "DELEGATE:" not in text:
+            return
+        if str(extra.get("phase") or "") in self._META_PHASES:
+            return
+        props = _casting.parse_delegate_proposals(text)
+        if not props:
+            return
+        cfg = self.clk_cfg.get("robustness") or {}
+        max_depth = int(cfg.get("max_delegate_depth") or 1)
+        chain: List[str] = list(extra.get("delegate_chain") or [])
+        if len(chain) >= max_depth:
+            log_event(
+                self.paths,
+                "delegate_chain_capped",
+                agent=run.agent,
+                depth=len(chain),
+                max_depth=max_depth,
+                chain=list(chain),
+            )
+            return
+        max_per_turn = int(cfg.get("max_delegates_per_turn") or 2)
+        result_cap = int(cfg.get("delegate_result_max_chars") or 2000)
+        known = set((self.agents_cfg.get("agents") or {}).keys())
+        next_chain = chain + [run.agent]
+        for prop in props[:max_per_turn]:
+            target = prop.target
+            if not target or target not in known:
+                log_event(
+                    self.paths,
+                    "delegate_target_unknown",
+                    agent=run.agent,
+                    target=target,
+                    name=prop.name,
+                )
+                continue
+            if target == run.agent or target in chain:
+                log_event(
+                    self.paths,
+                    "delegate_chain_cycle",
+                    agent=run.agent,
+                    target=target,
+                    chain=list(chain),
+                )
+                continue
+            req_id = (
+                f"deleg-{run.agent}-"
+                f"{datetime.now().strftime('%Y%m%dT%H%M%S%f')}-{prop.name}"
+            )
+            child_obj = (
+                "Delegated, context-isolated subtask.\n\n"
+                f"Requested by `{run.agent}`. You do NOT see the caller's "
+                "blackboard — work only from what is written here. You MAY do "
+                "real work (emit ACTION blocks to change files); they will be "
+                "committed under your name. When done, end with a concise, "
+                "self-contained summary of the result the caller needs — that "
+                "summary is all that is returned to them.\n"
+            )
+            if prop.context:
+                child_obj += f"\nContext:\n{prop.context}\n"
+            child_obj += f"\nTask:\n{prop.objective}\n"
+            log_event(
+                self.paths,
+                "delegate_dispatch",
+                agent=run.agent,
+                target=target,
+                name=prop.name,
+                req_id=req_id,
+                chain=next_chain,
+            )
+            self._observer_log(f"delegate :: {run.agent} → {target} :: {prop.name}")
+            try:
+                child = self._dispatch_once(
+                    target,
+                    child_obj,
+                    extra={
+                        "phase": "delegate",
+                        "delegate_chain": next_chain,
+                        "delegate_isolated": True,
+                        "suppress_posts": True,
+                        "agent": target,
+                        "stage_id": extra.get("stage_id"),
+                        "workflow": extra.get("workflow"),
+                    },
+                    dry_run=self.clk_cfg.get("dry_run", False),
+                )
+            except Exception as exc:
+                log_exception("orchestration.agent._apply_delegate.dispatch", exc)
+                continue
+            body = ""
+            if child is not None and child.response is not None:
+                body = (child.response.text or "").strip()
+            if len(body) > result_cap:
+                body = body[:result_cap].rstrip() + " …"
+            try:
+                p = _blackboard.post(
+                    self.paths,
+                    author=run.agent,
+                    body=body or "(delegate produced no output)",
+                    post_type="delegate_result",
+                    consumes=[req_id],
+                    produces=[f"delegate:{prop.name}"],
+                    stage_id=str(extra.get("stage_id") or ""),
+                    workflow=str(extra.get("workflow") or ""),
+                    slug_hint=f"delegate-{prop.name}",
+                )
+                if p.id and p.id not in run.posts:
+                    run.posts.append(p.id)
+            except Exception as exc:
+                log_exception("orchestration.agent._apply_delegate.post", exc)
 
     def _apply_actions(self, run: AgentRun, extra: Optional[Dict[str, Any]] = None) -> None:
         """Execute ACTION blocks; merge harness-written files back into the run."""

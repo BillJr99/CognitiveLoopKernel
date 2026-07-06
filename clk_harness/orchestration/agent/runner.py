@@ -52,6 +52,9 @@ class AgentRunner(PromptsMixin, TranscriptMixin):
         # Lock around meta-prompt cache reads/writes so parallel stages
         # racing to draft the same dispatch prompt don't corrupt the file.
         self._meta_cache_lock = threading.Lock()
+        # Serialises the mutable per-author TODOS store (.clk/state/todos.json)
+        # so parallel dispatches sharing one agent name can't tear the write.
+        self._todos_lock = threading.Lock()
 
     # -- public ------------------------------------------------------------
 
@@ -103,6 +106,9 @@ class AgentRunner(PromptsMixin, TranscriptMixin):
         "qa_answer",
         "refine_critic",
         "refine_worker",
+        # A context-isolated DELEGATE child: single-shot, must not recurse
+        # into consensus / quality / QA / further delegation.
+        "delegate",
         # Mission-level chief dispatches: single-shot planning / gating that
         # must not recurse into consensus or the quality-retry loop.
         "charter",
@@ -631,6 +637,10 @@ class AgentRunner(PromptsMixin, TranscriptMixin):
         # apply hooks. Posting is cheap and uncommitted, so it happens
         # even for dry-runs to keep the digest accurate during planning.
         self._apply_posts(run, extra or {})
+        # Persist any TODOS: checklist block. Mutable per-author working
+        # memory; like posts it runs even for dry-runs so the checklist
+        # stays live during planning.
+        self._apply_todos(run, extra or {})
         # Apply any PROPOSE_ROLE / PROPOSE_WORKFLOW blocks the agent
         # emitted. Mutates ``self.agents_cfg`` in place so the very next
         # stage that names a freshly-proposed role can dispatch to it.
@@ -643,6 +653,9 @@ class AgentRunner(PromptsMixin, TranscriptMixin):
         # files_written list so the TUI / commit logic see them.
         if not is_dry:
             self._apply_actions(run, extra or {})
+            # Spawn any DELEGATE children AFTER the parent's own actions/commit
+            # land, so the parent's work is a distinct unit from the child's.
+            self._apply_delegate(run, extra or {})
         if self.observer is not None:
             try:
                 self.observer.end(agent.name, run)
@@ -689,7 +702,9 @@ class AgentRunner(PromptsMixin, TranscriptMixin):
         text = run.response.text or ""
         if not text or "PROPOSE_CONSENSUS" not in text:
             return
-        if str(extra.get("phase") or "") == "consensus":
+        # Don't fan out consensus from a consensus sample (recursion) or from a
+        # context-isolated DELEGATE child (it must stay single-shot).
+        if str(extra.get("phase") or "") in {"consensus", "delegate"}:
             return
         proposals = _casting.parse_consensus_proposals(text)
         if not proposals:

@@ -17,6 +17,7 @@ from ...log import get_logger, log_exception
 from ...utils.activity_log import log_event
 from .. import blackboard as _blackboard
 from .. import casting as _casting
+from .. import todos as _todos
 
 if TYPE_CHECKING:
     import threading
@@ -94,7 +95,11 @@ class PromptsMixin:
     def render_prompt(self, agent: "AgentSpec", objective: str, extra: Optional[Dict[str, Any]] = None) -> str:
         try:
             template = self._load_prompt_template(agent.prompt_file)
-            ctx = self._collect_context(objective, extra or {})
+            # Thread the dispatched agent's name into context so the per-author
+            # $todos checklist (and $agent) resolve on the normal dispatch path,
+            # where ``extra`` would otherwise carry no agent name.
+            merged = {**(extra or {}), "agent": (extra or {}).get("agent") or agent.name}
+            ctx = self._collect_context(objective, merged)
             return self._safe_substitute(template, ctx)
         except Exception as exc:
             log_exception("orchestration.agent.render_prompt", exc)
@@ -407,22 +412,33 @@ class PromptsMixin:
         # provided, otherwise show the most recent global posts so the
         # agent has at least some peer context. Capped to keep prompts
         # bounded; tunable via clk.config.json::blackboard.
-        bb_cfg = (self.clk_cfg.get("blackboard") or {})
-        bb_inputs = list(extra.get("blackboard_inputs") or [])
-        # Allow the chief to widen the digest via stage metadata flag
-        # ``include_full_blackboard`` (carried through ``extra``).
-        if extra.get("include_full_blackboard"):
-            bb_inputs = []
-        try:
-            bb_digest = _blackboard.digest(
-                self.paths,
-                selectors=bb_inputs,
-                max_posts=int(bb_cfg.get("digest_max_posts") or 20),
-                max_chars_per_post=int(bb_cfg.get("digest_max_chars_per_post") or 800),
+        # Context isolation for DELEGATE children: a delegated subtask must NOT
+        # inherit the caller's blackboard. Note an empty selector list does
+        # NOT isolate (digest() returns recent global posts when selectors are
+        # falsy), so this needs its own explicit branch.
+        if extra.get("delegate_isolated") or str(extra.get("phase") or "") == "delegate":
+            bb_digest = (
+                "Blackboard digest: (isolated — this is a delegated subtask; "
+                "peer context is intentionally withheld. Work only from the "
+                "task described in your objective.)"
             )
-        except Exception as exc:
-            log_exception("orchestration.agent._collect_context.blackboard", exc)
-            bb_digest = "Blackboard digest: (unavailable)"
+        else:
+            bb_cfg = (self.clk_cfg.get("blackboard") or {})
+            bb_inputs = list(extra.get("blackboard_inputs") or [])
+            # Allow the chief to widen the digest via stage metadata flag
+            # ``include_full_blackboard`` (carried through ``extra``).
+            if extra.get("include_full_blackboard"):
+                bb_inputs = []
+            try:
+                bb_digest = _blackboard.digest(
+                    self.paths,
+                    selectors=bb_inputs,
+                    max_posts=int(bb_cfg.get("digest_max_posts") or 20),
+                    max_chars_per_post=int(bb_cfg.get("digest_max_chars_per_post") or 800),
+                )
+            except Exception as exc:
+                log_exception("orchestration.agent._collect_context.blackboard", exc)
+                bb_digest = "Blackboard digest: (unavailable)"
 
         # Casting-rejection feedback: surface duplicate-prevention misses
         # so the chief learns from them on the next dispatch.
@@ -443,6 +459,17 @@ class PromptsMixin:
                 notes = raw_notes
             except Exception as exc:
                 log_exception("orchestration.agent._collect_context.notes", exc)
+
+        # Working checklist: inject THIS author's own mutable TODOS list so it
+        # can review and re-emit an updated checklist this turn. Per-author, so
+        # peers' lists stay out of the way (that is what the blackboard is for).
+        try:
+            todos = _todos.render_todos(
+                _todos.todos_for(self.paths, str(extra.get("agent") or ""))
+            )
+        except Exception as exc:
+            log_exception("orchestration.agent._collect_context.todos", exc)
+            todos = "(no todos yet)"
 
         # Outputs contract: convert the stage_outputs list into a concrete,
         # agent-visible instruction block so workers know BEFORE they write
@@ -483,6 +510,7 @@ class PromptsMixin:
             "blackboard_digest": bb_digest,
             "casting_feedback": casting_feedback or "(none)",
             "notes": notes,
+            "todos": todos,
             "outputs_contract": outputs_contract,
         }
         # ``telemetry`` is a live counter object threaded through ``extra`` for

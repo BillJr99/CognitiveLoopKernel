@@ -8,6 +8,7 @@ import type {
   ProgressKind,
   RalphOutcome,
   SuperviseState,
+  TodoItem,
 } from "./types.js";
 
 const ROOT = ".clk";
@@ -113,6 +114,25 @@ export async function setRoster(cwd: string, roster: Roster, pi: ExtensionAPI): 
     join(cwd, ROOT, "state", "roster.json"),
     JSON.stringify(roster, null, 2),
   );
+}
+
+/**
+ * Overwrite the mutable per-turn checklist (last-write-wins). Mirrors
+ * setRoster; the whole list is replaced each call so the chief re-emits
+ * its full checklist as it changes. Distinct from appendProgress, which
+ * is append-only.
+ */
+export async function setTodos(cwd: string, todos: TodoItem[], pi: ExtensionAPI): Promise<void> {
+  memory.todos = todos;
+  await persist(cwd, pi);
+  await atomicWrite(
+    join(cwd, ROOT, "state", "todos.json"),
+    JSON.stringify(todos, null, 2),
+  );
+}
+
+export function getTodos(): TodoItem[] {
+  return memory.todos ?? [];
 }
 
 export async function appendProgress(

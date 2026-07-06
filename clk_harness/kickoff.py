@@ -106,6 +106,7 @@ CONFIG_ENV_OVERRIDES: Tuple[Tuple[str, Tuple[str, ...], Callable], ...] = (
     ("CLK_ROBUSTNESS_REFINE_ACCEPT_THRESHOLD", ("robustness", "refine_accept_threshold"), float),
     ("CLK_ROBUSTNESS_QA_PARALLEL_JUDGES", ("robustness", "qa_parallel_judges"), int),
     ("CLK_ROBUSTNESS_MAX_QA_DEPTH", ("robustness", "max_qa_depth"), int),
+    ("CLK_ROBUSTNESS_MAX_DELEGATE_DEPTH", ("robustness", "max_delegate_depth"), int),
     ("CLK_ROBUSTNESS_PLATEAU_WINDOW", ("robustness", "plateau_window"), int),
     ("CLK_ROBUSTNESS_PLATEAU_ACTION", ("robustness", "plateau_action"), str),
     ("CLK_ROBUSTNESS_DEBATE", ("robustness", "debate"), str),

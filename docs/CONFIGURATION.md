@@ -56,6 +56,7 @@ quality. Use this table to pick a regime:
 | `robustness.debate_lenses`             | Adversarial lenses (one parallel critic each) — more lenses = more critic dispatches per round | `[correctness, security, simplicity]` |
 | `robustness.debate_max_rounds`         | Cap on debate rounds (panel critique + worker revision) per stage        | 2 (default)                |
 | `robustness.max_qa_depth`              | Cap on inter-agent Q&A chain depth (each peer answer can ask one peer)   | 3 (default)                |
+| `robustness.max_delegate_depth`        | Cap on DELEGATE sub-agent nesting; 1 = a worker may spawn one isolated child, but that child cannot itself delegate (each level can add a bounded child dispatch) | 1 (default)                |
 | `robustness.plateau_window`            | How many no-improvement Ralph/autoresearch iterations before escalation  | 3 (default)                |
 | `robustness.plateau_action`            | `off` disables adaptive loop termination entirely                        | `escalate_then_reframe`    |
 

@@ -261,6 +261,10 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         # Inter-agent Q&A bounds.
         "qa_parallel_judges": 1,
         "max_qa_depth": 6,
+        # Context-isolated DELEGATE sub-agents. Depth 1 = a worker may spawn an
+        # isolated child for a bounded subtask, but that child cannot itself
+        # delegate (one level deep) — bounds token cost and recursion.
+        "max_delegate_depth": 1,
         # Ralph / autoresearch plateau detection.
         # A large window means the team runs many more iterations before the
         # harness decides there is no more improvement to extract.

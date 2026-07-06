@@ -31,6 +31,8 @@ export async function isRepo(cwd: string): Promise<boolean> {
  */
 const HARDENED_GITIGNORE = `# CLK harness state — ignore entirely.
 .clk/
+# Context-offload scratch space — disposable working memory, never committed.
+scratch/
 # Secrets — these patterns are also checked by the pre-push hook.
 /.env
 /.env.example

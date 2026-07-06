@@ -315,3 +315,164 @@ def test_should_auto_consensus_always(paths: Paths) -> None:
     assert runner._should_auto_consensus("engineer", {})
     assert runner._should_auto_consensus("ralph", {})
     assert not runner._should_auto_consensus("chief", {})
+
+
+# ---------------------------------------------------------------------------
+# TODOS: mutable per-turn checklist wiring
+# ---------------------------------------------------------------------------
+
+
+def test_todos_persisted_on_dispatch(paths: Paths) -> None:
+    from clk_harness.orchestration import todos as td
+
+    provider = _FakeProvider([
+        AgentResponse(ok=True, text="TODOS:\n- [ ] step one\n- [~] step two\nEND_TODOS")
+    ])
+    runner = _make_runner(paths, provider)
+    runner._dispatch_once("engineer", "obj", extra={}, dry_run=False)
+    tl = td.todos_for(paths, "engineer")
+    assert tl is not None
+    assert [(i.status, i.text) for i in tl.items] == [("todo", "step one"), ("doing", "step two")]
+
+
+def test_todos_skipped_in_meta_phase(paths: Paths) -> None:
+    from clk_harness.orchestration import todos as td
+
+    provider = _FakeProvider([AgentResponse(ok=True, text="TODOS:\n- [ ] x\nEND_TODOS")])
+    runner = _make_runner(paths, provider)
+    runner._dispatch_once("engineer", "obj", extra={"phase": "qa_answer"}, dry_run=False)
+    assert td.todos_for(paths, "engineer") is None
+
+
+def test_todos_reinjected_into_next_context(paths: Paths) -> None:
+    """A persisted checklist is surfaced in that author's next $todos context."""
+    from clk_harness.orchestration import todos as td
+
+    provider = _FakeProvider([])
+    runner = _make_runner(paths, provider)
+    td.apply_todos_blocks(paths, "TODOS:\n- [~] wire parser\nEND_TODOS", author="engineer")
+    ctx = runner._collect_context("obj", {"agent": "engineer"})
+    assert "wire parser" in ctx["todos"]
+    assert "[~]" in ctx["todos"]
+    # A different author sees their own (empty) checklist, not the engineer's.
+    other = runner._collect_context("obj", {"agent": "qa"})
+    assert "wire parser" not in other["todos"]
+
+
+def test_todos_end_to_end_prompt_when_template_seeded(paths: Paths) -> None:
+    """With the shipped engineer template on disk, the checklist reaches the
+    final rendered prompt (the $todos placeholder lives in _BASE_FOOTER)."""
+    from clk_harness.orchestration import todos as td
+    from clk_harness.templates.prompts import PROMPTS
+
+    (paths.prompts / "engineer.md").write_text(PROMPTS["engineer.md"], encoding="utf-8")
+    td.apply_todos_blocks(paths, "TODOS:\n- [~] wire parser\nEND_TODOS", author="engineer")
+    provider = _FakeProvider([])
+    runner = _make_runner(paths, provider)
+    prompt = runner.render_prompt(runner.get_agent("engineer"), "obj", extra={})
+    assert "wire parser" in prompt
+
+
+# ---------------------------------------------------------------------------
+# DELEGATE: context-isolated sub-agent wiring
+# ---------------------------------------------------------------------------
+
+
+def _delegate_run(agent: str, body: str):
+    from clk_harness.orchestration.agent import AgentRun
+
+    return AgentRun(
+        agent=agent, objective="o",
+        response=AgentResponse(ok=True, text=body),
+        started_at="t0", finished_at="t1",
+    )
+
+
+def test_delegate_spawns_isolated_child_and_returns_one_result(paths: Paths) -> None:
+    child_text = "POST: finding\nBODY:\nsecret child detail\nEND_POST\nSummary: built the helper"
+    provider = _FakeProvider([AgentResponse(ok=True, text=child_text)])
+    runner = _make_runner(paths, provider)
+    parent = _delegate_run(
+        "architect", "DELEGATE: h\nTO: engineer\nTASK:\nbuild helper\nEND_DELEGATE"
+    )
+    runner._apply_delegate(parent, {})
+    # Exactly one child dispatch, to the named target.
+    assert [c["agent"] for c in provider.calls] == ["engineer"]
+    posts = bb.list_posts(paths)
+    # The child's own POST block was suppressed (not persisted to the board).
+    assert all(p.post_type != "finding" for p in posts)
+    # Exactly one delegate_result, authored by the parent, carrying the child's
+    # distilled output, and recorded on the parent run.
+    results = [p for p in posts if p.post_type == "delegate_result"]
+    assert len(results) == 1
+    assert results[0].author == "architect"
+    assert "child detail" in results[0].body
+    assert results[0].id in parent.posts
+
+
+def test_delegate_child_can_do_real_work(paths: Paths) -> None:
+    child_text = (
+        "ACTION: write\nPATH: scratch/out.txt\nCONTENT:\nhello from child\nEND_ACTION\nDONE"
+    )
+    provider = _FakeProvider([AgentResponse(ok=True, text=child_text)])
+    runner = _make_runner(paths, provider, {"auto_commit": False})
+    parent = _delegate_run(
+        "architect", "DELEGATE: w\nTO: engineer\nTASK:\nwrite it\nEND_DELEGATE"
+    )
+    runner._apply_delegate(parent, {})
+    assert (paths.root / "scratch" / "out.txt").read_text(encoding="utf-8").strip() == "hello from child"
+
+
+def test_delegate_depth_cap_blocks_grandchild(paths: Paths) -> None:
+    provider = _FakeProvider([AgentResponse(ok=True, text="should-not-run")])
+    runner = _make_runner(paths, provider)  # max_delegate_depth default 1
+    parent = _delegate_run(
+        "architect", "DELEGATE: x\nTO: engineer\nTASK:\nt\nEND_DELEGATE"
+    )
+    # Already one level deep -> at the cap, so no child is spawned.
+    runner._apply_delegate(parent, {"delegate_chain": ["ralph"]})
+    assert provider.calls == []
+    assert [p for p in bb.list_posts(paths) if p.post_type == "delegate_result"] == []
+
+
+def test_delegate_unknown_target_skipped(paths: Paths) -> None:
+    provider = _FakeProvider([AgentResponse(ok=True, text="x")])
+    runner = _make_runner(paths, provider)
+    parent = _delegate_run(
+        "architect", "DELEGATE: x\nTO: nonexistent\nTASK:\nt\nEND_DELEGATE"
+    )
+    runner._apply_delegate(parent, {})
+    assert provider.calls == []
+
+
+def test_delegate_self_and_cycle_skipped(paths: Paths) -> None:
+    provider = _FakeProvider([AgentResponse(ok=True, text="x")])
+    # self: architect delegating to architect (depth ok, self-skip fires).
+    runner = _make_runner(paths, provider)
+    runner._apply_delegate(
+        _delegate_run("architect", "DELEGATE: x\nTO: architect\nTASK:\nt\nEND_DELEGATE"),
+        {"delegate_chain": []},
+    )
+    # cycle: target already in the chain (raise depth so the cycle guard is reached).
+    runner2 = _make_runner(paths, provider, {
+        "robustness": {**DEFAULT_CLK_CONFIG["robustness"], "max_delegate_depth": 5}
+    })
+    runner2._apply_delegate(
+        _delegate_run("architect", "DELEGATE: x\nTO: engineer\nTASK:\nt\nEND_DELEGATE"),
+        {"delegate_chain": ["engineer"]},
+    )
+    assert provider.calls == []
+
+
+def test_delegate_isolation_withholds_blackboard(paths: Paths) -> None:
+    provider = _FakeProvider([])
+    runner = _make_runner(paths, provider)
+    bb.post(paths, author="researcher", body="PEER-SECRET-XYZ",
+            post_type="finding", slug_hint="f")
+    normal = runner._collect_context("obj", {"agent": "engineer"})["blackboard_digest"]
+    isolated = runner._collect_context(
+        "obj", {"agent": "engineer", "phase": "delegate"}
+    )["blackboard_digest"]
+    assert "PEER-SECRET-XYZ" in normal
+    assert "PEER-SECRET-XYZ" not in isolated
+    assert "isolated" in isolated.lower()

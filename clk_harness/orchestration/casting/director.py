@@ -89,6 +89,20 @@ class ConsensusProposal:
 
 
 @dataclass
+class DelegateProposal:
+    """A context-isolated sub-task handed to an ephemeral child agent.
+
+    The child does NOT inherit the caller's blackboard; it runs a bounded
+    ``objective`` and its distilled result returns to the caller as a single
+    ``delegate_result`` post.
+    """
+    name: str
+    target: str = ""       # agent/role that runs the subtask
+    context: str = ""      # optional one-line context handed in
+    objective: str = ""    # the bounded task (TASK: body)
+
+
+@dataclass
 class CharterProposal:
     """A chief-authored mission charter (the up-front commitment).
 
@@ -123,6 +137,11 @@ _CONS_HEAD_RE = re.compile(r"^\s*PROPOSE_CONSENSUS\s*:\s*([A-Za-z][A-Za-z0-9_\-]
 _CONS_FIELD_RE = re.compile(r"^(AGENTS?|COPIES)\s*:\s*(.*)$", re.IGNORECASE)
 _CONS_OBJECTIVE_RE = re.compile(r"^\s*OBJECTIVE\s*:\s*$", re.IGNORECASE)
 _CONS_END_RE = re.compile(r"^\s*END_CONSENSUS\s*$", re.IGNORECASE)
+
+_DELEG_HEAD_RE = re.compile(r"^\s*DELEGATE\s*:\s*([A-Za-z][A-Za-z0-9_\-]*)\s*$", re.MULTILINE)
+_DELEG_FIELD_RE = re.compile(r"^(TO|CONTEXT)\s*:\s*(.*)$", re.IGNORECASE)
+_DELEG_TASK_RE = re.compile(r"^\s*TASK\s*:\s*$", re.IGNORECASE)
+_DELEG_END_RE = re.compile(r"^\s*END_DELEGATE\s*$", re.IGNORECASE)
 
 _CHARTER_HEAD_RE = re.compile(r"^\s*PROPOSE_CHARTER\s*:?\s*$", re.IGNORECASE)
 _CHARTER_END_RE = re.compile(r"^\s*END_CHARTER\s*$", re.IGNORECASE)
@@ -418,6 +437,64 @@ def parse_consensus_proposals(text: str) -> List[ConsensusProposal]:
             i += 1
         prop.objective = "\n".join(objective_lines).strip()
         if prop.name and prop.objective:
+            out.append(prop)
+    return out
+
+
+def parse_delegate_proposals(text: str) -> List[DelegateProposal]:
+    """Extract ``DELEGATE:`` blocks from an agent's response.
+
+    Block grammar (mirrors PROPOSE_CONSENSUS)::
+
+        DELEGATE: <short_name>
+        TO: <agent_or_role>
+        CONTEXT: <optional one-liner>
+        TASK:
+        <multi-line bounded objective>
+        END_DELEGATE
+
+    A proposal is only emitted when it names a target and a task.
+    """
+    if not text:
+        return []
+    out: List[DelegateProposal] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        m = _DELEG_HEAD_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        prop = DelegateProposal(name=m.group(1).strip())
+        i += 1
+        task_lines: List[str] = []
+        in_task = False
+        while i < len(lines):
+            line = lines[i]
+            if _DELEG_END_RE.match(line):
+                i += 1
+                break
+            if not in_task:
+                fm = _DELEG_FIELD_RE.match(line)
+                if fm:
+                    key = fm.group(1).upper()
+                    val = fm.group(2).strip()
+                    if key == "TO":
+                        prop.target = _normalize_name(val)
+                    elif key == "CONTEXT":
+                        prop.context = val
+                    i += 1
+                    continue
+                if _DELEG_TASK_RE.match(line):
+                    in_task = True
+                    i += 1
+                    continue
+                i += 1
+                continue
+            task_lines.append(line)
+            i += 1
+        prop.objective = "\n".join(task_lines).strip()
+        if prop.name and prop.target and prop.objective:
             out.append(prop)
     return out
 

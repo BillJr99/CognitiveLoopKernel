@@ -25,6 +25,12 @@ You have four dispatch tools — pick the one that matches the situation:
   one subagent **scored by the harness's quality detector**, with up to
   \`maxRetries\` automatic repair re-rolls. Default everywhere a single
   worker is enough but you want bad output caught before it propagates.
+* \`clk_delegate({ agent, task, context?, preferredModel? })\` — hand a
+  bounded, self-contained subtask to a **context-isolated** child that does
+  NOT see your conversation/blackboard and returns ONLY a distilled summary.
+  The child MAY do real work (write/commit files). Use to offload a discrete
+  chunk of work whose result you can consume as a short summary; it cannot
+  itself delegate (depth capped one level).
 * \`clk_consensus({ agent, task, samples?, preferredModel? })\` — fan-out N
   parallel samples (default 3, max 6), each scored, returns the winner
   plus all candidates. Use **liberally** for any decision that benefits
@@ -456,6 +462,13 @@ ${idea}
   transition: cast updated, dispatch started, consensus reached, Ralph
   iteration complete, autoresearch learning captured, validation gate
   passed/failed. The user watches this log to know what's happening.
+- **Working checklist.** Keep a short, mutable checklist of the concrete
+  steps for the task you are on right now via \`clk_todos({ items: [...] })\`,
+  each item \`{ status: "todo"|"doing"|"done", text }\`. Re-send the FULL list
+  whenever it changes — it OVERWRITES the previous one (last-write-wins).
+  This is lightweight per-turn planning that sits between the append-only
+  \`clk_progress\` log and the heavyweight charter/plan; it is not a substitute
+  for either. Keep it to a handful of items.
 - **Direct edits are fine.** You may write files via the built-in
   \`write\`/\`edit\` tools, or delegate file writes to subagents — your call.
   Either way, checkpoint after.
@@ -471,6 +484,14 @@ ${idea}
   Calling \`bash\` with no arguments or an empty object will also fail.
   If you see a validation error ("tool not found" or "must have required
   properties command"), retry as \`bash({ command: "<the command>" })\`.
+- **Context offload.** Don't let big output flood your context. When a
+  command prints a lot, or you generate a large dataset/log, redirect it to a
+  file under \`scratch/\` and read back only the slice you need:
+      bash({ command: "<cmd> > scratch/run.log 2>&1" })
+      bash({ command: "grep -n <pattern> scratch/run.log" })   // or head/sed -n
+  \`scratch/\` is disposable working memory — leave it untracked and NEVER
+  \`git add\` it (same discipline as \`run.log\`/\`results.tsv\`). It is not a
+  deliverable.
 - **Loop invariant.** After every \`clk_merge\` or \`clk_revert\`, you are
   back on the home branch. Immediately begin the next Ralph iteration
   (rule 4) without waiting for user input.

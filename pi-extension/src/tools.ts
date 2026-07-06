@@ -3,6 +3,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   setRoster,
+  setTodos,
   appendProgress,
   markDone,
   setHomeBranch,
@@ -26,7 +27,7 @@ import {
 } from "./git.js";
 import { activeSignal, mergeSignals, endRun } from "./abort.js";
 import { classifyError, looksRedacted, recoveryHint, withRetry } from "./errors.js";
-import { dispatchWithQuality, runConsensus } from "./consensus.js";
+import { dispatchWithQuality, runConsensus, runDelegate } from "./consensus.js";
 import { tmuxAvailable } from "./subagent.js";
 import { summarise } from "./quality.js";
 
@@ -173,6 +174,49 @@ export function registerClkTools(pi: ExtensionAPI): void {
       await appendProgress(ctx.cwd, { kind: params.kind, message: params.message }, pi);
       ctx.ui.setStatus("clk-last", `${params.kind}: ${params.message.slice(0, 80)}`);
       return { content: [{ type: "text", text: "logged" }], details: {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "clk_todos",
+    label: "CLK Todos",
+    description:
+      "Overwrite your working checklist (mutable, last-write-wins). Re-send the FULL list each " +
+      "time it changes — it replaces the previous one. Lightweight per-turn planning that sits " +
+      "between the append-only progress log and the heavyweight charter/plan.",
+    promptSnippet:
+      "Maintain a short mutable checklist ([ ]/[~]/[x]); call with the full updated list whenever it changes.",
+    parameters: Type.Object({
+      items: Type.Array(
+        Type.Object({
+          status: StringEnum(["todo", "doing", "done"] as const),
+          text: Type.String(),
+        }),
+        { description: "The full checklist; replaces the previous one." },
+      ),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const items = params.items;
+      if (items.some((i) => looksRedacted(i.text))) {
+        return {
+          content: [{ type: "text", text: `clk_todos skipped: an item's text appears redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
+      await setTodos(ctx.cwd, items, pi);
+      const marks: Record<string, string> = { todo: " ", doing: "~", done: "x" };
+      const rendered = items.map((i) => `- [${marks[i.status] ?? " "}] ${i.text}`).join("\n");
+      const open = items.filter((i) => i.status !== "done").length;
+      ctx.ui.setStatus("clk-todos", `todos: ${open} open / ${items.length}`);
+      return {
+        content: [
+          {
+            type: "text",
+            text: items.length ? `checklist updated (${open} open):\n${rendered}` : "checklist cleared",
+          },
+        ],
+        details: { count: items.length, open },
+      };
     },
   });
 
@@ -651,6 +695,64 @@ export function registerClkTools(pi: ExtensionAPI): void {
         const cls = classifyError(err);
         return {
           content: [{ type: "text", text: `clk_subagent_quality failed: ${(err as Error).message}. ${recoveryHint(cls)}` }],
+          details: { error: String(err) },
+        };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------
+  // clk_delegate — context-isolated bounded subtask, distilled result
+  // ---------------------------------------------------------------------
+  pi.registerTool({
+    name: "clk_delegate",
+    label: "CLK Delegate (context-isolated)",
+    description:
+      "Hand a bounded, self-contained subtask to a context-isolated child agent and get back " +
+      "ONLY a distilled result. The child runs in a fresh session — it does NOT see your " +
+      "conversation or blackboard — but MAY do real work (write/commit files). Use to offload a " +
+      "chunk of work whose result you can consume as a short summary. Depth is capped: the child " +
+      "cannot itself delegate.",
+    promptSnippet: "Delegate a bounded subtask to an isolated child; returns only a distilled result.",
+    parameters: Type.Object({
+      agent: Type.String({ description: "Short role label for the child." }),
+      task: Type.String({ description: "The bounded, self-contained subtask (include any persona)." }),
+      context: Type.Optional(Type.String({ description: "Optional one-line context handed to the child." })),
+      preferredModel: Type.Optional(Type.String()),
+    }),
+    async execute(_id, params, signal, onUpdate, ctx) {
+      if (signal?.aborted || activeSignal()?.aborted) {
+        return { content: [{ type: "text", text: "clk_delegate cancelled before start." }], details: {} };
+      }
+      if (!(await tmuxAvailable())) {
+        return { content: [{ type: "text", text: "tmux not installed; cannot delegate." }], details: {} };
+      }
+      if (looksRedacted(params.task)) {
+        return {
+          content: [{ type: "text", text: `clk_delegate skipped: 'task' appears redacted. ${recoveryHint("redaction")}` }],
+          details: {},
+        };
+      }
+      const sig = mergeSignals(signal, activeSignal());
+      try {
+        const { output, sessionId } = await runDelegate({
+          agent: params.agent,
+          task: params.task,
+          context: params.context,
+          preferredModel: params.preferredModel,
+          cwd: ctx.cwd,
+          signal: sig,
+          onUpdate: (text) => onUpdate?.({ content: [{ type: "text", text }], details: {} }),
+        });
+        ctx.ui.setStatus("clk-last", `delegate → ${params.agent}`);
+        return {
+          content: [{ type: "text", text: output }],
+          details: { agent: params.agent, sessionId },
+        };
+      } catch (err) {
+        const cls = classifyError(err);
+        return {
+          content: [{ type: "text", text: `clk_delegate failed: ${(err as Error).message}. ${recoveryHint(cls)}` }],
           details: { error: String(err) },
         };
       }

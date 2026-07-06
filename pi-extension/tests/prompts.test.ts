@@ -24,9 +24,30 @@ describe("clkChiefPrimer", () => {
       "clk_ralph",
       "clk_checkpoint",
       "clk_done",
+      "clk_todos",
+      "clk_delegate",
     ]) {
       assert.ok(out.includes(tool), `primer should reference ${tool}`);
     }
+  });
+
+  test("teaches the mutable TODOS checklist convention", () => {
+    const out = clkChiefPrimer("anything");
+    assert.ok(out.includes("clk_todos"), "primer should mention the clk_todos tool");
+    assert.ok(/overwrite/i.test(out), "primer should explain last-write-wins semantics");
+  });
+
+  test("teaches the context-offload scratch/ convention", () => {
+    const out = clkChiefPrimer("anything");
+    assert.ok(out.includes("scratch/"), "primer should mention the scratch/ convention");
+    assert.ok(/offload/i.test(out), "primer should mention context offload");
+  });
+
+  test("describes clk_delegate as context-isolated", () => {
+    const out = clkChiefPrimer("anything").toLowerCase();
+    assert.ok(out.includes("clk_delegate"));
+    assert.ok(out.includes("context-isolated") || out.includes("isolated"),
+      "primer should describe clk_delegate isolation");
   });
 
   test("references casting and completion criteria", () => {
