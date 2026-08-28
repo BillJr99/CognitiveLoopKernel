@@ -1,10 +1,24 @@
 name: CI
 
 on:
+  # Only the default branch. A branch with an open PR already gets a full
+  # run from `pull_request` below; listing "**" here ran the whole workflow
+  # (both Python versions, plus the web and Docker e2e jobs) a second time
+  # on the identical commit. Push a branch without a PR and you get no run —
+  # open a draft PR when you want a signal before review.
   push:
-    branches: ["**"]
+    branches: ["main", "master"]
   pull_request:
     branches: ["main", "master"]
+
+# One in-flight run per branch. `head_ref` is set on pull_request events and
+# `ref_name` on push events, and both resolve to the same branch name, so a
+# PR run and a default-branch run for the same branch share a group. Pushing
+# twice in quick succession now cancels the superseded run instead of leaving
+# it to burn minutes on a commit nobody is waiting for.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 env:
   # Node 20 action runtimes are deprecated (removed from runners Sept 2026);
