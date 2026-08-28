@@ -895,10 +895,58 @@ def cmd_configure(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _gauntlet_flags() -> argparse.ArgumentParser:
+    """Shared --gauntlet / --no-gauntlet / --gauntlet-preset flags.
+
+    Attached both to the root parser (so `clk --no-gauntlet run` works, like
+    the existing `--no-api`) and, via ``parents=``, to every action
+    sub-command (so `clk run --no-gauntlet` works too). Both default to None
+    so "not given" is distinguishable from "given as off".
+    """
+    ap = argparse.ArgumentParser(add_help=False)
+    # SUPPRESS, not None: the same parent is attached to the root parser and
+    # to each sub-parser, and a sub-parser default would otherwise overwrite
+    # the value the root already parsed from `clk --no-gauntlet run`. With
+    # SUPPRESS the attribute is only set when the flag is actually given, so
+    # both spellings work and the sub-command still wins when both are used.
+    ap.add_argument(
+        "--no-gauntlet", action="store_const", const=False, dest="gauntlet_override",
+        default=argparse.SUPPRESS,
+        help="Disable the gauntlet loop (equivalent to GAUNTLET_LOOP=false).",
+    )
+    ap.add_argument(
+        "--gauntlet", action="store_const", const=True, dest="gauntlet_override",
+        default=argparse.SUPPRESS,
+        help="Force the gauntlet loop on (it is on by default).",
+    )
+    ap.add_argument(
+        "--gauntlet-preset", choices=["quick", "standard", "rigorous"],
+        default=argparse.SUPPRESS,
+        help="Gauntlet intensity: quick=1 critique round, standard=3, rigorous=5.",
+    )
+    ap.add_argument(
+        "--gauntlet-rounds", type=int, metavar="N", default=argparse.SUPPRESS,
+        help=(
+            "Critique/revision rounds per dispatch, overriding the preset. "
+            "0 = use the preset (default: 3, from `standard`)."
+        ),
+    )
+    ap.add_argument(
+        "--gauntlet-max-dispatches", type=int, metavar="N", default=argparse.SUPPRESS,
+        help=(
+            "Total gauntlet dispatches allowed for the whole session "
+            "(default 500). 0 = unlimited."
+        ),
+    )
+    return ap
+
+
 def build_parser() -> argparse.ArgumentParser:
+    _g = _gauntlet_flags()
     p = argparse.ArgumentParser(
         prog="clk",
         description="Cognitive Loop Kernel - local-only multi-agent development harness.",
+        parents=[_g],
     )
     p.add_argument("--version", action="version", version=__version__)
     p.add_argument(
@@ -918,6 +966,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_kick = sub.add_parser(
         "kickoff",
+        parents=[_g],
         help="Bootstrap a self-contained kickoff workspace under ./workspace/ "
              "(driven by .env and optional --arg overrides).",
         description=(
@@ -952,14 +1001,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Set CLK_RUN_INSTALL=true.")
     p_kick.set_defaults(func=cmd_kickoff)
 
-    p_idea = sub.add_parser("idea", help="Capture an idea.")
+    p_idea = sub.add_parser("idea", help="Capture an idea.", parents=[_g])
     p_idea.add_argument("statement", help="The idea, problem statement, or vision.")
     p_idea.add_argument("--title", help="Short title for the idea.")
     p_idea.add_argument("--tag", action="append", help="Optional tag (repeatable).")
     p_idea.add_argument("--no-cast", action="store_true", help="Skip the automatic chief casting pass.")
     p_idea.set_defaults(func=cmd_idea)
 
-    p_cast = sub.add_parser("cast", help="Run the chief in casting mode (re-design the roster + workflow).")
+    p_cast = sub.add_parser(
+        "cast",
+        help="Run the chief in casting mode (re-design the roster + workflow).",
+        parents=[_g],
+    )
     p_cast.add_argument("--dry-run", action="store_true")
     p_cast.set_defaults(func=cmd_cast)
 
@@ -970,12 +1023,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_roles.add_argument("--provider", help="Optional provider override.")
     p_roles.set_defaults(func=cmd_roles)
 
-    p_plan = sub.add_parser("plan", help="Run discovery + product workflows.")
+    p_plan = sub.add_parser("plan", help="Run discovery + product workflows.", parents=[_g])
     p_plan.add_argument("--dry-run", action="store_true")
     p_plan.set_defaults(func=cmd_plan)
 
     p_run = sub.add_parser(
         "run",
+        parents=[_g],
         help="Drive the autonomous mission to a code-gated done (use --once for a single cycle).",
     )
     p_run.add_argument("--workflow", help="Workflow name for --once (default: engineering).")
@@ -989,6 +1043,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_mission = sub.add_parser(
         "mission",
+        parents=[_g],
         help="Autonomous single-prompt mission: one objective -> code-gated done.",
         aliases=["auto"],
     )
@@ -999,13 +1054,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_mission.add_argument("--dry-run", action="store_true")
     p_mission.set_defaults(func=cmd_mission)
 
-    p_loop = sub.add_parser("loop", help="Run a Ralph or autoresearch loop.")
+    p_loop = sub.add_parser("loop", help="Run a Ralph or autoresearch loop.", parents=[_g])
     p_loop.add_argument("--mode", choices=["ralph", "autoresearch"], default="ralph")
     p_loop.add_argument("--max-iterations", type=int)
     p_loop.add_argument("--dry-run", action="store_true")
     p_loop.set_defaults(func=cmd_loop)
 
-    p_tui = sub.add_parser("tui", help="Launch the TUI dashboard.")
+    p_tui = sub.add_parser("tui", help="Launch the TUI dashboard.", parents=[_g])
     p_tui.add_argument("prompt", nargs="?", help="Optional initial idea / prompt.")
     p_tui.set_defaults(func=cmd_tui)
 
@@ -1047,9 +1102,33 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _apply_gauntlet_flags(args: argparse.Namespace) -> None:
+    """Translate --gauntlet / --no-gauntlet / --gauntlet-preset into the env.
+
+    ``orchestration.gauntlet.resolve_settings`` already reads GAUNTLET_LOOP and
+    CLK_GAUNTLET_PRESET live at dispatch time, so exporting here gives the CLI
+    flags top precedence for every sub-command and every runner construction
+    site without threading an override through twenty call sites. It also
+    means the flags reach sub-processes (providers, the TUI worker) unchanged.
+    """
+    override = getattr(args, "gauntlet_override", None)
+    if override is not None:
+        os.environ["GAUNTLET_LOOP"] = "true" if override else "false"
+    preset = getattr(args, "gauntlet_preset", None)
+    if preset:
+        os.environ["CLK_GAUNTLET_PRESET"] = str(preset)
+    rounds = getattr(args, "gauntlet_rounds", None)
+    if rounds is not None:
+        os.environ["CLK_GAUNTLET_MAX_ROUNDS"] = str(int(rounds))
+    budget = getattr(args, "gauntlet_max_dispatches", None)
+    if budget is not None:
+        os.environ["CLK_GAUNTLET_MAX_DISPATCHES"] = str(int(budget))
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _apply_gauntlet_flags(args)
 
     # Auto-start the REST API on a daemon thread so it is available during
     # normal CLI / TUI operation.  Falls back gracefully if the optional

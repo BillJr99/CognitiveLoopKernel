@@ -41,6 +41,8 @@ clk_harness/
   git_ops.py             # init, commit, revert, status helpers
   providers/             # claude, codex, pi, ollama, shell adapters
   orchestration/         # agent runner, workflow runner, ralph loop (refinement + autoresearch)
+                         #   gauntlet.py — layer 12: acceptance criteria ->
+                         #   critique -> revise -> verify, wrapping every dispatch
   templates/             # bundled prompts and workflows
   utils/                 # logging
 scripts/
@@ -64,6 +66,8 @@ pi-extension/            # standalone Pi extension (TypeScript)
     consensus.ts         # dispatchWithQuality + runConsensus (port of agent.py)
     quality.ts           # scoreResponse + repairHint + progressSignal
                          #   (port of response_quality.py)
+    gauntlet.ts          # runGauntlet + settings/override (port of gauntlet.py);
+                         #   wraps all three dispatch paths in consensus.ts
     git.ts               # checkpoint, branch, merge, revert + hasRemote / commitsAhead /
                          #   pushBestEffort (port of git_ops.py auto-push helpers)
     state.ts / abort.ts / errors.ts / types.ts

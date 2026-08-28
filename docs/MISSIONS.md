@@ -520,6 +520,103 @@ decides whether the panel runs anyway (`off` | `careful_only` *(default)* |
 - Logged events: `debate_round`
 - Kill switch: `robustness.debate: "off"` AND remove any `refine: {mode: debate}` blocks.
 
+### 12. Gauntlet loop (new)
+
+Every layer above judges output against a critic's in-the-moment opinion,
+so "good" gets invented after the work is already done. The gauntlet
+inverts that order: **the acceptance criteria are written down before the
+work is judged**, and the result is verified against those same criteria
+rather than against a fresh opinion.
+
+It wraps *every* non-meta dispatch — workflow stages, Ralph and
+autoresearch iterations, mission phases, `DELEGATE` children, consensus
+winners, and TUI/Telegram/WebUI dispatches alike — because they all pass
+through `AgentRunner.run`.
+
+One turn through the gauntlet:
+
+1. **Answer key.** The worker's own `ANSWER_KEY:` block is used when it
+   emitted one (free — every bundled prompt now teaches the grammar).
+   Otherwise one `phase: gauntlet_key` dispatch derives it.
+2. **Candidate 0.** The existing dispatch path, unchanged. Auto-consensus
+   (layer 7) and the quality-retry loop (layer 6) still run underneath.
+3. **Adversarial critique.** `phase: gauntlet_critique`, judged against the
+   key, each finding classified material or non-material.
+4. **Revise and iterate.** `phase: gauntlet_revise`, until no material
+   defect remains or the preset's round cap is reached.
+5. **Final verification.** `phase: gauntlet_verify` against the original
+   objective plus every key check, with exactly one bounded repair.
+
+Critics end their response with three lines the harness parses:
+
+```
+MATERIAL_DEFECTS: <integer>
+VERDICT: accept   # or: revise
+SCORE: <0..1>
+```
+
+`MATERIAL_DEFECTS: 0` converges even without an `accept` verdict — a clean
+critique is a valid outcome, and cosmetic nits alone must not buy another
+expensive round. Conversely an `accept` scored below
+`accept_threshold` is *not* treated as an accept, and an unparseable
+critique fails closed to `revise` rather than passing the work through.
+
+Presets cap the critique/revision rounds:
+
+| `preset`              | Rounds | Lenses                                                        |
+|-----------------------|--------|---------------------------------------------------------------|
+| `quick`               | 1      | requirements, correctness                                     |
+| `standard` *(default)*| 3      | + reasoning, hidden assumptions, edge cases, feasibility       |
+| `rigorous`            | 5      | + counterexamples, internal consistency, evidence quality, …   |
+
+Rounds stop early on a clean critique, so the cap is a worst case rather
+than the usual spend. `gauntlet.max_rounds` overrides the preset's cap for a
+single dispatch (`0` = use the preset, so the default resolves to 3).
+
+**The session budget.** The round cap bounds one dispatch and resets on the
+next, so on its own it does not bound a long mission with hundreds of
+stages. `gauntlet.max_dispatches` (default **500**, `0` = unlimited) caps the
+gauntlet's dispatches across the whole session. Once spent, dispatches
+return their candidate unwrapped and the loop logs
+`gauntlet_budget_exhausted` — work already done is kept, nothing is lost.
+
+**Interaction with layer 9.** The gauntlet already threads a critic, so
+`gauntlet.supersede_auto_refine` (default true) retires the
+`auto_refine`-driven critic pass rather than critiquing the same work
+twice. An explicit `refine:` block in workflow YAML is user intent and
+still runs; set `supersede_auto_refine: false` to stack both.
+
+**Safety.** The loop never loses work: a failed candidate, an empty
+candidate, a critic that raises, a critic that returns nothing, or a
+revision that fails all fall back to the best run already in hand. The
+gauntlet can only improve a dispatch or leave it untouched.
+
+Set the intensity four ways, highest precedence first:
+
+```bash
+clk --no-gauntlet run              # or: clk run --no-gauntlet
+clk run --gauntlet-preset rigorous
+clk run --gauntlet-rounds 2            # exact round cap, ignoring the preset
+clk run --gauntlet-max-dispatches 100  # session budget (0 = unlimited)
+GAUNTLET_LOOP=False clk run        # or CLK_ROBUSTNESS_GAUNTLET=off
+/gauntlet off                      # in the TUI, at runtime
+/clk-gauntlet rigorous             # in the Pi extension, at runtime
+```
+
+`kickoff.sh --setup` also asks whether to run the gauntlet and at which
+preset.
+
+- Code: `orchestration/gauntlet.py`, `agent/runner.py::_maybe_gauntlet`
+  (mirrored by `pi-extension/src/gauntlet.ts`)
+- Config: `clk.config.json::gauntlet.{enabled, preset, max_rounds,
+  max_dispatches, scope, exclude_agents, critic, answer_key,
+  final_verification, accept_threshold, supersede_auto_refine, focus}`
+- Logged events: `gauntlet_started`, `gauntlet_key`, `gauntlet_critique`,
+  `gauntlet_converged`, `gauntlet_round_cap`, `gauntlet_verify`,
+  `gauntlet_repaired`, `gauntlet_final`, `gauntlet_budget_exhausted`
+- Kill switch: `--no-gauntlet`, `GAUNTLET_LOOP=False`, or
+  `gauntlet.enabled: false`
+
 ### Putting it together
 
 A typical "careful" engineering stage now runs:
@@ -527,8 +624,12 @@ A typical "careful" engineering stage now runs:
 1. Stage dispatched with `careful: true`.
 2. `auto_consensus=on_careful` → N samples fan out in parallel.
 3. Chief coalesces the samples.
-4. `auto_refine=all` (default) → critic scores the coalesced output;
-   the worker is revised until critic accepts or `max_rounds`.
+4. The gauntlet (layer 12) wraps the result: acceptance criteria →
+   adversarial critique → revision → verification. Because it ran,
+   `supersede_auto_refine` retires the `auto_refine` critic pass, so the
+   work is critiqued once rather than twice. (With the gauntlet disabled,
+   `auto_refine=all` scores the coalesced output instead and the worker is
+   revised until the critic accepts or `max_rounds` is hit.)
 5. Stage validation runs.
 6. Checkpoint (if enabled) — chief CONTINUE / REDIRECT / ABORT
    verdict.
@@ -537,7 +638,7 @@ A typical "careful" engineering stage now runs:
 Tracing this in `.clk/logs/`:
 
 ```
-grep -E '^(consensus_|refine_|workflow_checkpoint|agent_quality_)' \
+grep -E '"event":"(consensus_|refine_|gauntlet_|workflow_checkpoint|agent_quality_)' \
     .clk/logs/activity.jsonl | jq .
 ```
 ## Completion criteria

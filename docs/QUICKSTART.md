@@ -78,6 +78,7 @@ engineering cycle so the agents react to the new context.
 | `/loop ralph 5`                      | start a Ralph refinement loop with 5 iterations |
 | `/loop autoresearch 3`               | start a Karpathy-style research loop (ralph agent, research mode) |
 | `/stop`                              | request the active loop to stop after the current iteration |
+| `/gauntlet on\|off\|quick\|standard\|rigorous` | toggle the gauntlet loop or set its intensity, live (no argument prints the current state) |
 | `/abort`                             | SIGTERM any running CLI subprocess (use when an agent is genuinely hung; the heartbeat tells you when this is likely) |
 | `/provider <name>`                   | switch the active provider; verifies it's reachable and warns if not |
 | `/install [tool]`                    | install a missing provider CLI (claude, pi, ollama, …) via the registry in `scripts/install_tool.sh` |

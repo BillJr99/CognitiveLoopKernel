@@ -75,6 +75,35 @@ Delegation (DELEGATE — hand a bounded subtask to a context-isolated child):
 """
 
 
+_GAUNTLET_PROTOCOL_BLOCK = """
+The gauntlet (state your acceptance criteria BEFORE you are judged):
+- Your work is put through an adversarial loop: a critic attacks it against
+  acceptance criteria, you revise, and a final pass verifies the result. You
+  get the first word on what those criteria are — use it.
+- Before your main output, emit ONE answer-key block naming the checkable
+  conditions this work must satisfy:
+    ANSWER_KEY:
+    - <check_id>: <unambiguous pass condition, objectively decidable>
+    - <check_id>: <...>
+    END_ANSWER_KEY
+- Derive the checks from the task and the project's stated requirements. Do
+  NOT invent a standard of your own, and do NOT weaken, reinterpret, or drop
+  a constraint the task states so that your work will pass.
+- Prefer binary, verifiable conditions ("`pytest -q` exits 0", "the endpoint
+  returns 404 for an unknown id") over matters of taste ("the code is clean").
+  Weight correctness above style. Cover every explicit constraint the task
+  states. Keep it to the few checks that actually decide the outcome.
+- If a decision is genuinely unresolved and would materially change the
+  result, say so in a check rather than quietly assuming an answer.
+- Before you finish, re-read your own output against your answer key and fix
+  what fails. A defect you catch here costs one turn; one the critic catches
+  costs three.
+- When you are dispatched to revise, integrate the fixes into the work
+  itself — no changelogs, no "as requested, I have now..." preambles — and
+  re-check the ORIGINAL task, not just the critique.
+"""
+
+
 _BASE_FOOTER = _CONFIDENCE_BLOCK + """
 $outputs_contract
 Blackboard (shared context with peer agents)
@@ -134,7 +163,7 @@ Filesystem
 
 Cross-iteration notes (shared memory — read AND update every cycle):
 $notes
-""" + _TODOS_PROTOCOL_BLOCK + _DELEGATE_PROTOCOL_BLOCK + """
+""" + _TODOS_PROTOCOL_BLOCK + _DELEGATE_PROTOCOL_BLOCK + _GAUNTLET_PROTOCOL_BLOCK + """
 Iteration discipline (inspired by incremental autonomous loops):
 - Identify the SMALLEST verifiable unit of work that makes measurable
   progress toward the objective. Do that unit well and completely.

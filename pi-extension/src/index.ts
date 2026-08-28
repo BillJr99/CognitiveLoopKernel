@@ -23,6 +23,13 @@ import { registerClkTools } from "./tools.js";
 import { registerSubagentTool, tmuxAvailable } from "./subagent.js";
 import { startRun, endRun, installAbortBridges, activeSignal } from "./abort.js";
 import { classifyError, recoveryHint, withRetry } from "./errors.js";
+import {
+  gauntletSettings,
+  parseGauntletCommand,
+  resetBudget as resetGauntletBudget,
+  roundsFor,
+  setOverride,
+} from "./gauntlet.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -99,6 +106,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         "  /clk-doctor      Health-check tmux + git + remote + workspace state.",
         "  /clk-undo        Preview the last CLK commit; `/clk-undo confirm`",
         "                   creates a new revert commit on top of it.",
+        "  /clk-gauntlet    Toggle the gauntlet loop on/off or set its preset",
+        "                   (quick|standard|rigorous). No argument prints status.",
         "",
         "Orchestration tools the chief uses (you don't call these directly):",
         "  clk_cast / clk_subagent          — roster + raw dispatch.",
@@ -169,6 +178,41 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   // /clk-doctor — quick triage. Checks the conditions CLK needs to work:
   // tmux on PATH, a git repo, the .clk/ layout, and any captured state.
+  // /clk-gauntlet — runtime toggle for the gauntlet loop (layer 12).
+  // The override is in-memory for this session and beats GAUNTLET_LOOP in
+  // the environment; restart (or export the env var) for a durable change.
+  pi.registerCommand("clk-gauntlet", {
+    description:
+      "Toggle the gauntlet loop: /clk-gauntlet on|off|quick|standard|rigorous.",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const token = (args ?? "").trim().toLowerCase();
+      const report = (prefix: string) => {
+        const s = gauntletSettings();
+        ctx.ui.notify(
+          `${prefix}gauntlet: ${s.enabled ? "on" : "off"}, preset=${s.preset} ` +
+            `(${roundsFor(s)} critique round(s) max, ` +
+            `${s.maxDispatches || "unlimited"} dispatch budget)`,
+          "info",
+        );
+      };
+      if (!token || token === "status") {
+        report("");
+        return;
+      }
+      const override = parseGauntletCommand(token);
+      if (!override) {
+        ctx.ui.notify(
+          `/clk-gauntlet: unknown option '${token}'. ` +
+            "use on | off | quick | standard | rigorous | status",
+          "warning",
+        );
+        return;
+      }
+      setOverride(override);
+      report("updated — ");
+    },
+  });
+
   pi.registerCommand("clk-doctor", {
     description: "Health-check tmux + git + workspace state.",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
@@ -276,6 +320,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         await ensureRepo(ctx.cwd);
         await setIdea(ctx.cwd, idea, pi);
         await resetSupervise(ctx.cwd, pi); // fresh watchdog counters per run
+        resetGauntletBudget(); // fresh gauntlet dispatch budget per run
         await appendProgress(
           ctx.cwd,
           { kind: "note", message: `idea captured: ${idea}` },
@@ -355,6 +400,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         return;
       }
       await resetSupervise(ctx.cwd, pi); // resumed run gets fresh stall budget
+      resetGauntletBudget(); // ...and a fresh gauntlet dispatch budget
       ctx.ui.setStatus("clk-run", "active (resumed)");
       ctx.ui.notify("CLK run resumed. The watchdog keeps the chief iterating until clk_done.", "info");
       let headSha: string | null = null;

@@ -59,6 +59,7 @@ quality. Use this table to pick a regime:
 | `robustness.max_delegate_depth`        | Cap on DELEGATE sub-agent nesting; 1 = a worker may spawn one isolated child, but that child cannot itself delegate (each level can add a bounded child dispatch) | 1 (default)                |
 | `robustness.plateau_window`            | How many no-improvement Ralph/autoresearch iterations before escalation  | 3 (default)                |
 | `robustness.plateau_action`            | `off` disables adaptive loop termination entirely                        | `escalate_then_reframe`    |
+| `gauntlet.enabled` / `gauntlet.preset` | `false` → ×1; `true` → ~×2 extra dispatches on a clean pass (critique + verification), up to ~×(2·rounds + 2) when the critic keeps asking for revisions. Rounds: `quick`=1, `standard`=3, `rigorous`=5 | `true`, `standard` (default) |
 
 Cost-minimal regime (closest to legacy CLK behavior, no extra tokens):
 
@@ -68,8 +69,12 @@ Cost-minimal regime (closest to legacy CLK behavior, no extra tokens):
   "auto_refine": "off",
   "max_quality_retries": 0,
   "plateau_action": "off"
-}
+},
+"gauntlet": { "enabled": false }
 ```
+
+Or, without editing any file: `clk --no-gauntlet <cmd>`, `GAUNTLET_LOOP=False`,
+or `/gauntlet off` in the TUI.
 
 Cost-maximal "lean into the loop" regime (every dispatch fans out,
 critic gates every careful stage, plateau detection on, Q&A protocol
@@ -82,8 +87,56 @@ fully open):
   "max_quality_retries": 3,
   "refine_max_rounds": 4,
   "plateau_action": "escalate_then_reframe"
-}
+},
+"gauntlet": { "enabled": true, "preset": "rigorous", "supersede_auto_refine": false }
 ```
+
+## Gauntlet loop
+
+The gauntlet (layer 12 — see **Robustness loops**) wraps every agent and
+sub-agent dispatch: acceptance criteria are written down before the work is
+judged, a critic attacks the result against them, the agent revises, and a
+final pass verifies. It is **on by default**.
+
+| Knob                             | Meaning                                                                                          | Default      |
+|----------------------------------|--------------------------------------------------------------------------------------------------|--------------|
+| `gauntlet.enabled`               | Master switch. `false` restores the pre-gauntlet dispatch path exactly.                            | `true`       |
+| `gauntlet.preset`                | Round cap and critique lenses: `quick` (1) \| `standard` (3) \| `rigorous` (5).                    | `standard`   |
+| `gauntlet.max_rounds`            | Critique/revision rounds per dispatch, overriding the preset. `0` = derive from the preset, so this resolves to 3. | `0` (→ 3)    |
+| `gauntlet.max_dispatches`        | Total gauntlet dispatches for the whole session. The round cap bounds one dispatch and resets on the next, so only this bounds a long run. `0` = unlimited. | `500`        |
+| `gauntlet.scope`                 | Which dispatches are wrapped: `all` \| `careful_only` \| `producing_only`.                         | `all`        |
+| `gauntlet.exclude_agents`        | Agents the gauntlet skips — the critic must not be put through its own gauntlet.                  | `["critic"]` |
+| `gauntlet.critic`                | Role used to critique and verify. Falls back to `critic`, then `qa`, then a self-audit.           | `critic`     |
+| `gauntlet.answer_key`            | Spend one dispatch deriving criteria when the worker emitted no `ANSWER_KEY` block.               | `true`       |
+| `gauntlet.final_verification`    | Run the closing verification pass (plus one bounded repair).                                      | `true`       |
+| `gauntlet.accept_threshold`      | Score at or above which a critic's `accept` verdict is believed.                                  | `0.8`        |
+| `gauntlet.supersede_auto_refine` | Retire the `auto_refine` critic pass while the gauntlet runs, so work is not critiqued twice.     | `true`       |
+| `gauntlet.focus`                 | Extra critique lenses layered on the preset's.                                                    | `[]`         |
+
+Every knob has a `CLK_GAUNTLET_*` environment variable (see `.env.example`);
+`GAUNTLET_LOOP` and `CLK_ROBUSTNESS_GAUNTLET` both map to
+`gauntlet.enabled`, with `GAUNTLET_LOOP` winning when both are set.
+
+**Turning it off**, in precedence order:
+
+```bash
+clk --no-gauntlet run          # or: clk run --no-gauntlet
+GAUNTLET_LOOP=False clk run    # or: CLK_ROBUSTNESS_GAUNTLET=off
+/gauntlet off                  # TUI, at runtime
+/clk-gauntlet off              # Pi extension, at runtime
+```
+
+**Retuning it** without editing config:
+
+```bash
+clk run --gauntlet-preset rigorous     # 5 rounds instead of 3
+clk run --gauntlet-rounds 2            # exact round cap, ignoring the preset
+clk run --gauntlet-max-dispatches 100  # tighter session budget (0 = unlimited)
+```
+
+`/gauntlet quick|standard|rigorous` (TUI) and `/clk-gauntlet <preset>`
+(Pi) change the intensity mid-session; `kickoff.sh --setup` asks about both
+when you run the wizard.
 ## Customization
 
 - Edit prompts in `.clk/prompts/` to change agent behavior.

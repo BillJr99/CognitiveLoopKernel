@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import threading
 from dataclasses import dataclass
@@ -148,6 +149,8 @@ class Worker(threading.Thread):
             self._do_tutorial()
         elif job.kind == "workspaces":
             self._do_workspaces(job.payload or {})
+        elif job.kind == "gauntlet":
+            self._do_gauntlet(str(job.payload or ""))
 
     # --- handlers --------------------------------------------------------
 
@@ -386,6 +389,82 @@ class Worker(threading.Thread):
                 f"Type /status for the breakdown, /loop {mode} {n} to keep going, "
                 f"or a follow-up message to redirect."
             )
+
+    def _do_gauntlet(self, arg: str) -> None:
+        """`/gauntlet [on|off|quick|standard|rigorous|status]` — runtime toggle.
+
+        Writes through to ``clk.config.json`` so the change survives a
+        restart, and updates the live ``clk_cfg`` the runner holds so it
+        takes effect on the very next dispatch rather than the next session.
+        """
+        from ..orchestration.gauntlet import PRESET_ROUNDS, resolve_settings
+
+        token = (arg or "").strip().lower()
+        cfg_path = self.paths.config / "clk.config.json"
+
+        def _report(note: str = "") -> None:
+            live = resolve_settings(self.clk_cfg)
+            state = "on" if live.enabled else "off"
+            prefix = f"{note} " if note else ""
+            budget = live.max_dispatches or "unlimited"
+            self.state.add_log(
+                f"{prefix}gauntlet: {state}, preset={live.preset} "
+                f"({live.rounds} critique round(s) max), scope={live.scope}, "
+                f"dispatch budget={budget}",
+                level="SYS",
+            )
+
+        if token in ("", "status"):
+            _report()
+            return
+
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            log_exception("tui._do_gauntlet.read", exc)
+            self.state.add_log(f"could not read clk.config.json: {exc}", level="ERROR")
+            return
+
+        block = dict(cfg.get("gauntlet") or {})
+        if token in ("on", "true", "yes", "enable", "enabled"):
+            block["enabled"] = True
+        elif token in ("off", "false", "no", "disable", "disabled"):
+            block["enabled"] = False
+        elif token in PRESET_ROUNDS:
+            # Naming a preset also switches the loop on — asking for
+            # `rigorous` while it is off is never what someone means.
+            block["preset"] = token
+            block["enabled"] = True
+        else:
+            self.state.add_log(
+                f"/gauntlet: unknown option '{token}'. "
+                f"use on | off | {' | '.join(sorted(PRESET_ROUNDS))} | status",
+                level="WARN",
+            )
+            return
+
+        cfg["gauntlet"] = block
+        try:
+            save_json(cfg_path, cfg)
+        except OSError as exc:
+            log_exception("tui._do_gauntlet.save", exc)
+            self.state.add_log(f"could not save clk.config.json: {exc}", level="ERROR")
+            return
+
+        # Update the live config objects so the next dispatch sees it.
+        self.clk_cfg["gauntlet"] = block
+        try:
+            self.runner.clk_cfg["gauntlet"] = block
+        except (AttributeError, TypeError) as exc:
+            logger.debug("gauntlet: runner clk_cfg not updatable: %s", exc)
+
+        # An explicit /gauntlet beats a GAUNTLET_LOOP left in the
+        # environment, which would otherwise win at resolve time.
+        os.environ["GAUNTLET_LOOP"] = "true" if block.get("enabled", True) else "false"
+        if block.get("preset"):
+            os.environ["CLK_GAUNTLET_PRESET"] = str(block["preset"])
+
+        _report("updated —")
 
     def _do_set_provider(self, name: str) -> None:
         try:

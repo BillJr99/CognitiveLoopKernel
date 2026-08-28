@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 from ...log import get_logger, log_exception
 from ...utils.activity_log import log_event
 from .. import blackboard as _blackboard
+from .. import gauntlet as _gauntlet
 
 if TYPE_CHECKING:
     from ...config import Paths
@@ -118,18 +119,29 @@ class ReviewMixin:
 
     # -- critic-judge refinement (Layer 3 robustness loop) ---------------
 
-    def _refine_enabled(self, stage: "WorkflowStage") -> bool:
+    def _refine_enabled(self, stage: "WorkflowStage", *, gauntlet_ran: bool = False) -> bool:
         """Decide whether the critic-judge refinement loop should run.
 
         Explicit ``refine:`` on the stage always wins. Otherwise we
         fall back to ``robustness.auto_refine`` (off | careful_only |
         all). ``chief`` and ``qa`` agents are skipped to avoid the
         critic critiquing its own coalescing output or the validator.
+
+        When the gauntlet (layer 12) already threaded a critic through
+        this stage's dispatch, the ``auto_refine`` pass would critique the
+        same work a second time for no new information, so
+        ``gauntlet.supersede_auto_refine`` (default true) retires it.
+        An explicit ``refine:`` block is user intent and still runs — set
+        ``supersede_auto_refine: false`` to stack both.
         """
         if stage.agent in ("chief", "qa", "critic"):
             return False
         if stage.refine is not None:
             return True
+        if gauntlet_ran:
+            gcfg = _gauntlet.resolve_settings(self.runner.clk_cfg)
+            if gcfg.supersede_auto_refine:
+                return False
         cfg = (self.runner.clk_cfg.get("robustness") or {})
         mode = str(cfg.get("auto_refine") or "off").lower()
         if mode in ("", "off", "false", "0"):
