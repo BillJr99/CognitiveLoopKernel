@@ -6,6 +6,24 @@ Part of the [CLK documentation](../README.md). Release highlights, most recent f
 
 If you've used CLK before, the highlights of this release:
 
+- **The gauntlet loop — criteria before judgement, on every agent.** Every
+  other critique layer judged output against a critic's in-the-moment
+  opinion, so "good" got invented after the work was already done. The
+  gauntlet inverts that: each agent and sub-agent writes **checkable
+  acceptance criteria before its work is judged** (an `ANSWER_KEY:` block
+  every bundled prompt now teaches), a critic then attacks the result
+  against those criteria, the agent revises, and a final pass verifies —
+  catching work that looks finished but quietly dropped a requirement.
+  It wraps *every* dispatch, in both the Python harness and the Pi
+  extension, and it never loses work: a broken critic, an empty critique,
+  or a failed revision all fall back to the best run in hand.
+  On by default at the `standard` preset (3 critique rounds, stopping
+  early on a clean critique). Turn it off or retune it four ways:
+  `clk --no-gauntlet <cmd>`, `GAUNTLET_LOOP=False`, `/gauntlet off` in the
+  TUI, or `/clk-gauntlet off` in Pi — and `kickoff.sh --setup` now asks.
+  Because it already threads a critic, it retires the `auto_refine` pass
+  by default rather than critiquing the same work twice. See
+  [Robustness loops](MISSIONS.md#12-gauntlet-loop-new).
 - **Autonomous missions — one prompt to done.** `clk run` (and the TUI's first
   message) now drive the whole lifecycle autonomously: the chief writes a
   **charter**, authors a **living plan**, and walks discovery → … →

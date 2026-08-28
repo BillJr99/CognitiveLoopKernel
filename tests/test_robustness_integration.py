@@ -248,8 +248,10 @@ def test_quality_retry_fires_on_empty_response(paths: Paths) -> None:
             "max_quality_retries": 1,
         },
         # Isolate the quality-retry path: the no-op guard would otherwise
-        # re-dispatch the (action-less) engineer response on its own.
+        # re-dispatch the (action-less) engineer response on its own, and
+        # the gauntlet would critique the recovered response.
         "noop_guard": {"enabled": False},
+        "gauntlet": {"enabled": False},
     })
     run = runner.run("engineer", "Implement feature X.")
     assert run.response.text == good

@@ -31,6 +31,12 @@ import {
   type ResponseQuality,
   type ScoreOpts,
 } from "./quality.js";
+import {
+  gauntletSettings,
+  runGauntlet,
+  type GauntletResult,
+  type GauntletSettings,
+} from "./gauntlet.js";
 
 /**
  * The signature of the function that actually spawns a subagent.
@@ -43,7 +49,61 @@ export type SpawnFn = (opts: SpawnOptions) => Promise<{ output: string; sessionI
 /** Cap on the distilled result returned from a delegated subtask. */
 export const MAX_DELEGATE_RESULT_CHARS = 8000;
 
-export interface DelegateOptions {
+/**
+ * Options every dispatch path accepts for the gauntlet (layer 12).
+ *
+ * Omit `gauntlet` to use the environment-resolved settings (on by default);
+ * pass `false` to skip the loop for this one call, or a settings object to
+ * override it. Passing `false` is what the gauntlet's own internal spawns
+ * do, so the loop can never re-enter itself.
+ */
+export interface GauntletAware {
+  gauntlet?: GauntletSettings | false;
+  /** Role used for critique / verification. Defaults to "critic". */
+  critic?: string;
+}
+
+/**
+ * Run the gauntlet over one candidate, or return it unchanged.
+ *
+ * Never throws: a failure inside the loop leaves the candidate as-is, so
+ * wrapping a dispatch can only improve it.
+ */
+async function applyGauntlet(
+  opts: GauntletAware & {
+    agent: string;
+    task: string;
+    cwd: string;
+    preferredModel?: string;
+    signal?: AbortSignal;
+    onUpdate?: (text: string) => void;
+    spawn?: SpawnFn;
+  },
+  candidate: string,
+): Promise<{ output: string; gauntlet?: GauntletResult }> {
+  if (opts.gauntlet === false) return { output: candidate };
+  const settings = opts.gauntlet ?? gauntletSettings();
+  if (!settings.enabled) return { output: candidate };
+  try {
+    const result = await runGauntlet({
+      agent: opts.agent,
+      task: opts.task,
+      candidate,
+      cwd: opts.cwd,
+      settings,
+      ...(opts.critic !== undefined ? { critic: opts.critic } : {}),
+      ...(opts.preferredModel !== undefined ? { preferredModel: opts.preferredModel } : {}),
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+      ...(opts.onUpdate !== undefined ? { onUpdate: opts.onUpdate } : {}),
+      ...(opts.spawn !== undefined ? { spawn: opts.spawn } : {}),
+    });
+    return { output: result.output, gauntlet: result };
+  } catch {
+    return { output: candidate };
+  }
+}
+
+export interface DelegateOptions extends GauntletAware {
   /** Target role label for the child. */
   agent: string;
   /** The bounded subtask. */
@@ -63,6 +123,8 @@ export interface DelegateOptions {
 export interface DelegateResult {
   output: string;
   sessionId: string;
+  /** Present when the gauntlet ran over the child's work. */
+  gauntlet?: GauntletResult;
 }
 
 /**
@@ -95,15 +157,26 @@ export async function runDelegate(opts: DelegateOptions): Promise<DelegateResult
     signal: opts.signal,
     onUpdate: opts.onUpdate,
   });
+  // Gauntlet the child's work before distilling: the caller only ever sees
+  // the summary, so a defect not caught here is a defect that ships.
+  const gauntleted = await applyGauntlet(
+    { ...opts, task: composed, spawn },
+    output,
+  );
+
   const cap = opts.maxResultChars ?? MAX_DELEGATE_RESULT_CHARS;
-  let distilled = output || "(delegate produced no output)";
+  let distilled = gauntleted.output || "(delegate produced no output)";
   if (distilled.length > cap) {
     distilled = distilled.slice(0, cap) + `\n\n[result truncated at ${cap} chars]`;
   }
-  return { output: distilled, sessionId };
+  return {
+    output: distilled,
+    sessionId,
+    ...(gauntleted.gauntlet ? { gauntlet: gauntleted.gauntlet } : {}),
+  };
 }
 
-export interface QualityDispatchOptions extends SpawnOptions {
+export interface QualityDispatchOptions extends SpawnOptions, GauntletAware {
   /**
    * Extra spawn attempts after the initial one. Default 1 (so up to
    * two total dispatches per call). Set to 0 to disable the loop.
@@ -125,6 +198,8 @@ export interface QualityDispatchResult {
   sessionId: string;
   quality: ResponseQuality;
   attempts: number;
+  /** Present when the gauntlet ran over the accepted candidate. */
+  gauntlet?: GauntletResult;
 }
 
 /**
@@ -155,7 +230,18 @@ export async function dispatchWithQuality(
     lastSessionId = sessionId;
     lastQuality = scoreResponse(output, scoreOpts);
     if (lastQuality.ok || !isRecoverable(lastQuality) || attempt > maxRetries) {
-      return { output, sessionId, quality: lastQuality, attempts: attempt };
+      // Quality gating is done; put the accepted candidate through the
+      // gauntlet before handing it back. Scored again afterwards so the
+      // caller's `quality` reflects what it actually receives.
+      const g = await applyGauntlet({ ...opts, task: baseTask, spawn }, output);
+      const finalOutput = g.output;
+      return {
+        output: finalOutput,
+        sessionId,
+        quality: finalOutput === output ? lastQuality : scoreResponse(finalOutput, scoreOpts),
+        attempts: attempt,
+        ...(g.gauntlet ? { gauntlet: g.gauntlet } : {}),
+      };
     }
     opts.onRetry?.(attempt, lastQuality);
     currentTask = repairHint(lastQuality) + "\n\nOriginal task:\n" + baseTask;
@@ -179,7 +265,7 @@ export interface ConsensusSample {
   error?: string;
 }
 
-export interface ConsensusOptions extends Omit<SpawnOptions, "onUpdate"> {
+export interface ConsensusOptions extends Omit<SpawnOptions, "onUpdate">, GauntletAware {
   /** Number of parallel samples. Clamped to 1..6. Default 3. */
   samples?: number;
   /** Max concurrent in-flight tmux sessions. Clamped to 1..samples. Default min(4, samples). */
@@ -199,6 +285,8 @@ export interface ConsensusResult {
   all: ConsensusSample[];
   /** Short human-readable winning rationale. */
   reason: string;
+  /** Present when the gauntlet ran over the winning sample. */
+  gauntlet?: GauntletResult;
 }
 
 function pickBest(samples: ConsensusSample[]): { winner: ConsensusSample; reason: string } {
@@ -277,5 +365,20 @@ export async function runConsensus(opts: ConsensusOptions): Promise<ConsensusRes
   // Stable order by sample index.
   collected.sort((a, b) => a.index - b.index);
   const { winner, reason } = pickBest(collected);
-  return { best: winner, all: collected, reason };
+
+  // Gauntlet the winner only. Running it on every sample would multiply an
+  // already-expensive fan-out by the round cap for no benefit: the losing
+  // samples are discarded either way.
+  const g = await applyGauntlet({ ...opts, spawn }, winner.output);
+  const best: ConsensusSample =
+    g.output === winner.output
+      ? winner
+      : { ...winner, output: g.output, quality: scoreResponse(g.output, scoreOpts) };
+
+  return {
+    best,
+    all: collected,
+    reason,
+    ...(g.gauntlet ? { gauntlet: g.gauntlet } : {}),
+  };
 }

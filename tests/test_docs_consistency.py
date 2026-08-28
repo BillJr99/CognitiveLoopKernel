@@ -227,6 +227,101 @@ def test_kickoff_handles_prior_knobs() -> None:
 
 
 # ---------------------------------------------------------------------------
+# gauntlet block: the same four-place parity rule as robustness above
+# ---------------------------------------------------------------------------
+
+# GAUNTLET_LOOP is the documented short name for `enabled`; it does not follow
+# the CLK_GAUNTLET_* pattern, so map it explicitly.
+_GAUNTLET_ENV_ALIASES = {"enabled": ("GAUNTLET_LOOP", "CLK_ROBUSTNESS_GAUNTLET")}
+
+
+def _gauntlet_env_vars_for(key: str) -> tuple:
+    return _GAUNTLET_ENV_ALIASES.get(key, ("CLK_GAUNTLET_" + key.upper(),))
+
+
+def test_gauntlet_defaults_exist() -> None:
+    """DEFAULT_CLK_CONFIG must carry a ``gauntlet`` block."""
+    assert "gauntlet" in DEFAULT_CLK_CONFIG, (
+        "DEFAULT_CLK_CONFIG lost its gauntlet block (layer 12)"
+    )
+    required = {
+        "enabled",
+        "preset",
+        "max_rounds",
+        "scope",
+        "critic",
+        "answer_key",
+        "final_verification",
+        "accept_threshold",
+        "supersede_auto_refine",
+    }
+    missing = required - set(DEFAULT_CLK_CONFIG["gauntlet"].keys())
+    assert not missing, f"DEFAULT_CLK_CONFIG['gauntlet'] missing keys: {missing}"
+
+
+def test_gauntlet_defaults_to_on_with_the_standard_preset() -> None:
+    """The documented default. Changing it is a user-visible cost change."""
+    block = DEFAULT_CLK_CONFIG["gauntlet"]
+    assert block["enabled"] is True
+    assert block["preset"] == "standard"
+
+
+def test_env_example_documents_every_gauntlet_key() -> None:
+    for key in DEFAULT_CLK_CONFIG["gauntlet"].keys():
+        variants = _gauntlet_env_vars_for(key)
+        assert any(v in ENV_EXAMPLE for v in variants), (
+            f"none of {variants} documented in .env.example "
+            f"(needed because DEFAULT_CLK_CONFIG['gauntlet']['{key}'] "
+            "is a public knob)"
+        )
+
+
+def test_kickoff_maps_every_gauntlet_key() -> None:
+    for key in DEFAULT_CLK_CONFIG["gauntlet"].keys():
+        variants = _gauntlet_env_vars_for(key)
+        assert any(v in KICKOFF for v in variants), (
+            f"none of {variants} handled in the kickoff env→config mapping "
+            "(clk_harness/kickoff.py), so the .env.example override would "
+            "never take effect"
+        )
+
+
+def test_docs_document_every_gauntlet_key() -> None:
+    """Every gauntlet knob must be named in MISSIONS.md or CONFIGURATION.md."""
+    rl_start = MISSIONS_DOC.find("## Robustness loops")
+    rl_end = MISSIONS_DOC.find("## Completion criteria", rl_start)
+    assert rl_start != -1 and rl_end != -1
+    missions_section = MISSIONS_DOC[rl_start:rl_end]
+    assert "Gauntlet loop" in missions_section, (
+        "docs/MISSIONS.md is missing the gauntlet layer under ## Robustness loops"
+    )
+
+    cost_start = CONFIG_DOC.find("## Cost guardrails")
+    cost_end = CONFIG_DOC.find("## Customization", cost_start)
+    assert cost_start != -1 and cost_end != -1
+    config_section = CONFIG_DOC[cost_start:cost_end]
+
+    combined = missions_section + config_section
+    for key in DEFAULT_CLK_CONFIG["gauntlet"].keys():
+        assert key in combined, (
+            f"gauntlet knob '{key}' is not documented by name in "
+            "docs/MISSIONS.md (Robustness loops) or "
+            "docs/CONFIGURATION.md (Cost guardrails)"
+        )
+
+
+def test_kill_switches_are_documented() -> None:
+    """All four documented off-switches must actually appear in the docs.
+
+    The gauntlet is on by default and costs tokens, so a user who wants it
+    off must be able to find out how without reading the source.
+    """
+    combined = MISSIONS_DOC + CONFIG_DOC + ENV_EXAMPLE
+    for switch in ("--no-gauntlet", "GAUNTLET_LOOP", "/gauntlet off", "/clk-gauntlet"):
+        assert switch in combined, f"kill switch '{switch}' is undocumented"
+
+
+# ---------------------------------------------------------------------------
 # Install-script narration: spot-check the doc comment is present
 # ---------------------------------------------------------------------------
 

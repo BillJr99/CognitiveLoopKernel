@@ -21,6 +21,7 @@ from ...log import get_logger, log_exception
 from ...providers import AgentProvider, AgentRequest, AgentResponse, load_provider
 from ...utils.activity_log import log_event
 from .. import casting as _casting
+from .. import gauntlet as _gauntlet
 from .. import noop_guard as _noop_guard
 from .. import response_quality as _response_quality
 from .prompts import PromptsMixin
@@ -114,6 +115,13 @@ class AgentRunner(PromptsMixin, TranscriptMixin):
         "charter",
         "mission_plan",
         "phase_gate",
+        # The gauntlet's own dispatches (layer 12). Without these the loop
+        # would re-enter itself on every critique and revision.
+        _gauntlet.PHASE_KEY,
+        _gauntlet.PHASE_CRITIQUE,
+        _gauntlet.PHASE_REVISE,
+        _gauntlet.PHASE_VERIFY,
+        _gauntlet.PHASE_REPAIR,
     })
 
     def run(
@@ -138,10 +146,17 @@ class AgentRunner(PromptsMixin, TranscriptMixin):
           trigger a re-run with a repair preamble, escalating to
           consensus on the final retry.
 
-        Both layers are gated by ``clk.config.json::robustness`` and
-        bypassed for dispatches whose ``extra.phase`` indicates a
-        meta-path (consensus coalescing, recovery, checkpoint, etc.) so
-        the harness never loops on itself.
+        On top of both sits the **gauntlet loop** (layer 12,
+        ``clk.config.json::gauntlet``): the candidate those layers produce
+        is put through acceptance-criteria → critique → revise → verify
+        before it is returned. Disabled with ``--no-gauntlet``,
+        ``GAUNTLET_LOOP=False``, or ``CLK_ROBUSTNESS_GAUNTLET=off``, which
+        restores the pre-gauntlet return value exactly.
+
+        All layers are gated by ``clk.config.json`` and bypassed for
+        dispatches whose ``extra.phase`` indicates a meta-path (consensus
+        coalescing, recovery, checkpoint, the gauntlet's own critiques,
+        etc.) so the harness never loops on itself.
         """
         extra_dict: Dict[str, Any] = dict(extra or {})
         phase = str(extra_dict.get("phase") or "")
@@ -149,20 +164,89 @@ class AgentRunner(PromptsMixin, TranscriptMixin):
         is_dry = self.clk_cfg.get("dry_run", False) if dry_run is None else dry_run
 
         if not in_meta and not is_dry and self._should_auto_consensus(agent_name, extra_dict):
-            return self._dispatch_auto_consensus(
+            candidate = self._dispatch_auto_consensus(
                 agent_name,
                 objective,
                 extra=extra_dict,
                 dry_run=dry_run,
                 reason="auto_consensus_proactive",
             )
+            return self._maybe_gauntlet(
+                agent_name, objective, candidate, extra=extra_dict, dry_run=dry_run,
+            )
 
         if in_meta or is_dry:
             return self._dispatch_once(agent_name, objective, extra=extra_dict, dry_run=dry_run)
 
-        return self._dispatch_with_quality_loop(
+        candidate = self._dispatch_with_quality_loop(
             agent_name, objective, extra=extra_dict, dry_run=dry_run
         )
+        return self._maybe_gauntlet(
+            agent_name, objective, candidate, extra=extra_dict, dry_run=dry_run,
+        )
+
+    def _gauntlet_budget(
+        self, settings: "_gauntlet.GauntletSettings",
+    ) -> "_gauntlet.DispatchBudget":
+        """The session-wide gauntlet dispatch budget for this runner.
+
+        Held on the runner rather than per-loop so the cap bounds the whole
+        run: a mission with hundreds of stages would otherwise get a fresh
+        budget on every one, which is no cap at all. Re-created when the
+        configured limit changes (e.g. the TUI's ``/gauntlet``).
+        """
+        budget = getattr(self, "_gauntlet_budget_obj", None)
+        if budget is None or budget.limit != max(0, settings.max_dispatches):
+            budget = _gauntlet.DispatchBudget(settings.max_dispatches)
+            self._gauntlet_budget_obj = budget
+        return budget
+
+    def gauntlet_settings(self) -> "_gauntlet.GauntletSettings":
+        """Resolve the gauntlet config for this runner.
+
+        Re-resolved per dispatch rather than cached at ``__init__`` so the
+        TUI's ``/gauntlet`` command (and any ``GAUNTLET_LOOP`` exported
+        mid-session) takes effect on the next dispatch instead of the next
+        session. ``resolve_settings`` is pure string work, so this is cheap
+        next to a provider call.
+        """
+        return _gauntlet.resolve_settings(self.clk_cfg)
+
+    def _maybe_gauntlet(
+        self,
+        agent_name: str,
+        objective: str,
+        candidate: AgentRun,
+        *,
+        extra: Dict[str, Any],
+        dry_run: Optional[bool],
+    ) -> AgentRun:
+        """Put ``candidate`` through the gauntlet when it is enabled.
+
+        Never raises and never loses the candidate: any failure inside the
+        loop returns the run that came in, so the gauntlet can only improve
+        a dispatch or leave it untouched.
+        """
+        try:
+            settings = self.gauntlet_settings()
+            if not _gauntlet.enabled_for(settings, agent_name, extra):
+                return candidate
+            loop = _gauntlet.GauntletLoop(
+                self, settings, self.paths, budget=self._gauntlet_budget(settings),
+            )
+            final = loop.run(
+                agent_name, objective, candidate, extra=extra, dry_run=dry_run,
+            )
+        except Exception as exc:  # noqa: BLE001 — a critique must never lose work
+            log_exception("agent.runner._maybe_gauntlet", exc)
+            return candidate
+        # Marker the workflow layer reads to retire its auto_refine critic
+        # pass, so the same work is not critiqued twice. Set on the run
+        # itself: `run()` copies the caller's `extra`, so mutating that dict
+        # here would never reach the workflow runner.
+        out = final if final is not None else candidate
+        out.gauntlet_ran = True
+        return out
 
     def _dispatch_with_quality_loop(
         self,

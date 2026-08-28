@@ -319,6 +319,38 @@ DEFAULT_CLK_CONFIG: Dict[str, Any] = {
         "producing_agents": ["engineer", "ralph"],
         "treat_outputs_stage_as_producing": True,
     },
+    # Layer 12 — the gauntlet loop. Wraps every non-meta dispatch: derive a
+    # checkable acceptance answer key *before* judging, generate, critique
+    # adversarially against that key, revise, then verify. On by default;
+    # `--no-gauntlet`, GAUNTLET_LOOP=False, or CLK_ROBUSTNESS_GAUNTLET=off
+    # turn it off and restore the pre-gauntlet dispatch path exactly.
+    "gauntlet": {
+        "enabled": True,
+        # quick=1 round, standard=3 (default), rigorous=5.
+        "preset": "standard",
+        # Critique/revision rounds per dispatch. 0 = derive from the preset
+        # (quick=1, standard=3, rigorous=5), so the default resolves to 3.
+        "max_rounds": 0,
+        # Total gauntlet dispatches allowed per session, across every agent.
+        # A runaway guard: once spent, dispatches return their candidate
+        # unwrapped rather than the loop burning an unbounded budget.
+        # 0 = unlimited.
+        "max_dispatches": 500,
+        # all | careful_only | producing_only
+        "scope": "all",
+        # The critic must not be put through its own gauntlet.
+        "exclude_agents": ["critic"],
+        "critic": "critic",
+        "answer_key": True,
+        "final_verification": True,
+        "accept_threshold": 0.8,
+        # The gauntlet already threads a critic, so it retires the
+        # auto_refine-driven critic pass to avoid critiquing twice.
+        # Explicit `refine:` blocks in workflow YAML still run.
+        "supersede_auto_refine": True,
+        # Extra critique lenses layered on top of the preset's.
+        "focus": [],
+    },
 }
 
 DEFAULT_PROVIDERS: Dict[str, Any] = {

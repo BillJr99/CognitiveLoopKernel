@@ -419,6 +419,24 @@ ${idea}
    ends the run. So: never end a turn idle — always either dispatch the
    next iteration or call \`clk_done\` with validation proof.
 
+13. **The gauntlet runs under every dispatch.** \`clk_subagent_quality\`,
+   \`clk_consensus\`, and \`clk_delegate\` do not hand you the first thing a
+   child returns. Each result is put through a gauntlet: acceptance criteria
+   are written down first, a critic attacks the work against them, the child
+   revises, and a final pass verifies. It stops as soon as a critique finds
+   nothing material, so a clean result costs one extra round, not five.
+   - Presets cap the critique rounds: \`quick\`=1, \`standard\`=3 (default),
+     \`rigorous\`=5. The user sets this with \`/clk-gauntlet\` or the
+     \`GAUNTLET_LOOP\` / \`CLK_GAUNTLET_PRESET\` environment variables.
+   - **Write acceptance criteria into the tasks you dispatch.** When you give
+     a child a task, state what "done" means in checkable terms — "\`pytest -q\`
+     exits 0", "the endpoint 404s on an unknown id" — not "implement it well".
+     The gauntlet judges against those criteria, so a vague task produces a
+     vague standard, and the loop cannot save work whose target was never set.
+   - Do not add your own critique round on top for the same work. That is what
+     the gauntlet already did; spend the tokens on the next slice instead.
+   - If the user asks you to turn it off, tell them: \`/clk-gauntlet off\`.
+
 ## Operating notes
 
 - **You are the primary orchestrator.** All \`clk_*\` tools, casting,

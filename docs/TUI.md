@@ -17,6 +17,7 @@ session. The safety nets:
 | `/undo` | After every agent commit, `/undo` lets you preview and revert the last commit. Two-step (preview first, then `/undo confirm`) so it's never accidental. | Type `/undo` in the TUI. |
 | `/abort` | When an agent subprocess is stuck, SIGTERM it without killing the TUI. The provider returns a timeout error, the cycle reports the failure cleanly. | Type `/abort` in the TUI. |
 | `/install` / `/configure` | Recover from "CLI not found" / "auth failed" without leaving the dashboard. | `/install [provider]` then `/configure [provider]`. |
+| `/gauntlet` | Turn the gauntlet loop (acceptance criteria → critique → revise → verify) on or off, or change its intensity, without restarting. Writes through to `clk.config.json` and takes effect on the next dispatch. | `/gauntlet off`, `/gauntlet rigorous`, or `/gauntlet` for the current state. |
 | Pre-push secret scanner | Installed in the kickoff dir's `.git/hooks/pre-push`. Greps for `ANTHROPIC_API_KEY=`, `OPENAI_API_KEY=`, `sk-…`, private-key headers. Bypass with `git push --no-verify` when sure. | Automatic in every kickoff dir. |
 
 **Confirmation policy.** Every install, push, undo, cost-cap

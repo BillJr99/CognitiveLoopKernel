@@ -721,6 +721,7 @@ class TuiApp:
         ("/run [workflow]",         "Run one workflow cycle (default: engineering)."),
         ("/loop ralph|autoresearch [N]", "Refinement loop for N iterations."),
         ("/stop",                   "Stop the active loop after the current cycle."),
+        ("/gauntlet on|off|PRESET",  "Toggle the gauntlet loop (preset: quick|standard|rigorous)."),
         ("/abort",                  "Hard-kill the running provider subprocess."),
         ("",                        ""),
         ("/provider <name>",        "Switch the active provider."),
@@ -929,6 +930,9 @@ class TuiApp:
                 return True
             if cmd == "status":
                 self.worker.submit(Job("status"))
+                return True
+            if cmd == "gauntlet":
+                self.worker.submit(Job("gauntlet", args[0] if args else ""))
                 return True
             if cmd == "cast":
                 self.worker.submit(Job("cast"))

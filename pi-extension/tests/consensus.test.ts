@@ -3,6 +3,12 @@
  * tests don't need tmux or pi installed — the goal is to verify the
  * scoring / picking / retry behaviour, not the real subprocess plumbing
  * (which is exercised separately by the runtime smoke suite).
+ *
+ * Every dispatch here passes `gauntlet: false` to isolate the layer under
+ * test. The gauntlet (layer 12) wraps all three dispatch paths in
+ * production and would otherwise add its own critique/revision spawns to
+ * the call counts these tests assert on; it has its own suite in
+ * tests/gauntlet.test.ts.
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -33,6 +39,7 @@ describe("dispatchWithQuality", () => {
       task: "do the thing",
       cwd: "/tmp",
       spawn,
+      gauntlet: false,
     });
     assert.equal(calls, 1);
     assert.equal(res.attempts, 1);
@@ -57,6 +64,7 @@ describe("dispatchWithQuality", () => {
       maxRetries: 1,
       onRetry: (n) => retries.push(n),
       spawn,
+      gauntlet: false,
     });
     assert.equal(calls, 2);
     assert.equal(res.attempts, 2);
@@ -80,6 +88,7 @@ describe("dispatchWithQuality", () => {
       cwd: "/tmp",
       maxRetries: 2,
       spawn,
+      gauntlet: false,
     });
     assert.equal(calls, 3); // initial + 2 retries
     assert.equal(res.attempts, 3);
@@ -98,6 +107,7 @@ describe("dispatchWithQuality", () => {
       cwd: "/tmp",
       maxRetries: 5,
       spawn,
+      gauntlet: false,
     });
     assert.equal(calls, 1); // bailed after the refusal
     assert.equal(res.quality.recoverable, false);
@@ -118,6 +128,7 @@ describe("runConsensus", () => {
       cwd: "/tmp",
       samples: 3,
       spawn,
+      gauntlet: false,
     });
     assert.equal(res.all.length, 3);
     // Two of three samples pass quality (the empty one fails); the
@@ -141,6 +152,7 @@ describe("runConsensus", () => {
       cwd: "/tmp",
       samples: 10,
       spawn,
+      gauntlet: false,
     });
     assert.equal(res.all.length, 6);
   });
@@ -158,6 +170,7 @@ describe("runConsensus", () => {
       cwd: "/tmp",
       samples: 3,
       spawn,
+      gauntlet: false,
     });
     assert.equal(res.all.length, 3);
     const failed = res.all.find((s) => s.error);
@@ -181,6 +194,7 @@ describe("runConsensus", () => {
       cwd: "/tmp",
       samples: 3,
       spawn,
+      gauntlet: false,
     });
     assert.equal(res.all.length, 3);
     assert.equal(res.best.quality.ok, false);
@@ -207,6 +221,7 @@ describe("runConsensus", () => {
       samples: 6,
       maxParallel: 2,
       spawn,
+      gauntlet: false,
     });
     assert.ok(peak <= 2, `expected peak in-flight ≤ 2, got ${peak}`);
   });

@@ -91,6 +91,19 @@ def _bool(s) -> bool:
     return str(s).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _gauntlet_bool(s) -> bool:
+    """Strict boolean for the gauntlet knobs.
+
+    ``_bool`` maps every unrecognized string to False, which would let a
+    typo in ``GAUNTLET_LOOP`` silently switch the loop off. The gauntlet
+    defaults to on, so unrecognized input keeps it on and warns instead.
+    Shared with ``orchestration/gauntlet.py`` so both entry points agree.
+    """
+    from .orchestration.gauntlet import parse_bool
+
+    return parse_bool(s, True)
+
+
 def _csv(s) -> List[str]:
     return [item.strip() for item in str(s).split(",") if item.strip()]
 
@@ -112,6 +125,23 @@ CONFIG_ENV_OVERRIDES: Tuple[Tuple[str, Tuple[str, ...], Callable], ...] = (
     ("CLK_ROBUSTNESS_DEBATE", ("robustness", "debate"), str),
     ("CLK_ROBUSTNESS_DEBATE_LENSES", ("robustness", "debate_lenses"), _csv),
     ("CLK_ROBUSTNESS_DEBATE_MAX_ROUNDS", ("robustness", "debate_max_rounds"), int),
+    # Gauntlet loop (layer 12). GAUNTLET_LOOP is the short, documented name and
+    # is applied last so it wins over the CLK_ROBUSTNESS_* family name. Both
+    # are also read live at dispatch time by orchestration/gauntlet.py, so they
+    # work in a workspace that was never kicked off.
+    ("CLK_ROBUSTNESS_GAUNTLET", ("gauntlet", "enabled"), _gauntlet_bool),
+    ("GAUNTLET_LOOP", ("gauntlet", "enabled"), _gauntlet_bool),
+    ("CLK_GAUNTLET_PRESET", ("gauntlet", "preset"), str),
+    ("CLK_GAUNTLET_MAX_ROUNDS", ("gauntlet", "max_rounds"), int),
+    ("CLK_GAUNTLET_MAX_DISPATCHES", ("gauntlet", "max_dispatches"), int),
+    ("CLK_GAUNTLET_SCOPE", ("gauntlet", "scope"), str),
+    ("CLK_GAUNTLET_EXCLUDE_AGENTS", ("gauntlet", "exclude_agents"), _csv),
+    ("CLK_GAUNTLET_CRITIC", ("gauntlet", "critic"), str),
+    ("CLK_GAUNTLET_ANSWER_KEY", ("gauntlet", "answer_key"), _gauntlet_bool),
+    ("CLK_GAUNTLET_FINAL_VERIFICATION", ("gauntlet", "final_verification"), _gauntlet_bool),
+    ("CLK_GAUNTLET_ACCEPT_THRESHOLD", ("gauntlet", "accept_threshold"), float),
+    ("CLK_GAUNTLET_SUPERSEDE_AUTO_REFINE", ("gauntlet", "supersede_auto_refine"), _gauntlet_bool),
+    ("CLK_GAUNTLET_FOCUS", ("gauntlet", "focus"), _csv),
     # Autonomous mission block
     ("CLK_MISSION_MAX_PHASES", ("mission", "max_phases"), int),
     ("CLK_MISSION_MAX_ITERATIONS_PER_PHASE", ("mission", "max_iterations_per_phase"), int),
@@ -868,6 +898,39 @@ def run_setup_wizard(script_dir: Path) -> int:
         mark_step("loop_settings")
     else:
         proj_name = env.get("CLK_PROJECT_NAME") or "clk-app"
+
+    # --- gauntlet loop ----------------------------------------------------
+    if should_run_step("gauntlet"):
+        io.explain(
+            "=== Gauntlet loop ===\n"
+            "Every agent and sub-agent can be put through a gauntlet: before\n"
+            "its work is judged, it writes down checkable acceptance criteria;\n"
+            "then a critic attacks the result against those criteria, the agent\n"
+            "revises, and a final pass verifies the whole thing. This catches\n"
+            "work that looks finished but quietly dropped a requirement.\n"
+            "\n"
+            "It costs extra model calls per agent turn. Rough budget:\n"
+            "  quick      1 critique round   — cheapest, light adversarial pressure\n"
+            "  standard   3 critique rounds  — the default; good quality/cost balance\n"
+            "  rigorous   5 critique rounds  — highest quality, highest cost\n"
+            "\n"
+            "Rounds stop early as soon as a critique finds nothing material, so\n"
+            "the cap is a worst case, not the usual spend. The dispatch budget\n"
+            "is a separate runaway guard: it caps the gauntlet's total extra\n"
+            "calls across the whole session, since the round cap resets on\n"
+            "every dispatch. Set the loop to `false` to restore the\n"
+            "pre-gauntlet behavior exactly."
+        )
+        _env_set("GAUNTLET_LOOP", io.read(
+            "Run the gauntlet loop on all agents (true|false)",
+            env.get("GAUNTLET_LOOP") or "true"))
+        _env_set("CLK_GAUNTLET_PRESET", io.read(
+            "Gauntlet preset (quick|standard|rigorous)",
+            env.get("CLK_GAUNTLET_PRESET") or "standard"))
+        _env_set("CLK_GAUNTLET_MAX_DISPATCHES", io.read(
+            "Gauntlet dispatch budget for the whole session (0 = unlimited)",
+            env.get("CLK_GAUNTLET_MAX_DISPATCHES") or "500"))
+        mark_step("gauntlet")
 
     # --- auth mode (CLI providers) ---------------------------------------
     if provider in ("claude", "codex", "gemini"):

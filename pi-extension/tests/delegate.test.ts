@@ -22,6 +22,7 @@ describe("runDelegate", () => {
       context: "focus on X",
       cwd: "/tmp",
       spawn,
+      gauntlet: false,
     });
     assert.equal(res.output, "the distilled answer");
     assert.equal(res.sessionId, "s1");
@@ -41,20 +42,20 @@ describe("runDelegate", () => {
       seen = opts;
       return { output: "ok", sessionId: "s" };
     };
-    await runDelegate({ agent: "qa", task: "run checks", cwd: "/tmp", spawn });
+    await runDelegate({ agent: "qa", task: "run checks", cwd: "/tmp", spawn, gauntlet: false });
     assert.ok(!seen.task.includes("Context:"), "no Context section when omitted");
     assert.ok(seen.task.includes("Task:\nrun checks"));
   });
 
   test("empty child output yields a placeholder", async () => {
     const spawn: SpawnFn = async () => ({ output: "", sessionId: "s" });
-    const res = await runDelegate({ agent: "x", task: "t", cwd: "/tmp", spawn });
+    const res = await runDelegate({ agent: "x", task: "t", cwd: "/tmp", spawn, gauntlet: false });
     assert.ok(res.output.includes("no output"));
   });
 
   test("caps the distilled result at maxResultChars", async () => {
     const spawn: SpawnFn = async () => ({ output: "z".repeat(50), sessionId: "s" });
-    const res = await runDelegate({ agent: "x", task: "t", cwd: "/tmp", spawn, maxResultChars: 10 });
+    const res = await runDelegate({ agent: "x", task: "t", cwd: "/tmp", spawn, gauntlet: false, maxResultChars: 10 });
     assert.ok(res.output.startsWith("zzzzzzzzzz"));
     assert.ok(res.output.includes("truncated"));
   });

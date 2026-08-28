@@ -438,6 +438,10 @@ class WorkflowRunner(ReviewMixin, RecoveryMixin, ValidationMixin):
         # ROUND_STATUS: done (or absent), or the round cap is reached.
         rounds_max = max(1, int(stage.rounds or 1))
         run: Optional[AgentRun] = None
+        # Set by AgentRunner._maybe_gauntlet on the run it returns when the
+        # gauntlet actually wrapped that dispatch. Sticky across rounds: one
+        # gauntleted round is enough to retire the auto_refine critic pass.
+        gauntlet_ran = False
         for round_idx in range(1, rounds_max + 1):
             extra = dict(base_extra)
             extra["round"] = round_idx
@@ -460,6 +464,7 @@ class WorkflowRunner(ReviewMixin, RecoveryMixin, ValidationMixin):
                 extra=extra,
                 dry_run=dry_run,
             )
+            gauntlet_ran = gauntlet_ran or bool(getattr(run, "gauntlet_ran", False))
             if rounds_max == 1:
                 break
             status = _round_status(run.response.text or "")
@@ -490,7 +495,9 @@ class WorkflowRunner(ReviewMixin, RecoveryMixin, ValidationMixin):
                 run = self._debate_loop(workflow, stage, run, cycle_context, dry_run)
             except Exception as exc:
                 log_exception("orchestration.workflow._run_stage.debate", exc)
-        elif not dry_run and run.response.ok and self._refine_enabled(stage):
+        elif not dry_run and run.response.ok and self._refine_enabled(
+            stage, gauntlet_ran=gauntlet_ran,
+        ):
             try:
                 run = self._refine_loop(workflow, stage, run, cycle_context, dry_run)
             except Exception as exc:

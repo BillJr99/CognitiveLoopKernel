@@ -71,6 +71,11 @@ class AgentRun:
     # workflow runner uses these to verify ``WorkflowStage.outputs``
     # contracts and to drive review-stage digests.
     posts: List[str] = field(default_factory=list)
+    # True when the gauntlet loop (layer 12) wrapped this dispatch. The
+    # workflow runner reads it to retire the auto_refine critic pass, so
+    # the same work is not critiqued twice. Carried on the run rather than
+    # on the caller's ``extra`` dict, which ``AgentRunner.run`` copies.
+    gauntlet_ran: bool = False
 
 
 class AgentObserver:
